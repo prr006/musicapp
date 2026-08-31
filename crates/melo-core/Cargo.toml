@@ -1,0 +1,10 @@
+[package]
+name = "melo-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MELO domain core: source-independent track model, queue state machine, playback state machine, and lyrics synchronization model. Pure Rust, no UI, no engine, no IPC."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

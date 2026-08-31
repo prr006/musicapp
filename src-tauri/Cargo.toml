@@ -1,0 +1,24 @@
+[package]
+name = "melo-app"
+description = "MELO desktop application (Tauri 2 shell: mpv engine, IPC, persistence)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "melo-app"
+
+[lib]
+name = "melo_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+melo-core = { path = "../crates/melo-core" }
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+# Keep the default surface minimal (spec §33).
+default = []

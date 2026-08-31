@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability: only core event/window permissions. No filesystem, shell, or http access is granted to the webview (spec §33). Features that need scoped capabilities (downloads, tray) will add narrowly-scoped capabilities in their phase.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

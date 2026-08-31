@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.local
+.DS_Store
+
+# Rust
+target/
+src-tauri/gen/schemas/
+
+# Logs / coverage
+coverage/
+*.log
+
+# mobile icons not needed (desktop-first)
+src-tauri/icons/android/
+src-tauri/icons/ios/

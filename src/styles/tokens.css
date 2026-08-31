@@ -1,0 +1,94 @@
+/* ---------------------------------------------------------------------------
+   MELO design tokens. One accent system, two themes.
+--------------------------------------------------------------------------- */
+
+:root {
+  --font-ui: "Segoe UI Variable Display", "Segoe UI", -apple-system, BlinkMacSystemFont,
+    "Inter", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Cascadia Code", "SF Mono", Consolas, monospace;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+
+  --speed-fast: 120ms;
+  --speed-med: 220ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  --accent: #8b5cf6;
+  --accent-strong: #7c3aed;
+  --accent-soft: rgba(139, 92, 246, 0.16);
+  --accent-glow: rgba(139, 92, 246, 0.45);
+
+  --sidebar-w: 232px;
+  --player-h: 86px;
+
+  --art-small: 40px;
+  --art-medium: 48px;
+  --art-large: 56px;
+}
+
+[data-accent="violet"] { --accent: #8b5cf6; --accent-strong: #7c3aed; --accent-soft: rgba(139,92,246,.16); --accent-glow: rgba(139,92,246,.45); }
+[data-accent="ocean"] { --accent: #38bdf8; --accent-strong: #0ea5e9; --accent-soft: rgba(56,189,248,.16); --accent-glow: rgba(56,189,248,.4); }
+[data-accent="emerald"] { --accent: #34d399; --accent-strong: #10b981; --accent-soft: rgba(52,211,153,.16); --accent-glow: rgba(52,211,153,.4); }
+[data-accent="sunset"] { --accent: #fb7185; --accent-strong: #f43f5e; --accent-soft: rgba(251,113,133,.16); --accent-glow: rgba(251,113,133,.4); }
+[data-accent="amber"] { --accent: #fbbf24; --accent-strong: #f59e0b; --accent-soft: rgba(251,191,36,.16); --accent-glow: rgba(251,191,36,.4); }
+
+/* Dark (default) ---------------------------------------------------------- */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0d13;
+  --bg-elev: #11141d;
+  --bg-panel: #151926;
+  --bg-hover: #1b2030;
+  --bg-active: #222839;
+  --bg-glass: rgba(17, 20, 29, 0.72);
+  --border: #232a3c;
+  --border-subtle: #1c2233;
+  --text: #eef1f8;
+  --text-dim: #9aa3b8;
+  --text-faint: #677089;
+  --shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  --progress-bg: #262c3f;
+  --danger: #f87171;
+  --success: #34d399;
+  --scrim: rgba(4, 6, 10, 0.66);
+}
+
+/* Light --------------------------------------------------------------------*/
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f7f8fb;
+  --bg-elev: #ffffff;
+  --bg-panel: #ffffff;
+  --bg-hover: #eceef5;
+  --bg-active: #e2e5ef;
+  --bg-glass: rgba(255, 255, 255, 0.78);
+  --border: #d9dde8;
+  --border-subtle: #e7eaf2;
+  --text: #171a23;
+  --text-dim: #5a6174;
+  --text-faint: #8b91a5;
+  --shadow: 0 14px 40px rgba(23, 26, 35, 0.14);
+  --progress-bg: #e3e6ef;
+  --danger: #dc2626;
+  --success: #059669;
+  --scrim: rgba(20, 24, 33, 0.4);
+}
+
+[data-compact="true"] {
+  --art-small: 32px;
+  --art-medium: 36px;
+  --art-large: 44px;
+}
+
+/* Respect OS reduced motion + user preference (spec §26). */
+@media (prefers-reduced-motion: reduce) {
+  :root { --speed-fast: 0ms; --speed-med: 0ms; }
+}
+[data-animations="off"] * {
+  transition: none !important;
+  animation: none !important;
+}
