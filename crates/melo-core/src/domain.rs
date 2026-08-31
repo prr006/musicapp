@@ -150,7 +150,7 @@ pub enum PlaylistKind {
 
 /// A playlist may be nested inside a folder (a playlist whose `kind` is a
 /// folder is modeled as a `Playlist` with no tracks — this keeps one table).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Playlist {
     pub id: PlaylistId,
@@ -176,7 +176,7 @@ pub struct Playlist {
 }
 
 /// A track inside a playlist (ordered).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaylistTrack {
     pub playlist_id: PlaylistId,
@@ -189,7 +189,7 @@ pub struct PlaylistTrack {
 }
 
 /// One entry of listening history (spec §15).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
     pub id: String,

@@ -177,10 +177,12 @@ impl LibraryData {
         let source_tracks = self.playlist_tracks.get(id)?.clone();
         let mut copy = self.create_playlist(new_title, self.playlist(id).and_then(|p| p.description.clone()));
         let now = ids::now_ms();
-        for (i, pt) in source_tracks.into_iter().enumerate() {
+        // Iterate by reference so `source_tracks` is still owned afterwards
+        // for the final count.
+        for (i, pt) in source_tracks.iter().enumerate() {
             self.playlist_tracks.entry(copy.id.clone()).or_default().push(PlaylistTrack {
                 playlist_id: copy.id.clone(),
-                track_id: pt.track_id,
+                track_id: pt.track_id.clone(),
                 position: i as u32,
                 added_at: Some(now),
             });
@@ -213,15 +215,19 @@ impl LibraryData {
         if !exists || tracks.is_empty() {
             return exists && !tracks.is_empty();
         }
-        let now = ids::now_ms();
-        let entry = self.playlist_tracks.entry(id.to_string()).or_default();
+        // Remember metadata first (whole-`self` borrows), then take the
+        // single mutable borrow of the playlist map for the appends.
         for track in tracks {
-            let position = entry.len() as u32;
             self.remember_track(track);
+        }
+        let now = ids::now_ms();
+        let start = self.playlist_tracks.get(id).map_or(0, Vec::len);
+        let entry = self.playlist_tracks.entry(id.to_string()).or_default();
+        for (i, track) in tracks.iter().enumerate() {
             entry.push(PlaylistTrack {
                 playlist_id: id.to_string(),
                 track_id: track.id.clone(),
-                position,
+                position: (start + i) as u32,
                 added_at: Some(now),
             });
         }

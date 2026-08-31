@@ -332,12 +332,12 @@ fn parse_lrc_ok(input: &str) -> Option<Lyrics> {
 ///
 /// Returns `None` when no entry is even a weak match (avoid showing lyrics
 /// for a completely different song).
-pub fn best_match(
-    entries: &[LrclibEntry],
+pub fn best_match<'a>(
+    entries: &'a [LrclibEntry],
     title: &str,
     artist: &str,
     duration_secs: Option<f64>,
-) -> Option<&LrclibEntry> {
+) -> Option<&'a LrclibEntry> {
     fn norm(s: &str) -> String {
         s.to_lowercase().chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect::<String>()
     }

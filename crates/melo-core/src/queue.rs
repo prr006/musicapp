@@ -481,7 +481,7 @@ impl QueueMachine {
         if self.history.last() == Some(&id) {
             return;
         }
-        if self.history.len() >= HISTORY_CAP {
+        if self.history.len() >= Self::HISTORY_CAP {
             self.history.remove(0);
         }
         self.history.push(id);
