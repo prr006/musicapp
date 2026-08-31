@@ -1,18 +1,19 @@
 /**
- * Home (spec §6). Phase 1: sample catalog in the browser preview, honest
- * phase-status states in the real app. Recently played will come from real
- * history in Phase 9; recommendations from listening history in Phase 9+.
+ * Home (spec §6): greeting, jump-back-in, recommendations from listening
+ * history, recently played, favorites, and recent searches. Everything is
+ * derived from the library mirror — no sample data in the real app.
  */
 
 import { useMemo } from "react";
 
 import * as api from "@/app/api";
 import { Artwork } from "@/components/Artwork";
-import { Icon, type IconName } from "@/components/Icon";
-import { getBridge } from "@/app/ipc";
-import { SAMPLE_TRACKS } from "@/app/ipc/sampleData";
+import { Icon } from "@/components/Icon";
+import { useLibrary } from "@/app/stores/library";
+import { queueStore, playbackStore } from "@/app/stores/playback";
+import { navigate, setSearchQuery } from "@/app/stores/ui";
+import { recommendedTracks } from "@/lib/collection";
 import { useStore } from "@/app/store";
-import { queueStore } from "@/app/stores/playback";
 import { artistLine, type Track } from "@/types/domain";
 
 function greeting(): string {
@@ -24,151 +25,130 @@ function greeting(): string {
 }
 
 export function HomeView() {
-  const isMock = getBridge().kind === "mock";
-  const history = useStore(queueStore, (s) => s.history);
+  const library = useLibrary();
+  const current = useStore(queueStore, (s) => s.current);
+  const status = useStore(playbackStore, (s) => s.status);
 
-  const quickPicks = useMemo(() => SAMPLE_TRACKS.slice(0, 6), []);
-  const recentlyPlayed = useMemo(() => {
+  const recent = useMemo(() => {
+    if (!library) return [];
     const seen = new Set<string>();
-    const tracks: Track[] = [];
-    for (const item of history) {
-      if (seen.has(item.track.id)) continue;
-      seen.add(item.track.id);
-      tracks.push(item.track);
-      if (tracks.length >= 6) break;
+    const out: Track[] = [];
+    for (const entry of library.history) {
+      if (seen.has(entry.track.id)) continue;
+      seen.add(entry.track.id);
+      out.push(entry.track);
+      if (out.length >= 8) break;
     }
-    return tracks;
-  }, [history]);
+    return out;
+  }, [library]);
+
+  const picks = useMemo(() => recommendedTracks(library, 8), [library]);
+  const liked = library?.liked ?? [];
+  const searches = library?.searchHistory ?? [];
 
   return (
     <div>
       <div className="hero">
         <h1>{greeting()}</h1>
-        <p>Local-first listening. Rust owns the state; the UI just listens.</p>
+        <p>Local-first listening. Rust owns playback; this page just listens.</p>
       </div>
 
-      {isMock ? (
-        <>
-          <Section title="Quick picks" sub="From the sample catalog">
-            <div className="grid">
-              {quickPicks.map((track) => (
-                <TrackCard key={track.id} track={track} />
-              ))}
-            </div>
-          </Section>
-
-          {recentlyPlayed.length > 0 && (
-            <Section title="Recently played" sub="From your queue history">
-              <div className="grid">
-                {recentlyPlayed.map((track) => (
-                  <TrackCard key={track.id} track={track} />
-                ))}
+      {current && (
+        <Section title="Jump back in" sub={`Paused on ${artistLine(current.track)} — resumes exactly where you left off`}>
+          <div className="jump-card">
+            <Artwork track={current.track} size={72} rounded={10} />
+            <div style={{ minWidth: 0 }}>
+              <div className="card-title">{current.track.title}</div>
+              <div className="card-sub">
+                {artistLine(current.track)} · {status}
               </div>
-            </Section>
-          )}
-
-          <Section title="Full sample album" sub="Start a sequence — auto-next works">
-            <div style={{ maxWidth: 640 }}>
-              <AlbumStarter />
             </div>
-          </Section>
-        </>
-      ) : (
+            <button className="button" onClick={() => void api.play()}>
+              <Icon name="play" size={14} filled /> Resume
+            </button>
+          </div>
+        </Section>
+      )}
+
+      {picks.length > 0 && (
+        <Section title="More like what you play" sub="From your listening history">
+          <div className="grid">
+            {picks.map((track) => (
+              <TrackCard key={track.id} track={track} />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {recent.length > 0 && (
+        <Section title="Recently played" sub="What you actually heard, not what we guess you like">
+          <div className="grid">
+            {recent.map((track) => (
+              <TrackCard key={track.id} track={track} />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {liked.length > 0 && (
+        <Section title="Liked songs" sub={`${liked.length} favorite${liked.length === 1 ? "" : "s"}`}>
+          <div className="grid">
+            {liked.slice(0, 8).map((track) => (
+              <TrackCard key={track.id} track={track} />
+            ))}
+          </div>
+          <button className="button ghost" onClick={() => navigate("liked")}>
+            See all
+          </button>
+        </Section>
+      )}
+
+      {searches.length > 0 && (
+        <Section title="Recent searches" sub="Pick up a search again">
+          <div className="chip-row">
+            {searches.slice(0, 8).map((q) => (
+              <button key={q} className="chip" onClick={() => setSearchQuery(q)}>
+                <Icon name="search" size={12} /> {q}
+              </button>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {(!library || (recent.length === 0 && liked.length === 0 && searches.length === 0 && !current)) && (
         <div className="state-block">
           <div className="big">♪</div>
-          <h3>The library wakes up in Phase 5</h3>
+          <h3>Nothing here yet</h3>
           <p>
-            YouTube search + streaming (yt-dlp) lands next. The playback engine,
-            queue, and state machine behind it are already live — check the
-            architecture notes below.
+            Search for something (<kbd>Ctrl K</kbd>) and press play — MELO
+            keeps history, favorites, and recommendations from there.
           </p>
         </div>
       )}
-
-      <Section title="How MELO is built" sub="Playback reliability before polish (spec §37)">
-        <div className="arch-cards">
-          <ArchCard icon="note" title="Rust owns playback state">
-            One state machine in Rust decides everything; React renders events.
-            There is a single authoritative playback clock.
-          </ArchCard>
-          <ArchCard icon="next" title="mpv under supervision">
-            mpv runs as a supervised child process over JSON IPC. End-of-file
-            auto-advances the queue in Rust — no frontend timers.
-          </ArchCard>
-          <ArchCard icon="queue" title="Queue as a state machine">
-            Play order, history, shuffle and repeat are invariants, verified by
-            40+ unit tests across Rust and the browser mock.
-          </ArchCard>
-          <ArchCard icon="lyrics" title="Lyrics follow the clock">
-            The highlighted line is a pure function of the engine-reported
-            position — stable across seeks, pauses, speed changes.
-          </ArchCard>
-        </div>
-      </Section>
     </div>
   );
 }
 
-function Section({
-  title,
-  sub,
-  children,
-}: {
-  title: string;
-  sub?: string;
-  children: React.ReactNode;
-}) {
+function Section({ title, sub, children }: { title: string; sub?: string; children: React.ReactNode }) {
   return (
-    <div className="section">
-      <div className="section-head">
-        <span className="section-title">{title}</span>
-        {sub && <span className="section-sub">{sub}</span>}
-      </div>
+    <section className="home-section">
+      <h3>{title}</h3>
+      {sub && <p className="section-sub">{sub}</p>}
       {children}
-    </div>
-  );
-}
-
-function ArchCard({ icon, title, children }: { icon: IconName; title: string; children: React.ReactNode }) {
-  return (
-    <div className="arch-card">
-      <h4>
-        <Icon name={icon} size={15} />
-        {title}
-      </h4>
-      <p>{children}</p>
-    </div>
+    </section>
   );
 }
 
 function TrackCard({ track }: { track: Track }) {
   return (
-    <button className="card" onDoubleClick={() => void api.playNow(track)} onClick={() => void api.playNow(track)}>
-      <div className="card-art">
-        <Artwork track={track} size={148} rounded={12} />
-        <span className="card-play">
-          <Icon name="play" size={17} filled />
-        </span>
-      </div>
-      <div>
-        <div className="card-title">{track.title}</div>
-        <div className="card-sub">{artistLine(track)}</div>
-      </div>
+    <button
+      className="card"
+      onClick={() => void api.playNow(track)}
+      title={`Play “${track.title}”`}
+    >
+      <Artwork track={track} size={148} rounded={12} />
+      <div className="card-title">{track.title}</div>
+      <div className="card-sub">{artistLine(track)}</div>
     </button>
-  );
-}
-
-function AlbumStarter() {
-  const album = SAMPLE_TRACKS.slice(0, 2);
-  const rest = SAMPLE_TRACKS.slice(2);
-  return (
-    <div style={{ display: "flex", gap: 10 }}>
-      <button className="button" onClick={() => void api.startSequence(album, false)}>
-        Play “Afterglow” in order
-      </button>
-      <button className="button ghost" onClick={() => void api.startSequence(rest, true)}>
-        Shuffle the rest
-      </button>
-    </div>
   );
 }

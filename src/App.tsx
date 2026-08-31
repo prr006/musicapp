@@ -17,7 +17,7 @@ import { useShortcuts } from "@/app/useShortcuts";
 import { useUi } from "@/app/stores/ui";
 import { HomeView } from "@/views/HomeView";
 import { SearchView } from "@/views/SearchView";
-import { PlaceholderView } from "@/views/PlaceholderView";
+import { LibraryView } from "@/views/LibraryView";
 
 export default function App() {
   useAppBridge();
@@ -25,7 +25,7 @@ export default function App() {
 
   const ui = useUi();
 
-  // Apply appearance settings to the document root (spec §26).
+  // Apply appearance settings to the document root.
   useEffect(() => {
     const root = document.documentElement;
     const resolve = (theme: string): string =>
@@ -44,12 +44,17 @@ export default function App() {
     <>
       <div className="app">
         <Sidebar />
-        <main className="main">
+        <main className="main" data-route={ui.view}>
           <TopBar />
           <div className="content">
             {ui.view === "home" && <HomeView />}
             {ui.view === "search" && <SearchView query={ui.searchQuery} />}
-            {ui.view !== "home" && ui.view !== "search" && <PlaceholderView view={ui.view} />}
+            {(ui.view === "liked" ||
+              ui.view === "songs" ||
+              ui.view === "albums" ||
+              ui.view === "artists" ||
+              ui.view === "playlists" ||
+              ui.view === "recently-played") && <LibraryView view={ui.view} />}
           </div>
         </main>
         <MiniPlayer />

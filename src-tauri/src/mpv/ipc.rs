@@ -12,12 +12,11 @@ use serde_json::{json, Value};
 /// `PlayerCommand` the state machine emits).
 #[derive(Debug, Clone, PartialEq)]
 pub enum MpvCommand {
-    /// `loadfile <url> replace` with per-file options (`start`, `pause`).
-    LoadUrl {
-        url: String,
-        start_paused: bool,
-        start_at: Option<f64>,
-    },
+    /// `loadfile <url> replace`. Loading always normalizes the pause state
+    /// first (`set_property pause <start_paused>`) — the guaranteed-safe way
+    /// to start paused or unpaused across mpv versions. Start positions are
+    /// applied by the service as a seek right after `file-loaded`.
+    LoadUrl { url: String, start_paused: bool },
     SetPaused(bool),
     SeekAbsolute(f64),
     SeekRelative(f64),
@@ -27,23 +26,34 @@ pub enum MpvCommand {
     SetSpeed(f64),
 }
 
-/// Serialize a command for the wire. `request_id` correlates async replies
-/// (we mostly fire-and-forget; replies are logged, not awaited).
+/// Serialize a command as the wire lines to write. `LoadUrl` expands into
+/// two lines (pause state + loadfile); everything else is one line.
+/// `next_request_id` allocates ids for each line.
+pub fn encode_command_seq(cmd: &MpvCommand, next_request_id: &mut impl FnMut() -> u64) -> Vec<String> {
+    match cmd {
+        MpvCommand::LoadUrl { url, start_paused } => {
+            vec![
+                json!({
+                    "command": ["set_property", "pause", start_paused],
+                    "request_id": next_request_id(),
+                })
+                .to_string(),
+                json!({
+                    "command": ["loadfile", url, "replace"],
+                    "request_id": next_request_id(),
+                })
+                .to_string(),
+            ]
+        }
+        other => vec![encode_command(other, next_request_id())],
+    }
+}
+
+/// Serialize a single (non-load) command.
 pub fn encode_command(cmd: &MpvCommand, request_id: u64) -> String {
     let command: Value = match cmd {
-        MpvCommand::LoadUrl { url, start_paused, start_at } => {
-            let mut options = serde_json::Map::new();
-            if let Some(t) = start_at {
-                options.insert("start".into(), json!(t));
-            }
-            if *start_paused {
-                options.insert("pause".into(), json!(true));
-            }
-            if options.is_empty() {
-                json!({ "command": ["loadfile", url, "replace"] })
-            } else {
-                json!({ "command": ["loadfile", url, "replace", options] })
-            }
+        MpvCommand::LoadUrl { url, start_paused } => {
+            json!({ "command": ["loadfile", url, "replace", { "pause": start_paused }] })
         }
         MpvCommand::SetPaused(p) => json!({ "command": ["set_property", "pause", p] }),
         MpvCommand::SeekAbsolute(t) => json!({ "command": ["seek", t, "absolute"] }),
@@ -153,28 +163,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encodes_loadfile_with_start_option() {
-        let s = encode_command(
-            &MpvCommand::LoadUrl { url: "http://x/y.opus".into(), start_paused: false, start_at: Some(90.0) },
-            7,
+    fn load_url_expands_to_pause_then_loadfile() {
+        let mut ids = 0u64;
+        let lines = encode_command_seq(
+            &MpvCommand::LoadUrl { url: "http://x/y.opus".into(), start_paused: true },
+            &mut || {
+                ids += 1;
+                ids
+            },
         );
-        let v: Value = serde_json::from_str(&s).unwrap();
-        assert_eq!(v["command"][0], "loadfile");
-        assert_eq!(v["command"][1], "http://x/y.opus");
-        assert_eq!(v["command"][2], "replace");
-        assert_eq!(v["command"][3]["start"], 90.0);
-        assert_eq!(v["request_id"], 7);
+        assert_eq!(lines.len(), 2);
+        let pause: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(pause["command"][0], "set_property");
+        assert_eq!(pause["command"][1], "pause");
+        assert_eq!(pause["command"][2], true);
+        let load: Value = serde_json::from_str(&lines[1]).unwrap();
+        assert_eq!(load["command"][0], "loadfile");
+        assert_eq!(load["command"][1], "http://x/y.opus");
+        assert_eq!(load["command"][2], "replace");
+        // Distinct request ids.
+        assert_ne!(pause["request_id"], load["request_id"]);
     }
 
     #[test]
-    fn encodes_loadfile_paused_without_start() {
-        let s = encode_command(
-            &MpvCommand::LoadUrl { url: "file://a.flac".into(), start_paused: true, start_at: None },
-            1,
+    fn unpaused_load_still_normalizes_pause_state() {
+        let lines = encode_command_seq(
+            &MpvCommand::LoadUrl { url: "http://x".into(), start_paused: false },
+            &mut || 1,
         );
-        let v: Value = serde_json::from_str(&s).unwrap();
-        assert_eq!(v["command"][3]["pause"], true);
-        assert!(v["command"][3].get("start").is_none());
+        let pause: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(pause["command"][2], false);
     }
 
     #[test]
@@ -190,6 +208,14 @@ mod tests {
         assert_eq!(
             encode_command(&MpvCommand::SeekRelative(-10.0), 3),
             r#"{"command":["seek",-10.0,"relative"],"request_id":3}"#
+        );
+        assert_eq!(
+            encode_command(&MpvCommand::SetVolume(80.0), 4),
+            r#"{"command":["set_property","volume",80.0],"request_id":4}"#
+        );
+        assert_eq!(
+            encode_command(&MpvCommand::Stop, 5),
+            r#"{"command":["stop"],"request_id":5}"#
         );
     }
 

@@ -19,12 +19,14 @@
 //! * [`providers`] — traits for external content sources (YouTube, local).
 
 pub mod domain;
+pub mod library;
 pub mod lyrics;
 pub mod persistence;
 pub mod playback;
 pub mod player;
 pub mod providers;
 pub mod queue;
+pub mod ytdlp;
 
 pub mod ids {
     //! Opaque string identifiers. Kept as plain strings so they cross the
@@ -54,5 +56,26 @@ pub mod ids {
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);
         format!("{prefix}:{n:x}-{nanos:x}")
+    }
+
+    /// FNV-1a — stable, version-independent hash used for cache keys and
+    /// derived ids (DefaultHasher is not guaranteed stable across rustc
+    /// releases, which would silently invalidate caches).
+    pub fn fnv1a(s: &str) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in s.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01B3);
+        }
+        h
+    }
+
+    /// Current unix time in milliseconds (best effort, never panics).
+    pub fn now_ms() -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
     }
 }

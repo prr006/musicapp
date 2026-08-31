@@ -1,25 +1,48 @@
 /**
- * Bridge selection: real Tauri IPC inside the desktop app, mock backend for
- * plain-browser development (`npm run dev` outside Tauri).
- *
- * The mock is statically imported for simplicity; inside the packaged app
- * `tauriAvailable()` is always true so the mock path is dead code.
+ * IPC entry point. In the Tauri app the real bridge talks to Rust; in the
+ * browser (tests, `npm run dev` preview) the mock bridge simulates the
+ * engine. `setBridge` exists for tests that inject a scripted bridge.
  */
 
-import type { IpcBridge } from "./contract";
 import { createMockBridge } from "./mock";
-import { tauriAvailable, tauriBridge } from "./tauri";
-
-export * from "./contract";
-export { tauriAvailable };
+import { createTauriBridge } from "./tauri";
+import type { IpcBridge } from "./contract";
 
 let bridge: IpcBridge | null = null;
 
-export function getBridge(): IpcBridge {
-  if (!bridge) {
-    bridge = tauriAvailable() ? tauriBridge : createMockBridge();
+declare global {
+  interface Window {
+    __TAURI_INTERNALS__?: unknown;
   }
+}
+
+/** True when running inside the Tauri webview (real Rust backend). */
+export function tauriAvailable(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.__TAURI_INTERNALS__ != null &&
+    Object.keys(window.__TAURI_INTERNALS__ as object).length > 0
+  );
+}
+
+export function getBridge(): IpcBridge {
+  if (bridge) return bridge;
+  bridge = tauriAvailable() ? createTauriBridge() : createMockBridge();
   return bridge;
 }
 
-export type { IpcBridge };
+export function setBridge(b: IpcBridge): void {
+  bridge = b;
+}
+
+// Re-exports: one import site for the whole contract.
+export { Commands, Events } from "./contract";
+export type {
+  CommandName,
+  CommandArgs,
+  CommandResult,
+  EventName,
+  EventPayloads,
+  IpcBridge,
+} from "./contract";
+export { MockLibrary } from "./mock";

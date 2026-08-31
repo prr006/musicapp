@@ -2,25 +2,25 @@
  * ⚠️ DEV-ONLY mock backend for the browser preview. ⚠️
  *
  * Simulates the Rust playback service (state machine + engine) so the UI can
- * be developed without Tauri/mpv. Semantics mirror `PlaybackCore` in
+ * be developed without Tauri/mpv/yt-dlp. Semantics mirror `PlaybackCore` in
  * melo-core: same status transitions, same EOF auto-next, same previous/
  * seek/volume policies. In the packaged desktop app the tauri bridge is used
  * and Rust is authoritative — this file never ships into product behavior.
+ * It is kept honest against the Rust core by mirrored test suites.
  *
- * What it simulates:
- *  - play/pause/seek/speed/volume/mute
- *  - EOF auto-next, repeat off/all/one, shuffle, history/previous
- *  - loading latency, buffering blips, an offline-style error trigger
- *  - session persistence (localStorage) and restore
- *  - search over the fictional sample catalog (query containing "err" fails,
- *    to exercise error states)
+ * Simulated: play/pause/seek/speed/volume/mute, EOF auto-next, repeat
+ * off/all/one, shuffle, history/previous, loading latency, buffering blips,
+ * search failure trigger (query containing "err"), session persistence,
+ * library (favorites/playlists/history/search-history) via MockLibrary.
  */
 
 import { parseLrc } from "@/lib/lyrics";
 import type {
+  LibraryData,
   Lyrics,
   PlaybackSnapshot,
   PlaybackStatus,
+  PlaylistLite,
   PositionUpdate,
   QueueItem,
   RepeatMode,
@@ -31,6 +31,7 @@ import type {
 import { DEFAULT_SETTINGS } from "@/types/domain";
 
 import type { CommandName, IpcBridge } from "./contract";
+import { MockLibrary } from "./mockLibrary";
 import { QueueMachine, type QueueStep } from "./mockQueue";
 import { SAMPLE_ALBUMS, SAMPLE_ARTISTS, SAMPLE_LYRICS, SAMPLE_TRACKS } from "./sampleData";
 
@@ -85,6 +86,9 @@ export function createMockBridge(): IpcBridge {
   // ---- state ---------------------------------------------------------
 
   const queue = restoreQueue();
+  const library = new MockLibrary();
+  library.subscribe(() => emit("library://updated", library.snapshot()));
+
   const state: MockState = {
     status: "idle",
     positionSecs: restored()?.positionSecs ?? 0,
@@ -98,6 +102,7 @@ export function createMockBridge(): IpcBridge {
   let resumeAt: number | null = state.positionSecs > 0 ? state.positionSecs : null;
   let eofHandled = false;
   let loadTimer: ReturnType<typeof setTimeout> | null = null;
+  let historyEnabled = true;
 
   function snapshot(): PlaybackSnapshot {
     const current = queue.current();
@@ -128,13 +133,12 @@ export function createMockBridge(): IpcBridge {
     persistSession();
   }
 
-  function publishPosition(force = false) {
+  function publishPosition() {
     const update: PositionUpdate = {
       positionSecs: state.positionSecs,
       durationSecs: state.durationSecs,
       speed: state.speed,
     };
-    void force;
     emit("playback://position", update);
   }
 
@@ -147,7 +151,7 @@ export function createMockBridge(): IpcBridge {
     ticker = setInterval(() => {
       if (state.status === "playing" || state.status === "buffering") {
         state.positionSecs = Math.min(
-          (state.durationSecs ?? Infinity),
+          state.durationSecs ?? Infinity,
           state.positionSecs + (TICK_MS / 1000) * state.speed,
         );
         publishPosition();
@@ -160,18 +164,31 @@ export function createMockBridge(): IpcBridge {
         }
       }
     }, TICK_MS);
-    // Don't keep the preview process awake when everything is idle.
-    // (interval is cheap enough; kept for simplicity.)
   }
   ensureTicker();
+
+  /** Finalize history when the current track is left (mirrors the service). */
+  function finalizeHistory(): void {
+    const track = queue.current()?.track;
+    if (track) library.finishRecentFor(track.id, state.positionSecs, completion());
+  }
+
+  function completion(): number {
+    const d = state.durationSecs;
+    if (!d || d <= 0) return 0;
+    if (state.positionSecs >= d - 1.0) return 1;
+    return Math.min(1, Math.max(0, state.positionSecs / d));
+  }
 
   function onEngineEnd(reason: "eof" | "error"): void {
     if (reason === "eof") {
       if (!eofHandled) {
         eofHandled = true;
+        finalizeHistory();
         applyStep(queue.advance(false));
       }
     } else {
+      finalizeHistory();
       state.status = "error";
       state.error = "Couldn't play this track.";
       publishPlayback();
@@ -197,17 +214,19 @@ export function createMockBridge(): IpcBridge {
         seekAbsolute(0);
         break;
       case "end-of-queue":
+        finalizeHistory();
         state.status = "idle";
         state.positionSecs = 0;
         state.bufferingPct = null;
         publishPlayback();
-        publishPosition(true);
+        publishPosition();
         break;
     }
   }
 
   function loadTrack(item: QueueItem, startAt?: number): void {
     if (loadTimer) clearTimeout(loadTimer);
+    finalizeHistory();
     const start = startAt ?? resumeAt ?? 0;
     resumeAt = null;
     state.durationSecs = item.track.durationSecs ?? null;
@@ -216,10 +235,10 @@ export function createMockBridge(): IpcBridge {
     state.bufferingPct = null;
     state.status = "loading";
     eofHandled = false;
+    if (historyEnabled) library.recordPlay(item.track);
     publishPlayback();
     publishQueue();
-    publishPosition(true);
-    // Simulated engine latency + a short buffering blip.
+    publishPosition();
     loadTimer = setTimeout(() => {
       state.status = "playing";
       publishPlayback();
@@ -233,7 +252,7 @@ export function createMockBridge(): IpcBridge {
         ? Math.min(Math.max(position, 0), state.durationSecs - 0.25)
         : Math.max(position, 0);
     state.positionSecs = clamped;
-    publishPosition(true);
+    publishPosition();
     publishPlayback();
   }
 
@@ -253,7 +272,7 @@ export function createMockBridge(): IpcBridge {
     }
     state.status = wantPaused ? "paused" : "playing";
     publishPlayback();
-    publishPosition(true);
+    publishPosition();
   }
 
   function handleUser(cmd: UserCmd): void {
@@ -268,6 +287,7 @@ export function createMockBridge(): IpcBridge {
         setPaused(true);
         break;
       case "stop":
+        finalizeHistory();
         state.status = "idle";
         state.positionSecs = 0;
         state.error = null;
@@ -345,6 +365,7 @@ export function createMockBridge(): IpcBridge {
         publishQueue();
         break;
       case "clear-all":
+        finalizeHistory();
         applyStep(queue.clearAll());
         publishQueue();
         publishPlayback();
@@ -400,7 +421,7 @@ export function createMockBridge(): IpcBridge {
     }, 400);
   }
 
-  // ---- invoke dispatch -------------------------------------------------
+  // ---- settings ---------------------------------------------------------
 
   const settings = loadSettings();
 
@@ -415,6 +436,7 @@ export function createMockBridge(): IpcBridge {
 
   function saveSettings(next: Settings): void {
     Object.assign(settings, next);
+    historyEnabled = next.historyEnabled;
     try {
       localStorage.setItem("melo:settings", JSON.stringify(settings));
     } catch {
@@ -422,9 +444,7 @@ export function createMockBridge(): IpcBridge {
     }
   }
 
-  async function delayed<T>(value: T): Promise<T> {
-    // Resolve immediately (microtask) so behavior is deterministic under
-    // fake-timer tests; engine latency is simulated by LOAD_LATENCY_MS.
+  async function nowait<T>(value: T): Promise<T> {
     return value;
   }
 
@@ -433,63 +453,85 @@ export function createMockBridge(): IpcBridge {
     invoke: (async (cmd: CommandName, ...args: unknown[]) => {
       const a = (args[0] ?? {}) as Record<string, unknown>;
       switch (cmd) {
+        // ---- state reads ----
         case "get_playback_state":
-          return delayed(snapshot());
+          return nowait(snapshot());
         case "get_queue":
-          return delayed(queue.view());
+          return nowait(queue.view());
+        case "get_library":
+          return nowait(library.snapshot());
+        case "get_diagnostics":
+          return nowait({
+            mpvProgram: "mock-engine",
+            ytdlpFound: true,
+            ytdlpPath: "mock://yt-dlp",
+            qualityLabel: "Mock quality · ≤128 kbps",
+          });
+
+        // ---- transport ----
         case "player_toggle_play":
-          return delayed(handleUser({ t: "toggle-play" }));
+          return nowait(handleUser({ t: "toggle-play" }));
         case "player_play":
-          return delayed(handleUser({ t: "play" }));
+          return nowait(handleUser({ t: "play" }));
         case "player_pause":
-          return delayed(handleUser({ t: "pause" }));
+          return nowait(handleUser({ t: "pause" }));
         case "player_stop":
-          return delayed(handleUser({ t: "stop" }));
+          return nowait(handleUser({ t: "stop" }));
         case "player_next":
-          return delayed(handleUser({ t: "next" }));
+          return nowait(handleUser({ t: "next" }));
         case "player_previous":
-          return delayed(handleUser({ t: "previous" }));
+          return nowait(handleUser({ t: "previous" }));
         case "player_seek_to":
-          return delayed(handleUser({ t: "seek-to", position: a.position as number }));
+          return nowait(handleUser({ t: "seek-to", position: a.position as number }));
         case "player_seek_by":
-          return delayed(handleUser({ t: "seek-by", delta: a.delta as number }));
+          return nowait(handleUser({ t: "seek-by", delta: a.delta as number }));
         case "player_set_volume":
-          return delayed(handleUser({ t: "set-volume", volume: a.volume as number }));
+          return nowait(handleUser({ t: "set-volume", volume: a.volume as number }));
         case "player_toggle_mute":
-          return delayed(handleUser({ t: "toggle-mute" }));
+          return nowait(handleUser({ t: "toggle-mute" }));
         case "player_set_speed":
-          return delayed(handleUser({ t: "set-speed", speed: a.speed as number }));
+          return nowait(handleUser({ t: "set-speed", speed: a.speed as number }));
+
+        // ---- queue ----
         case "queue_play_now":
-          return delayed(handleUser({ t: "play-track", track: a.track as Track }));
+          return nowait(handleUser({ t: "play-track", track: a.track as Track }));
         case "queue_add":
-          return delayed(handleUser({ t: "add", tracks: a.tracks as Track[] }));
+          return nowait(handleUser({ t: "add", tracks: a.tracks as Track[] }));
         case "queue_play_next":
-          return delayed(handleUser({ t: "play-next", tracks: a.tracks as Track[] }));
+          return nowait(handleUser({ t: "play-next", tracks: a.tracks as Track[] }));
         case "queue_remove":
-          return delayed(handleUser({ t: "remove", itemId: a.itemId as string }));
+          return nowait(handleUser({ t: "remove", itemId: a.itemId as string }));
         case "queue_jump_to":
-          return delayed(handleUser({ t: "jump-to", itemId: a.itemId as string }));
+          return nowait(handleUser({ t: "jump-to", itemId: a.itemId as string }));
         case "queue_move":
-          return delayed(handleUser({ t: "move", itemId: a.itemId as string, up: a.up as boolean }));
+          return nowait(handleUser({ t: "move", itemId: a.itemId as string, up: a.up as boolean }));
         case "queue_reorder":
-          return delayed(handleUser({ t: "reorder", from: a.from as number, to: a.to as number }));
+          return nowait(handleUser({ t: "reorder", from: a.from as number, to: a.to as number }));
         case "queue_clear_upcoming":
-          return delayed(handleUser({ t: "clear-upcoming" }));
+          return nowait(handleUser({ t: "clear-upcoming" }));
         case "queue_clear_all":
-          return delayed(handleUser({ t: "clear-all" }));
+          return nowait(handleUser({ t: "clear-all" }));
         case "queue_set_shuffle":
-          return delayed(handleUser({ t: "set-shuffle", enabled: a.enabled as boolean }));
+          return nowait(handleUser({ t: "set-shuffle", enabled: a.enabled as boolean }));
         case "queue_set_repeat":
-          return delayed(handleUser({ t: "set-repeat", mode: a.mode as RepeatMode }));
+          return nowait(handleUser({ t: "set-repeat", mode: a.mode as RepeatMode }));
         case "queue_start":
-          return delayed(
+          return nowait(
             handleUser({ t: "start", tracks: a.tracks as Track[], shuffle: a.shuffle as boolean }),
           );
-        case "get_settings":
-          return delayed({ ...settings });
-        case "set_settings":
-          saveSettings(a.settings as Settings);
-          return delayed(undefined);
+        case "queue_save_as_playlist": {
+          const title = String(a.title ?? "").trim();
+          if (!title) throw new Error("title must not be empty");
+          const view = queue.view();
+          const tracks = [view.current?.track, ...view.upcoming.map((u) => u.track)].filter(
+            (t): t is Track => !!t,
+          );
+          const pl = library.createPlaylist(title, null);
+          if (tracks.length) library.addTracks(pl.id, tracks);
+          return nowait(library.snapshot().playlists.find((p) => p.id === pl.id) ?? pl);
+        }
+
+        // ---- search + search history ----
         case "search": {
           const query = String(a.query ?? "").trim();
           if (query.toLowerCase().includes("err")) {
@@ -511,13 +553,93 @@ export function createMockBridge(): IpcBridge {
             ),
             playlists: [],
           };
-          return delayed(results);
+          library.pushSearch(query);
+          return nowait(results);
         }
+        case "search_history_clear":
+          return nowait(library.clearSearchHistory());
+        case "search_history_remove":
+          return nowait(library.removeSearch(String(a.query ?? "")));
+
+        // ---- favorites ----
+        case "favorites_toggle":
+          return nowait(library.toggleLike(a.track as Track));
+
+        // ---- playlists ----
+        case "playlist_create": {
+          const title = String(a.title ?? "").trim();
+          if (!title) throw new Error("title must not be empty");
+          const pl = library.createPlaylist(title, (a.description as string | null) ?? null);
+          return nowait(library.snapshot().playlists.find((p) => p.id === pl.id) ?? pl);
+        }
+        case "playlist_rename": {
+          const okRenamed = library.renamePlaylist(a.playlistId as string, String(a.title ?? ""));
+          if (!okRenamed) throw new Error("playlist not found");
+          return nowait(undefined);
+        }
+        case "playlist_set_description":
+          return nowait(undefined);
+        case "playlist_delete": {
+          if (!library.deletePlaylist(a.playlistId as string)) throw new Error("playlist not found");
+          return nowait(undefined);
+        }
+        case "playlist_duplicate": {
+          const copy = library.duplicatePlaylist(a.playlistId as string, String(a.title ?? ""));
+          if (!copy) throw new Error("playlist not found");
+          return nowait(copy);
+        }
+        case "playlist_add_tracks": {
+          const okAdded = library.addTracks(a.playlistId as string, a.tracks as Track[]);
+          if (!okAdded) throw new Error("playlist not found");
+          return nowait(undefined);
+        }
+        case "playlist_remove_track": {
+          const okRemoved = library.removeTrack(a.playlistId as string, a.trackId as string);
+          if (!okRemoved) throw new Error("track not in playlist");
+          return nowait(undefined);
+        }
+        case "playlist_reorder_track": {
+          const okMoved = library.reorderTrack(
+            a.playlistId as string,
+            a.from as number,
+            a.to as number,
+          );
+          if (!okMoved) throw new Error("invalid reorder");
+          return nowait(undefined);
+        }
+        case "playlist_tracks":
+          return nowait(library.playlistTracksOf(a.playlistId as string));
+
+        // ---- history ----
+        case "history_clear":
+          return nowait(library.clearHistory());
+        case "history_remove":
+          return nowait(library.removeHistoryEntry(a.entryId as string));
+
+        // ---- lyrics ----
         case "get_lyrics": {
-          const trackId = a.trackId as string;
-          const lrc = SAMPLE_LYRICS[trackId];
-          return lrc ? (parseLrc(lrc) as Lyrics) : null;
+          const track = a.track as Track;
+          if (track.id === "sample:3") {
+            return nowait({
+              synced: false,
+              provider: "lrclib",
+              lines: [],
+              instrumental: true,
+            } satisfies Lyrics);
+          }
+          const lrc = SAMPLE_LYRICS[track.id];
+          const parsed = lrc ? parseLrc(lrc) : null;
+          if (!parsed) return nowait(null);
+          return nowait({ ...parsed, instrumental: false });
         }
+
+        // ---- settings ----
+        case "get_settings":
+          return nowait({ ...settings });
+        case "set_settings":
+          saveSettings(a.settings as Settings);
+          return nowait(undefined);
+
         default:
           throw new Error(`mock: unknown command ${String(cmd)}`);
       }
@@ -533,9 +655,18 @@ export function createMockBridge(): IpcBridge {
       // Deliver initial state so late subscribers are consistent.
       if (event === "playback://state") queueMicrotask(() => fn(snapshot()));
       if (event === "queue://view") queueMicrotask(() => fn(queue.view()));
+      if (event === "library://updated") queueMicrotask(() => fn(library.snapshot()));
       return () => set.delete(fn);
     },
   };
 
+  // search history removal is handled above via MockLibrary.removeSearch.
+
   return bridge;
 }
+
+/** Exposed for tests: the mock library directly. */
+export { MockLibrary };
+
+/** Type re-export for the library snapshot used in tests. */
+export type { LibraryData, PlaylistLite };

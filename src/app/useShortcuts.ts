@@ -94,6 +94,8 @@ export function useShortcuts(): void {
           break;
         case "Escape":
           if (uiStore.get().nowPlayingOpen) openNowPlaying(false);
+          else if (uiStore.get().queueOpen) toggleQueue();
+          else if (uiStore.get().settingsOpen) uiStore.set({ settingsOpen: false });
           break;
         default:
           break;

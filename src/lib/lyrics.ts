@@ -45,13 +45,14 @@ export function parseLrc(input: string): Lyrics | null {
 
   if (lines.length === 0) return null;
   lines.sort((a, b) => (a.timeMs ?? 0) - (b.timeMs ?? 0));
-  return { synced: true, provider: "lrc", lines };
+  return { synced: true, provider: "lrc", lines, instrumental: false };
 }
 
 export function parsePlain(input: string, provider: string): Lyrics {
   return {
     synced: false,
     provider,
+    instrumental: false,
     lines: input.split("\n").map((l) => ({ timeMs: null, text: l.replace(/\r$/, "") })),
   };
 }

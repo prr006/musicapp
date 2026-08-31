@@ -14,7 +14,6 @@ export type ViewKey =
   | "albums"
   | "artists"
   | "playlists"
-  | "downloads"
   | "recently-played";
 
 export interface Toast {
@@ -32,6 +31,8 @@ interface UiState {
   settings: Settings;
   online: boolean;
   toasts: Toast[];
+  /** Playlist drill-down inside the Playlists view. */
+  openPlaylistId: string | null;
 }
 
 export const uiStore = createStore<UiState>({
@@ -43,6 +44,7 @@ export const uiStore = createStore<UiState>({
   settings: { ...DEFAULT_SETTINGS },
   online: typeof navigator === "undefined" ? true : navigator.onLine,
   toasts: [],
+  openPlaylistId: null,
 });
 
 let toastSeq = 1;
@@ -83,4 +85,13 @@ export function useUi(): UiState {
 
 export function useSettings(): Settings {
   return useStore(uiStore, (s) => s.settings);
+}
+
+export function openPlaylist(id: string | null): void {
+  uiStore.set({ openPlaylistId: id });
+}
+
+/** Close every overlay (used by Escape and route changes). */
+export function closeOverlays(): void {
+  uiStore.set({ nowPlayingOpen: false, queueOpen: false, settingsOpen: false });
 }

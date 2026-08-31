@@ -1,48 +1,54 @@
 /**
- * Real adapter: talks to the Rust backend over Tauri IPC.
- * This is the ONLY file in the frontend that touches @tauri-apps/api.
+ * Tauri IPC bridge: invokes Rust commands through the injected internals and
+ * subscribes to engine events via `@tauri-apps/api/event` (needs only the
+ * `core:event` permission that `core:default` provides).
+ *
+ * In the packaged app this is the ONLY path to the backend — the webview has
+ * no direct access to mpv, yt-dlp, or the filesystem (spec §3/§33).
  */
 
-import type { EventName, EventPayloads, IpcBridge, CommandName } from "./contract";
-import type { CommandArgs, CommandResult } from "./contract";
+import { listen } from "@tauri-apps/api/event";
 
-type TauriApi = typeof import("@tauri-apps/api/core");
-type TauriEvent = typeof import("@tauri-apps/api/event");
+import type { CommandName, EventName, EventPayloads, IpcBridge } from "./contract";
 
-let api: TauriApi | null = null;
-let evt: TauriEvent | null = null;
+type InvokeRaw = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
 
-export function tauriAvailable(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+function detectInvoke(win: Window): InvokeRaw | null {
+  const internals = (win as unknown as { __TAURI_INTERNALS__?: { invoke?: InvokeRaw } })
+    .__TAURI_INTERNALS__;
+  return internals?.invoke?.bind(internals) ?? null;
 }
 
-async function ensure() {
-  if (!api) api = await import("@tauri-apps/api/core");
-  if (!evt) evt = await import("@tauri-apps/api/event");
-}
+export function createTauriBridge(): IpcBridge {
+  const invokeRaw = detectInvoke(window);
+  if (!invokeRaw) {
+    throw new Error(
+      "MELO: Tauri internals not found. Start the app with `npm run tauri dev` or the packaged build — plain-browser mode uses the mock bridge.",
+    );
+  }
 
-export const tauriBridge: IpcBridge = {
-  kind: "tauri",
-  async invoke<K extends CommandName>(
-    cmd: K,
-    ...args: K extends keyof CommandArgs ? [CommandArgs[K]] : []
-  ): Promise<K extends keyof CommandResult ? CommandResult[K] : void> {
-    await ensure();
-    return api!.invoke(cmd, (args[0] ?? undefined) as Record<string, unknown> | undefined) as never;
-  },
-  on<E extends EventName>(event: E, handler: (payload: EventPayloads[E]) => void): () => void {
-    let unlisten: (() => void) | null = null;
-    let disposed = false;
-    void ensure().then(() => {
-      // Tauri v2 delivers the payload wrapped: { event, id, payload }
-      void evt!.listen<EventPayloads[E]>(event, (e) => handler(e.payload)).then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
+  const bridge: IpcBridge = {
+    kind: "tauri",
+    invoke: (async (cmd: CommandName, ...args: unknown[]) => {
+      const arg = (args[0] ?? {}) as Record<string, unknown>;
+      // JSON round-trip drops `undefined` fields serde would choke on.
+      const payload = JSON.parse(JSON.stringify(arg)) as Record<string, unknown>;
+      return invokeRaw(cmd, payload);
+    }) as IpcBridge["invoke"],
+    on: ((event: EventName, handler: (payload: never) => void) => {
+      let unlisten: (() => void) | null = null;
+      let stopped = false;
+      void listen(event, (e) => handler(e.payload as never)).then((un) => {
+        if (stopped) un();
+        else unlisten = un;
       });
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  },
-};
+      return () => {
+        stopped = true;
+        unlisten?.();
+      };
+    }) as IpcBridge["on"],
+  };
+  return bridge;
+}
+
+export type { EventPayloads };

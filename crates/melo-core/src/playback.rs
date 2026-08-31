@@ -1043,4 +1043,102 @@ mod tests {
         let cmds = c.handle_user(UserCommand::JumpToQueueItem { item_id: target });
         assert_eq!(loaded_url(&cmds), "v3");
     }
+
+    #[test]
+    fn rapid_next_previous_burst_keeps_state_consistent() {
+        let mut c = core();
+        c.handle_user(UserCommand::StartSequence {
+            tracks: (1..=5).map(track).collect(),
+            shuffle: false,
+        });
+        engine_loaded(&mut c);
+        // Next, Next, Previous, Next — only the last LoadTrack matters and
+        // the queue cursor must match the current track.
+        c.handle_user(UserCommand::Next);
+        c.handle_user(UserCommand::Next);
+        c.handle_user(UserCommand::Previous);
+        let cmds = c.handle_user(UserCommand::Next);
+        assert_eq!(loaded_url(&cmds), "v3");
+        engine_loaded(&mut c);
+        assert_eq!(c.state().current_track.as_ref().unwrap().title, "Track 3");
+        c.queue().assert_invariants().unwrap();
+        let view = c.queue().view();
+        assert_eq!(view.current.as_ref().unwrap().track.title, "Track 3");
+    }
+
+    #[test]
+    fn track_replacement_while_playing_does_not_error() {
+        let mut c = core();
+        c.handle_user(UserCommand::StartSequence {
+            tracks: vec![track(1), track(2)],
+            shuffle: false,
+        });
+        engine_loaded(&mut c);
+        let cmds = c.handle_user(UserCommand::PlayTrack { track: track(9) });
+        assert_eq!(loaded_url(&cmds), "v9");
+        // mpv ends the replaced file with end-file(stop) — expected, no error.
+        let a = c.handle_engine(EngineEvent::EndFile { reason: EndReason::Stop });
+        assert!(a.is_empty());
+        assert_eq!(c.state().status, PlaybackStatus::Loading);
+        assert!(c.state().error.is_none());
+        engine_loaded(&mut c);
+        assert_eq!(c.state().status, PlaybackStatus::Playing);
+        assert_eq!(c.state().current_track.as_ref().unwrap().title, "Track 9");
+    }
+
+    #[test]
+    fn pause_during_loading_is_remembered_and_not_lost() {
+        let mut c = core();
+        c.handle_user(UserCommand::PlayTrack { track: track(1) });
+        // User pauses while the engine is still loading the file.
+        c.handle_user(UserCommand::Pause);
+        assert_eq!(c.state().status, PlaybackStatus::Loading);
+        // Engine confirms the pause property, then the file finishes loading.
+        c.handle_engine(EngineEvent::PropertyPaused(true));
+        c.handle_engine(EngineEvent::FileLoaded);
+        assert_eq!(c.state().status, PlaybackStatus::Paused);
+        let cmds = c.handle_user(UserCommand::Play);
+        assert!(cmds.iter().any(|cmd| matches!(cmd, SetPaused(false))));
+        assert_eq!(c.state().status, PlaybackStatus::Playing);
+    }
+
+    #[test]
+    fn engine_restart_recovers_position_and_resumes() {
+        let mut c = core();
+        c.handle_user(UserCommand::StartSequence {
+            tracks: vec![track(1), track(2)],
+            shuffle: false,
+        });
+        engine_loaded(&mut c);
+        c.handle_engine(EngineEvent::PropertyTimePos(90.0));
+        // mpv dies mid-playback.
+        c.handle_engine(EngineEvent::ProcessExited { detail: "crash".into() });
+        assert_eq!(c.state().status, PlaybackStatus::Error);
+        // Supervisor restarts the engine and parks the track at 90s.
+        c.handle_user(UserCommand::LoadPausedAt { position: 90.0 });
+        assert_eq!(c.state().status, PlaybackStatus::Idle);
+        let cmds = c.handle_user(UserCommand::Play);
+        assert!(matches!(
+            cmds.as_slice(),
+            [LoadTrack { start_at: Some(90.0), .. }]
+        ));
+        engine_loaded(&mut c);
+        c.handle_engine(EngineEvent::PropertyTimePos(90.0));
+        assert_eq!(c.state().status, PlaybackStatus::Playing);
+        assert!((c.state().position_secs - 90.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn seek_during_loading_is_ignored_not_crashed() {
+        let mut c = core();
+        c.handle_user(UserCommand::PlayTrack { track: track(1) });
+        // Engine events race: a duration arrives before the file is loaded.
+        c.handle_engine(EngineEvent::PropertyDuration(200.0));
+        let cmds = c.handle_user(UserCommand::SeekTo { position: 50.0 });
+        // Track is loading (status Loading but track known): the seek is
+        // forwarded to the engine which queues it after load.
+        assert!(cmds.iter().any(|cmd| matches!(cmd, SeekAbsolute(50.0))));
+        engine_loaded(&mut c);
+        assert_eq!(c.state().status, PlaybackStatus::Playing);
+    }
 }

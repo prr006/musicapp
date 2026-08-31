@@ -1,83 +1,98 @@
 # MELO Roadmap
 
-Phases from the rebuild spec, with status and where each concern lives in the
-codebase. Rule: implement → test → manually verify → fix regressions → move on.
+Status of the rebuild spec's requirement groups, with where each concern
+lives. Rule: implement → test → manually verify → fix regressions → move on.
 
-## Phase 1 — Project skeleton + Tauri + React + Rust IPC ✅
+## ✅ Playback engine (mpv supervision, EOF, restart recovery)
 
-* Cargo workspace (`melo-core` pure crate + `melo-app` Tauri shell)
-* React + TS + Vite frontend, no UI framework
-* Typed IPC bridge (tauri + dev mock), events feed stores
-* Settings/session persistence (atomic JSON)
-* 46 frontend tests + ~60 Rust unit tests (queue/playback/lyrics/persistence)
-* Browser preview runs the full UI against the mock backend
+`src-tauri/src/mpv/*`, `src-tauri/src/playback_service.rs`,
+`crates/melo-core/src/playback.rs`, `player.rs`
 
-## Phase 2 — mpv integration ✅ (code complete; verify on Windows/macOS/Linux with mpv installed)
+* Supervised mpv child (Unix socket / Windows named pipe), `CREATE_NO_WINDOW`
+* Two-step load (pause normalize → loadfile), seek-after-loaded for starts
+* 30 s load watchdog → surfaced error, never a silent stall
+* Restart ≤ 3 with backoff; recovery parks paused then resumes only if it
+  was sounding; `engine://status` toasts at every step
+* Single EOF path (`EndFile{Eof}` from mpv), dedup safety net in core
+* `loading` ≠ `playing`; `buffering` reported by mpv percent-pause events
 
-* Supervised mpv child process, Unix socket / Windows named pipe transport
-* JSON IPC encode/decode with unit tests
-* Property observers (time-pos, duration, pause, eof, seeking, buffering,
-  volume, mute, speed, idle-active)
-* Restart with backoff (max 3), resume-at-position recovery
+## ✅ Queue
 
-## Phase 3 — Reliable playback state ✅
+`crates/melo-core/src/queue.rs` (+ mirrored `src/app/ipc/mockQueue.ts`)
 
-* `PlaybackCore` state machine: status transitions, seeks (clamped), volume/
-  mute/speed, buffering, errors, safety-net EOF dedup
-* One authoritative clock; throttled position publishing
-* Session restore (no autoplay; Play resumes at saved position)
+* Full CRUD incl. drag-reorder, move up/down, remove-current (auto-advance),
+  jump, clear upcoming/all, save queue as playlist
+* Deterministic seeded shuffle, repeat off/all/one, history walk-back
+* Invariant tests on both sides (Rust suite + `tests/queueMachine.test.ts`)
 
-## Phase 4 — Queue + EOF auto-next ✅
+## ✅ Search / discovery (yt-dlp)
 
-* Queue machine with play order/cursor/history, deterministic shuffle,
-  repeat off/all/one, all mutations safe mid-playback
-* EOF auto-next in Rust; user Stop can never advance the queue
+`src-tauri/src/ytdlp_proc.rs`, `crates/melo-core/src/ytdlp.rs`,
+`src/views/SearchView.tsx`
 
-## Phase 5 — YouTube search + yt-dlp resolution (next)
+* Flat YouTube search (`ytsearchN:`), title/artist/duration/artwork mapping
+  with defensive parsing (never crashes on missing metadata)
+* Loading / empty / error / retry states; play, play-next, add-to-queue,
+  context menu on results
+* Search history: push on search, chips on Home + Search idle, per-item
+  removal and clear-all
 
-* Implement `SearchProvider` + `Resolver` over yt-dlp JSON output
-* Worker pool for resolutions (never block the service loop)
-* Quality selection (honest labels), resolution cache, offline reuse
-* Search UI wiring (view already exists), artist/album pages
+## ✅ Library
 
-## Phase 6 — Library + favorites + playlists
+`crates/melo-core/src/library.rs`, `src/views/LibraryView.tsx`
 
-* SQLite repositories (`LibraryRepository` traits), likes, playlists CRUD +
-  reorder, folders/smart-playlist hooks in the model
+* Favorites (heart in lists + Now Playing), listening history with played
+  time and completion, playlists CRUD + duplicate + reorder + remove,
+  save-queue-as-playlist, album/artist grouping **only when metadata exists**
+* `library.json` format v3 with the track metadata index; atomic writes;
+  default-fill migrations from v1/v2
 
-## Phase 7 — Lyrics
+## ✅ Now Playing + lyrics
 
-* LRCLIB client in Rust (parse/model already in core + tests)
-* Cache per track; unsynced fallback; unavailable states
+`src/components/NowPlaying.tsx`, `src-tauri/src/lrclib.rs`,
+`crates/melo-core/src/lyrics.rs`, `src/lib/lyrics.ts`
 
-## Phase 8 — Now Playing + Mini Player polish
+* Full-screen artwork, transport, volume, speed, favorite, queue drawer
+* LRCLIB synced lyrics: robust LRC parse (offsets, multi-stamps, word-tag
+  stripping), click-to-seek, ±0.5 s sync nudge, instrumental + missing states
+* Highlighting is a pure function of the authoritative position
 
-* Dominant-color extraction from artwork, background blur, visualizer,
-  transitions (respect reduced-motion settings)
+## ✅ Persistence & restart behavior
 
-## Phase 9 — History + recommendations
+`crates/melo-core/src/persistence.rs`, `src-tauri/src/settings_store.rs`
 
-* History store (track, timestamps, completion), Recently Played,
-  Continue Listening, local recommendation heuristics
+* Settings, session (queue + position + volume + repeat/shuffle), library
+* Restart restores paused — never autoplays (spec §8)
 
-## Phase 10 — Downloads / offline
+## ✅ Desktop UI polish
 
-* Persistent download records, progress/pause/resume/cancel, storage usage,
-  offline playback through the local resolver
+`src/components/*`, `src/styles/*`
 
-## Phase 11 — Local music
+* Sidebar/home/search/library/queue drawer/mini player/settings/toasts
+* Skeleton + empty + error + offline states; context menus; dark/light/system
+  + accents + compact; responsive down to ~980 px; global shortcuts (§21)
 
-* Folder import/scan, metadata + artwork, local lyrics; `TrackSource::Local`
-  end-to-end through the existing player abstraction
+## ✅ Security
 
-## Phase 12 — Desktop integration + packaging
+`src-tauri/capabilities/default.json`, `tauri.conf.json`, command validation
 
-* Windows SMTC media keys, tray + close behavior, notifications, sleep timer
-  UI, installer (NSIS/MSI), startup profiling
+* `core:default` only; CSP; validated inputs; no innerHTML/secrets
 
-## Verification notes
+## ✅ Tests + build
 
-* `npm run test` — frontend suites (queue parity, lyrics parity, mock engine)
-* `cargo test` — Rust suites (run on a machine with the Rust toolchain; this
-  repo's CI sandbox could not install Rust)
-* `npm run tauri dev` — full app (requires mpv on PATH or `MELO_MPV_PATH`)
+* Rust: queue/playback/library/lyrics/ytdlp/persistence/IPC suites
+  (`cargo test`) — **cannot run in the Arena sandbox (no Rust toolchain
+  available there); run locally before trusting green**
+* Frontend: `npm test` (73 tests: queue mirror, clock, lyrics, library
+  flows, renderer smoke) — passing
+* `npm run build` (tsc + vite) — passing
+
+## Explicitly not built yet (honest labels in UI)
+
+* Volume normalization / crossfade / gapless tuning (preferences persist,
+  behavior pending)
+* Tray/minimize-to-tray, desktop notifications on track change
+* Downloads/offline cache (`downloadDir` preference persists only)
+* Artist/album **pages from search cards** (grouping views exist for
+  collected metadata)
+* Translations overlay for lyrics (`showLyricsTranslation` persists only)

@@ -11,6 +11,8 @@ The complete Tauri command/event surface. TypeScript mirrors live in
   State arrives via events. `get_*` commands exist for boot/re-sync.
 * Errors are human-readable strings; providers map to friendly copy via
   `ProviderError::user_message()`.
+* Inputs are validated in Rust (titles non-empty, ids present, numbers
+  clamped). The webview holds no capabilities beyond `core:default`.
 
 ## Commands
 
@@ -20,9 +22,11 @@ The complete Tauri command/event surface. TypeScript mirrors live in
 |----------------------|--------------------------|--------------------------------|
 | `get_playback_state` | `PlaybackSnapshot`       | boot / reconnect               |
 | `get_queue`          | `QueueView`              | boot / reconnect               |
+| `get_library`        | `LibraryData`            | boot + after `library://updated` |
 | `get_settings`       | `Settings`               |                                |
-| `get_lyrics`         | `Lyrics \| null`         | Phase 7 (model shipped)        |
-| `search`             | `SearchResults`          | Phase 5 (returns honest error) |
+| `get_diagnostics`    | `Diagnostics`            | mpv program, yt-dlp presence, quality label |
+| `get_lyrics`         | `Lyrics \| null`         | `{ track }` — LRCLIB lookup     |
+| `search`             | `SearchResults`          | `{ query, limit? }` — yt-dlp   |
 
 ### Transport
 
@@ -34,7 +38,7 @@ The complete Tauri command/event surface. TypeScript mirrors live in
 | `player_stop`        | —                             |
 | `player_next`        | — (skips even in repeat-one)  |
 | `player_previous`    | — (>3 s in → restart track)   |
-| `player_seek_to`     | `{ position: number }`        |
+| `player_seek_to`     | `{ position: number }` (clamped to duration) |
 | `player_seek_by`     | `{ delta: number }`           |
 | `player_set_volume`  | `{ volume: 0..100 }`          |
 | `player_toggle_mute` | —                             |
@@ -48,86 +52,52 @@ The complete Tauri command/event surface. TypeScript mirrors live in
 | `queue_add`         | `{ tracks: Track[] }`           |
 | `queue_play_next`   | `{ tracks: Track[] }`           |
 | `queue_remove`      | `{ itemId }`                    |
-| `queue_jump_to`     | `{ itemId }`                    |
-| `queue_move`        | `{ itemId, up: boolean }`       |
-| `queue_reorder`     | `{ from, to }` (upcoming index) |
-| `queue_clear_upcoming` | — (keeps current + history)  |
+| `queue_jump_to`     | `{ itemId }` (upcoming only)    |
+| `queue_move`        | `{ itemId, up }`                |
+| `queue_reorder`     | `{ from, to }` (drag-drop)      |
+| `queue_clear_upcoming` | —                           |
 | `queue_clear_all`   | —                               |
-| `queue_set_shuffle` | `{ enabled: boolean }`          |
-| `queue_set_repeat`  | `{ mode: "off" \| "all" \| "one" }` |
-| `queue_start`       | `{ tracks, shuffle }`           |
-| `set_settings`      | `{ settings: Settings }`        |
+| `queue_set_shuffle` | `{ enabled }` (deterministic re-seed) |
+| `queue_set_repeat`  | `{ mode: "off"\|"all"\|"one" }` |
+| `queue_start`       | `{ tracks, shuffle }` (replaces queue) |
+| `queue_save_as_playlist` | `{ title }` → `Playlist` (current + upcoming) |
 
-### Validation (rejected with a friendly error)
+### Library — favorites, playlists, history, search history
 
-* non-finite / out-of-range numbers (seek, volume, speed)
-* empty `tracks` arrays; tracks without a `sourceId`
-* empty `itemId`s
+| Command                    | Args / Returns                        |
+|----------------------------|---------------------------------------|
+| `favorites_toggle`         | `{ track }` → `boolean` (new state)   |
+| `playlist_create`          | `{ title, description? }` → `Playlist` |
+| `playlist_rename`          | `{ playlistId, title }`               |
+| `playlist_set_description` | `{ playlistId, description }`         |
+| `playlist_delete`          | `{ playlistId }`                      |
+| `playlist_duplicate`       | `{ playlistId, title }` → `Playlist`  |
+| `playlist_add_tracks`      | `{ playlistId, tracks }`              |
+| `playlist_remove_track`    | `{ playlistId, trackId }`             |
+| `playlist_reorder_track`   | `{ playlistId, from, to }`            |
+| `playlist_tracks`          | `{ playlistId }` → `Track[]`          |
+| `history_clear`            | —                                     |
+| `history_remove`           | `{ entryId }`                         |
+| `search_history_clear`     | —                                     |
+| `search_history_remove`    | `{ query }`                           |
+
+### Settings
+
+| Command        | Args                             |
+|----------------|----------------------------------|
+| `get_settings` | — → `Settings`                   |
+| `set_settings` | `{ settings }` (full document)   |
 
 ## Events
 
-### `playback://state` — `PlaybackSnapshot`
+| Event                  | Payload            | Cadence                        |
+|------------------------|--------------------|--------------------------------|
+| `playback://state`     | `PlaybackSnapshot` | on every state change          |
+| `playback://position`  | `PositionUpdate`   | ~4 Hz while sounding           |
+| `queue://view`         | `QueueView`        | on every queue mutation        |
+| `library://updated`    | `LibraryData`      | on every library mutation      |
+| `engine://status`      | `{ health, message }` | starting/running/restarting/dead |
 
-Emitted only when playback-relevant state changed.
-
-```ts
-{
-  status: "idle" | "loading" | "playing" | "paused" | "buffering" | "error",
-  currentItemId: string | null,
-  currentTrack: Track | null,
-  positionSecs: number,          // last known (see position stream)
-  durationSecs: number | null,
-  volume: number, muted: boolean, speed: number,
-  shuffle: boolean, repeat: "off" | "all" | "one",
-  bufferingPct: number | null,
-  error: string | null,
-  queueRev: number
-}
-```
-
-### `playback://position` — `PositionUpdate`
-
-Throttled to ≥0.2 s spacing while playing; forced on seek/pause/track change.
-This is the authoritative clock for progress bars and lyric highlighting.
-
-```ts
-{ positionSecs: number, durationSecs: number | null, speed: number }
-```
-
-### `queue://view` — `QueueView`
-
-Emitted on every queue mutation.
-
-```ts
-{ current: QueueItem | null, upcoming: QueueItem[], history: QueueItem[],
-  shuffle: boolean, repeat: RepeatMode, rev: number }
-```
-
-`history` is most-recent-first. `upcoming` is play order (what actually plays
-next), not storage order.
-
-### `engine://status` — `EngineStatus`
-
-```ts
-{ health: "starting" | "running" | "restarting" | "dead", message: string }
-```
-
-`message` is empty when healthy; otherwise it is ready for a toast (already
-user-friendly, e.g. "Is mpv installed and on PATH?").
-
-## Track shape (source-independent)
-
-```ts
-{
-  id: string,              // "yt:<videoId>" | "local:<hash>"
-  source: "youtube" | "local",
-  sourceId: string,
-  title: string,
-  artists: [{ id, name }],
-  album: { id, title } | null,
-  durationSecs: number | null,
-  artwork: string | null,
-  isLocal: boolean,
-  metadata: { year?, codec?, bitrateKbps?, genre?, isrc?, streamUrl?, extra? }
-}
-```
+The frontend derives everything else (active lyric line, progress bar
+smoothness between samples, "busy" state) from these payloads — it never
+owns playback truth.

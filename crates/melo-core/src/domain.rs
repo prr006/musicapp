@@ -165,10 +165,12 @@ pub struct Playlist {
     pub artwork: Option<String>,
     #[serde(default)]
     pub is_folder: bool,
-    #[serde(default)]
-    pub created_at: Option<String>,
-    #[serde(default)]
-    pub updated_at: Option<String>,
+    /// Epoch milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
+    /// Epoch milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
     #[serde(default)]
     pub track_count: u32,
 }
@@ -181,7 +183,9 @@ pub struct PlaylistTrack {
     pub track_id: TrackId,
     /// 0-based position inside the playlist.
     pub position: u32,
-    pub added_at: Option<String>,
+    /// Epoch milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<u64>,
 }
 
 /// One entry of listening history (spec §15).

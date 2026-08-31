@@ -10,7 +10,7 @@ import { Artwork } from "@/components/Artwork";
 import { Icon } from "@/components/Icon";
 import { useStore } from "@/app/store";
 import { queueStore } from "@/app/stores/playback";
-import { toggleQueue } from "@/app/stores/ui";
+import { toggleQueue, pushToast } from "@/app/stores/ui";
 import { artistLine, type QueueItem } from "@/types/domain";
 import { formatTime } from "@/lib/format";
 
@@ -19,6 +19,8 @@ export function QueuePanel() {
   const [tab, setTab] = useState<"queue" | "history">("queue");
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [title, setTitle] = useState("");
   const activeRef = useRef<HTMLDivElement | null>(null);
 
   // Keep the current item in view when tracks auto-advance.
@@ -28,24 +30,60 @@ export function QueuePanel() {
 
   const items = tab === "queue" ? view.upcoming : view.history;
 
+  function saveAsPlaylist(e: React.FormEvent) {
+    e.preventDefault();
+    const name = title.trim();
+    if (!name) return;
+    void api
+      .saveQueueAsPlaylist(name)
+      .then(() => pushToast(`Queue saved as “${name}”`, "success"))
+      .catch((err) => pushToast(String(err), "error"));
+    setTitle("");
+    setSaving(false);
+  }
+
   return (
     <aside className="queue-panel" role="dialog" aria-label="Queue">
       <div className="queue-head">
         <h3>Queue</h3>
         {tab === "queue" && view.upcoming.length > 0 && (
-          <button
-            className="button ghost"
-            style={{ padding: "5px 12px", fontSize: 12 }}
-            onClick={() => void api.clearUpcoming()}
-            title="Clear upcoming (keeps current)"
-          >
-            Clear
-          </button>
+          <>
+            <button
+              className="button ghost"
+              style={{ padding: "5px 12px", fontSize: 12 }}
+              onClick={() => setSaving((s) => !s)}
+              title="Save current + upcoming as a playlist"
+            >
+              Save as playlist
+            </button>
+            <button
+              className="button ghost"
+              style={{ padding: "5px 12px", fontSize: 12 }}
+              onClick={() => void api.clearUpcoming()}
+              title="Clear upcoming (keeps current)"
+            >
+              Clear
+            </button>
+          </>
         )}
         <button className="icon-button" style={{ width: 30, height: 30 }} onClick={toggleQueue} title="Close (Q)">
           <Icon name="x" size={15} />
         </button>
       </div>
+
+      {saving && (
+        <form className="inline-form" style={{ margin: "0 10px 10px" }} onSubmit={saveAsPlaylist}>
+          <input
+            autoFocus
+            placeholder="Playlist name"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+          <button className="button" type="submit" style={{ padding: "5px 12px", fontSize: 12 }}>
+            Save
+          </button>
+        </form>
+      )}
 
       <div className="queue-tabs">
         <button

@@ -1,11 +1,16 @@
+/**
+ * Sidebar navigation. Queue is a drawer toggle, not a route.
+ */
+
 import { Icon, type IconName } from "@/components/Icon";
-import { navigate, useUi, type ViewKey } from "@/app/stores/ui";
+import { queueStore } from "@/app/stores/playback";
+import { navigate, openPlaylist, toggleQueue, useUi, type ViewKey } from "@/app/stores/ui";
+import { useStore } from "@/app/store";
 
 interface NavEntry {
   view: ViewKey;
   label: string;
   icon: IconName;
-  phase?: string;
 }
 
 const MAIN: NavEntry[] = [
@@ -14,13 +19,12 @@ const MAIN: NavEntry[] = [
 ];
 
 const LIBRARY: NavEntry[] = [
+  { view: "playlists", label: "Playlists", icon: "playlist" },
   { view: "liked", label: "Liked Songs", icon: "heart" },
-  { view: "songs", label: "Songs", icon: "note", phase: "6" },
+  { view: "recently-played", label: "Recently Played", icon: "clock" },
+  { view: "songs", label: "Songs", icon: "note" },
   { view: "albums", label: "Albums", icon: "album" },
   { view: "artists", label: "Artists", icon: "artist" },
-  { view: "playlists", label: "Playlists", icon: "playlist", phase: "6" },
-  { view: "downloads", label: "Downloads", icon: "download", phase: "10" },
-  { view: "recently-played", label: "Recently Played", icon: "clock", phase: "9" },
 ];
 
 function NavButton({ entry }: { entry: NavEntry }) {
@@ -28,17 +32,22 @@ function NavButton({ entry }: { entry: NavEntry }) {
   return (
     <button
       className={`nav-item${active ? " active" : ""}`}
-      onClick={() => navigate(entry.view)}
+      onClick={() => {
+        if (entry.view === "playlists") openPlaylist(null);
+        navigate(entry.view);
+      }}
       title={entry.label}
     >
       <Icon name={entry.icon} size={19} />
       <span className="nav-label">{entry.label}</span>
-      {entry.phase && <span className="phase-tag">P{entry.phase}</span>}
     </button>
   );
 }
 
 export function Sidebar() {
+  const queueOpen = useUi().queueOpen;
+  const upcoming = useStore(queueStore, (s) => s.upcoming.length);
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -57,8 +66,18 @@ export function Sidebar() {
         <NavButton key={e.view} entry={e} />
       ))}
 
+      <button
+        className={`nav-item${queueOpen ? " active" : ""}`}
+        onClick={toggleQueue}
+        title="Queue"
+      >
+        <Icon name="queue" size={19} />
+        <span className="nav-label">Queue</span>
+        {upcoming > 0 && <span className="nav-badge">{upcoming}</span>}
+      </button>
+
       <div className="sidebar-footer">
-        <span>v0.1 · Phase 1</span>
+        <span>v0.1</span>
       </div>
     </aside>
   );

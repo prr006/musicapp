@@ -1,35 +1,28 @@
 /**
- * Wires backend events → stores. Mounted once in <App/>.
+ * Wires backend events → stores + initial sync. Mounted once in <App/>.
  */
 
 import { useEffect } from "react";
 
 import * as api from "@/app/api";
-import { Events } from "@/app/ipc";
 import { getBridge, tauriAvailable } from "@/app/ipc";
-import { onPlaybackState, onPosition, onQueueView } from "@/app/stores/playback";
+import { wireEvents } from "@/app/wiring";
 import { applySettings, pushToast, uiStore } from "@/app/stores/ui";
+import { onLibraryUpdated } from "@/app/stores/library";
+import { onPlaybackState, onQueueView } from "@/app/stores/playback";
 
 export function useAppBridge(): void {
   useEffect(() => {
-    const bridge = getBridge();
+    const wiring = wireEvents();
 
-    // Initial sync (events cover everything after this point).
+    // Initial sync — read-only commands; restart must NOT auto-play (§8).
     void api.getPlaybackState().then(onPlaybackState).catch(noop);
     void api.getQueue().then(onQueueView).catch(noop);
     void api.getSettings().then(applySettings).catch(noop);
-
-    const offs = [
-      bridge.on(Events.playbackState, onPlaybackState),
-      bridge.on(Events.playbackPosition, onPosition),
-      bridge.on(Events.queueView, onQueueView),
-      bridge.on(Events.engineStatus, (status) => {
-        if (status.message) pushToast(status.message, status.health === "dead" ? "error" : "info");
-      }),
-    ];
+    void api.getLibrary().then(onLibraryUpdated).catch(noop);
 
     if (!tauriAvailable()) {
-      pushToast("Browser preview — running against the mock backend", "info");
+      pushToast("Browser preview — mock backend (no real playback)", "info");
     }
 
     // Online/offline awareness (spec §30).
@@ -39,15 +32,18 @@ export function useAppBridge(): void {
     };
     const goOffline = () => {
       uiStore.set({ online: false });
-      pushToast("You're offline. Local and downloaded music keeps playing.", "info");
+      pushToast("You're offline — playback of local files continues", "info");
     };
     window.addEventListener("online", goOnline);
     window.addEventListener("offline", goOffline);
 
+    // Re-read library when the window regains focus (external changes are
+    // not expected, but this keeps the mirror honest for cheap).
     return () => {
-      offs.forEach((off) => off());
+      wiring.dispose();
       window.removeEventListener("online", goOnline);
       window.removeEventListener("offline", goOffline);
+      void getBridge();
     };
   }, []);
 }

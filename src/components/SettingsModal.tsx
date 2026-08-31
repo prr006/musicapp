@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 import * as api from "@/app/api";
 import { Icon } from "@/components/Icon";
 import { applySettings, pushToast, uiStore, useSettings } from "@/app/stores/ui";
-import type { AudioQuality, CloseAction, Settings, Theme } from "@/types/domain";
+import type { AudioQuality, CloseAction, Diagnostics, Settings, Theme } from "@/types/domain";
 
 const ACCENTS = ["violet", "ocean", "emerald", "sunset", "amber"] as const;
 
@@ -16,8 +16,16 @@ export function SettingsModal() {
   const current = useSettings();
   const [draft, setDraft] = useState<Settings>(current);
   const [saving, setSaving] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
 
   useEffect(() => setDraft(current), [current]);
+
+  useEffect(() => {
+    void api
+      .getDiagnostics()
+      .then(setDiagnostics)
+      .catch(() => setDiagnostics(null));
+  }, []);
 
   async function save() {
     setSaving(true);
@@ -105,7 +113,7 @@ export function SettingsModal() {
               <option value="highest">Highest available</option>
             </select>
           </Row>
-          <Row label="Volume normalization" hint="Even loudness across tracks (Phase 12).">
+          <Row label="Volume normalization" hint="Even loudness across tracks (not yet implemented).">
             <Switch
               on={draft.volumeNormalization}
               onChange={(v) => setDraft({ ...draft, volumeNormalization: v })}
@@ -142,7 +150,7 @@ export function SettingsModal() {
               onChange={(v) => setDraft({ ...draft, resumeLastSession: v })}
             />
           </Row>
-          <Row label="When MELO closes" hint="Tray integration arrives in Phase 12.">
+          <Row label="When MELO closes" hint="Tray integration is not implemented yet.">
             <select
               className="setting-select"
               value={draft.closeAction}
@@ -151,15 +159,43 @@ export function SettingsModal() {
               }
             >
               <option value="quit">Quit</option>
-              <option value="minimize-to-tray">Minimize to tray (Phase 12)</option>
+              <option value="minimize-to-tray" disabled>
+                Minimize to tray (not implemented)
+              </option>
             </select>
           </Row>
-          <Row label="Save listening history" hint="Powers recommendations (Phase 9).">
+          <Row label="Save listening history" hint="Powers Recently Played and recommendations.">
             <Switch
               on={draft.historyEnabled}
               onChange={(v) => setDraft({ ...draft, historyEnabled: v })}
             />
           </Row>
+        </div>
+
+        <div className="settings-group">
+          <h4>Diagnostics</h4>
+          {diagnostics ? (
+            <div className="diag-box">
+              <div>
+                mpv: <code>{diagnostics.mpvProgram}</code>
+              </div>
+              <div>
+                yt-dlp:{" "}
+                {diagnostics.ytdlpFound ? (
+                  <code>{diagnostics.ytdlpPath}</code>
+                ) : (
+                  <span style={{ color: "var(--danger)" }}>
+                    not found — YouTube search/streaming unavailable, local files still play
+                  </span>
+                )}
+              </div>
+              <div>
+                Audio quality: <code>{diagnostics.qualityLabel}</code>
+              </div>
+            </div>
+          ) : (
+            <div className="diag-box">Diagnostics unavailable.</div>
+          )}
         </div>
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>

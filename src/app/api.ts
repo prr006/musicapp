@@ -1,31 +1,35 @@
 /**
  * Typed API facade over the IPC bridge. Components call these — never the
- * bridge directly — so the command surface stays auditable in one file.
+ * bridge directly — so the entire command surface is auditable in one file.
+ * Every function returns the backend's answer; errors propagate to callers
+ * (views catch and toast them).
  */
 
 import { getBridge } from "@/app/ipc";
-import type { CommandName } from "@/app/ipc";
-import type { CommandArgs, CommandResult } from "@/app/ipc";
+import type { CommandArgs, CommandName, CommandResult } from "@/app/ipc";
 import type { Track } from "@/types/domain";
-
-type WithArgs = { [K in keyof CommandArgs]: K }[keyof CommandArgs];
 
 export async function call<K extends CommandName>(
   cmd: K,
-  ...args: K extends WithArgs ? [CommandArgs[K]] : []
+  ...args: unknown[]
 ): Promise<K extends keyof CommandResult ? CommandResult[K] : void> {
-  return getBridge().invoke(cmd, ...(args as never));
+  const bridge = getBridge();
+  // The runtime bridge is loosely typed; cast through it once, here.
+  const invoke = bridge.invoke as (c: CommandName, ...a: unknown[]) => Promise<unknown>;
+  return invoke(cmd, ...args) as Promise<K extends keyof CommandResult ? CommandResult[K] : void>;
 }
 
 // ---- state ---------------------------------------------------------------
 
 export const getPlaybackState = () => call("get_playback_state");
 export const getQueue = () => call("get_queue");
+export const getLibrary = () => call("get_library");
 export const getSettings = () => call("get_settings");
+export const getDiagnostics = () => call("get_diagnostics");
 export const setSettings = (settings: CommandArgs["set_settings"]["settings"]) =>
   call("set_settings", { settings });
 export const search = (query: string, limit?: number) => call("search", { query, limit });
-export const getLyrics = (trackId: string) => call("get_lyrics", { trackId });
+export const getLyrics = (track: Track) => call("get_lyrics", { track });
 
 // ---- transport -----------------------------------------------------------
 
@@ -56,3 +60,34 @@ export const setShuffle = (enabled: boolean) => call("queue_set_shuffle", { enab
 export const setRepeat = (mode: "off" | "all" | "one") => call("queue_set_repeat", { mode });
 export const startSequence = (tracks: Track[], shuffle: boolean) =>
   call("queue_start", { tracks, shuffle });
+export const saveQueueAsPlaylist = (title: string) => call("queue_save_as_playlist", { title });
+
+// ---- library: favorites ----------------------------------------------------
+
+export const toggleFavorite = (track: Track) => call("favorites_toggle", { track });
+
+// ---- library: playlists ----------------------------------------------------
+
+export const createPlaylist = (title: string, description?: string | null) =>
+  call("playlist_create", { title, description: description ?? null });
+export const renamePlaylist = (playlistId: string, title: string) =>
+  call("playlist_rename", { playlistId, title });
+export const setPlaylistDescription = (playlistId: string, description: string | null) =>
+  call("playlist_set_description", { playlistId, description });
+export const deletePlaylist = (playlistId: string) => call("playlist_delete", { playlistId });
+export const duplicatePlaylist = (playlistId: string, title: string) =>
+  call("playlist_duplicate", { playlistId, title });
+export const addTracksToPlaylist = (playlistId: string, tracks: Track[]) =>
+  call("playlist_add_tracks", { playlistId, tracks });
+export const removeTrackFromPlaylist = (playlistId: string, trackId: string) =>
+  call("playlist_remove_track", { playlistId, trackId });
+export const reorderPlaylistTrack = (playlistId: string, from: number, to: number) =>
+  call("playlist_reorder_track", { playlistId, from, to });
+export const playlistTracks = (playlistId: string) => call("playlist_tracks", { playlistId });
+
+// ---- library: history + search history --------------------------------------
+
+export const clearHistory = () => call("history_clear");
+export const removeHistoryEntry = (entryId: string) => call("history_remove", { entryId });
+export const clearSearchHistory = () => call("search_history_clear");
+export const removeSearchHistory = (query: string) => call("search_history_remove", { query });

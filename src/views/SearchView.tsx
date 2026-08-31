@@ -10,7 +10,8 @@ import * as api from "@/app/api";
 import { Artwork } from "@/components/Artwork";
 import { TrackList } from "@/components/TrackList";
 import { getBridge } from "@/app/ipc";
-import { pushToast } from "@/app/stores/ui";
+import { useSearchHistory } from "@/app/stores/library";
+import { setSearchQuery, pushToast } from "@/app/stores/ui";
 import type { SearchResults } from "@/types/domain";
 
 function formatFollowers(n: number): string {
@@ -29,6 +30,7 @@ export function SearchView({ query }: { query: string }) {
   const [state, setState] = useState<SearchState>({ kind: "idle" });
   const [cursor, setCursor] = useState(0);
   const isMock = getBridge().kind === "mock";
+  const history = useSearchHistory();
   const latestRef = useRef(0);
 
   useEffect(() => {
@@ -88,8 +90,26 @@ export function SearchView({ query }: { query: string }) {
           <h3>Search everything</h3>
           <p>
             Songs, artists, albums, playlists. Press <kbd>Ctrl K</kbd> anywhere.
-            {isMock && " Try appending “err” to see failure states."}
+            {isMock && " In the browser preview, append “err” to see failure states."}
           </p>
+          {history.length > 0 && (
+            <div className="chip-row" style={{ justifyContent: "center", marginTop: 14 }}>
+              {history.slice(0, 8).map((q) => (
+                <button key={q} className="chip" onClick={() => setSearchQuery(q)}>
+                  {q}
+                </button>
+              ))}
+              <button
+                className="chip subtle"
+                title="Clear search history"
+                onClick={() =>
+                  void api.clearSearchHistory().catch((e) => pushToast(String(e), "error"))
+                }
+              >
+                Clear
+              </button>
+            </div>
+          )}
         </div>
       )}
 

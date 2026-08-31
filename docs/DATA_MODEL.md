@@ -1,82 +1,103 @@
 # MELO Data Model
 
-Domain models live in `crates/melo-core/src/domain.rs` (Rust) and are mirrored
-in `src/types/domain.ts` (TypeScript). Field names cross the boundary in
-camelCase via serde. **Change both files in the same commit.**
+Authoritative shapes live in Rust (`crates/melo-core/src/domain.rs`) and are
+mirrored 1:1 in TypeScript (`src/types/domain.ts`) — field names are the
+serde `camelCase` output. Change both in the same commit.
 
-## Design rules
-
-1. **`Track` is source-independent.** Provider knowledge is confined to
-   `source`, `sourceId`, and `metadata`. Nothing in playback, queue, lyrics,
-   or UI may branch on YouTube specifics (resolution is a `Resolver` concern).
-2. **Ids are namespaced strings** (`yt:…`, `local:…`, `qi:…`, `pl:…`) so
-   mistaken identity is obvious and IPC stays friction-free.
-3. **Future-facing fields ship early** (playlist folders, lyric translation,
-   download states) so later phases need no migrations of the core model.
-
-## Entities
+## Track
 
 ```text
-Track          id, source (youtube|local), sourceId, title, artists[ArtistRef],
-               album? AlbumRef, durationSecs?, artwork?, isLocal, metadata
-ArtistRef      id, name
-AlbumRef       id, title
-TrackMetadata  year?, codec?, bitrateKbps?, genre?, isrc?, streamUrl?, extra{}
-
-Artist         id, name, artwork?, description?, followerCount?, isFollowed
-Album          id, title, artists[], year?, releaseDate?, artwork?,
-               trackCount, durationSecs?, isSaved
-
-Playlist       id, parentId? (folders), kind (manual|smart), title,
-               description?, artwork?, isFolder, createdAt?, updatedAt?,
-               trackCount
-PlaylistTrack  playlistId, trackId, position, addedAt?
-
-QueueItem      id (qi:n), track            ← a track may appear N times
-QueueView      current?, upcoming[], history[] (most-recent-first),
-               shuffle, repeat, rev
-
-PlaybackSnapshot  status, currentItemId?, currentTrack?, positionSecs,
-                  durationSecs?, volume, muted, speed, shuffle, repeat,
-                  bufferingPct?, error?, queueRev
-PositionUpdate    positionSecs, durationSecs?, speed
-
-Lyrics         synced, provider, lines[LyricLine], durationMs?
-LyricLine      timeMs?, text, translation?, pronunciation?
-
-HistoryEntry   id, track, playedAt, playedSecs, completion (0..1)
-Download       id, trackId, state (queued|downloading|paused|completed|
-               failed|cancelled), progress, bytesTotal?, bytesDownloaded?,
-               filePath?, createdAt, error?
-
-Settings       theme, accent, animations, reducedMotion, compact,
-               showLyricsTranslation, audioQuality (low|standard|high|highest),
-               volumeNormalization, crossfadeSecs (0=off), gapless,
-               autoplaySimilar, resumeLastSession, closeAction
-               (quit|minimize-to-tray), notificationsTrackChange,
-               historyEnabled, downloadDir?
+Track {
+  id, source ("youtube"|"local"), sourceId,
+  title, artists: [ArtistRef { id, name }],
+  album: AlbumRef { id, title } | null,
+  durationSecs: number | null,
+  artwork: string | null,
+  isLocal: bool,
+  metadata: { year?, codec?, bitrateKbps?, genre?, isrc?, streamUrl?, extra? }
+}
 ```
 
-## Queue machine model
+Every consumer degrades gracefully: missing artist → "Unknown artist",
+missing album → hidden album column / no album grouping, missing duration →
+`--:--`, missing artwork → deterministic gradient tile.
+
+## Queue
 
 ```text
-items   : Vec<QueueItem>     canonical storage; display order when shuffle off
-order   : Vec<QueueItemId>   play sequence — always a permutation of items
-cursor  : Option<usize>      index into order of the loaded item
-history : Vec<QueueItemId>   bounded (500), most recent last
+QueueItem { id, track }
+QueueView { current: QueueItem|null, upcoming: [QueueItem], history: [QueueItem],
+            shuffle: bool, repeat: "off"|"all"|"one", rev }
 ```
 
-Invariants are asserted in tests (see ARCHITECTURE.md §5).
+`rev` increments on every mutation; the frontend uses it for cheap change
+detection. History is capped at 500, most-recent-first.
 
-## Storage plan
+## Playback
 
-| Data                          | Phase 1        | Later                    |
-|-------------------------------|----------------|--------------------------|
-| Settings                      | `settings.json`| unchanged                |
-| Session (queue/audio/pos)     | `session.json` | unchanged                |
-| Library, favorites, playlists | —              | SQLite (Phase 6)         |
-| History                       | —              | SQLite (Phase 9)         |
-| Downloads                     | —              | SQLite + files (Phase 10)|
+```text
+PlaybackStatus = idle | loading | playing | paused | buffering | error
+PlaybackSnapshot { status, currentItemId, currentTrack, positionSecs,
+                   durationSecs, volume (0–100), muted, speed,
+                   shuffle, repeat, bufferingPct, error, queueRev }
+PositionUpdate { positionSecs, durationSecs, speed }
+```
 
-The JSON stores stay: they are small, human-debuggable, and atomic
-(tmp + rename). SQLite appears only where collections grow unboundedly.
+`loading` ≠ `playing`: a track being resolved/loaded never shows as playing,
+and `buffering` is a sub-state of sounding playback.
+
+## Library (`library.json`, format v3)
+
+```text
+LibraryData {
+  version: 3,
+  liked: [Track]                       // newest first
+  playlists: [Playlist]
+  playlistTracks: { [playlistId]: [ { playlistId, trackId, position, addedAt } ] }
+  history: [HistoryEntry]              // newest first, cap 2000
+  searchHistory: [string]              // newest first, cap 20
+  tracks: { [trackId]: Track }         // metadata index (v3)
+}
+HistoryEntry { id, track, playedAt (epoch ms), playedSecs, completion (0–1) }
+```
+
+The `tracks` index remembers every track the library ever referenced (liked,
+played, or added to a playlist) so playlist rows resolve without a live
+provider. v1/v2 files load via serde default-filling; the index is
+backfilled from liked + history on open. Playlist timestamps are epoch
+milliseconds.
+
+## Session (`session.json`)
+
+```text
+Session { queue: [SessionItem], currentIndex, volume, muted, repeat, shuffle, savedAt }
+SessionItem { track, positionSecs }
+```
+
+Restored **paused** on startup (spec §8: restart never autoplays).
+
+## Settings (`settings.json`)
+
+```text
+Settings { theme ("dark"|"light"|"system"), accent, animations, compact,
+           showLyricsTranslation, audioQuality ("low".."highest"),
+           volumeNormalization, crossfadeSecs, gapless, autoplaySimilar,
+           resumeLastSession, closeAction ("quit"|"minimize-to-tray"),
+           notificationsTrackChange, historyEnabled, downloadDir }
+```
+
+Features not yet implemented (volume normalization, crossfade, tray,
+notifications) are present as persisted preferences with honest UI labels —
+they do nothing until built, and say so.
+
+## Lyrics
+
+```text
+Lyrics { synced, provider, lines: [ { timeMs|null, text, translation?, pronunciation? } ],
+         durationMs?, instrumental }
+LyricLine.timeMs == null → unsynced/plain line
+```
+
+Matching rule: a lookup is only accepted when LRCLIB's duration agrees with
+the track's by ≥ 25 % (`best_match`). Instrumental tracks are marked by the
+provider and rendered as such.

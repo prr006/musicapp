@@ -1,4 +1,6 @@
 //! Settings persistence (JSON in the app config dir, atomic writes).
+//! Shared (Arc) between the IPC layer and the playback service so audio
+//! quality changes apply to the next resolved track without a restart.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -13,10 +15,7 @@ pub struct SettingsStore {
 impl SettingsStore {
     pub fn load(config_dir: &Path) -> Self {
         let path = config_dir.join("settings.json");
-        let settings = load_json(&path)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
+        let settings = load_json(&path).ok().flatten().unwrap_or_default();
         Self { path, inner: Mutex::new(settings) }
     }
 

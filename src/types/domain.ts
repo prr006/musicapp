@@ -96,7 +96,6 @@ export interface Settings {
   theme: Theme;
   accent: string;
   animations: boolean;
-  reducedMotion: boolean;
   compact: boolean;
   showLyricsTranslation: boolean;
   audioQuality: AudioQuality;
@@ -115,7 +114,6 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "dark",
   accent: "violet",
   animations: true,
-  reducedMotion: false,
   compact: false,
   showLyricsTranslation: false,
   audioQuality: "standard",
@@ -130,6 +128,13 @@ export const DEFAULT_SETTINGS: Settings = {
   downloadDir: null,
 };
 
+export interface Diagnostics {
+  mpvProgram: string;
+  ytdlpFound: boolean;
+  ytdlpPath: string | null;
+  qualityLabel: string;
+}
+
 export interface LyricLine {
   timeMs: number | null;
   text: string;
@@ -142,6 +147,8 @@ export interface Lyrics {
   provider: string;
   lines: LyricLine[];
   durationMs?: number;
+  /** Provider flagged the track as instrumental. */
+  instrumental: boolean;
 }
 
 export interface SearchResults {
@@ -150,6 +157,37 @@ export interface SearchResults {
   albums: AlbumLite[];
   playlists: PlaylistLite[];
   query: string;
+}
+
+export interface HistoryEntry {
+  id: string;
+  track: Track;
+  playedAt: number;
+  playedSecs: number;
+  completion: number;
+}
+
+export interface PlaylistDetail {
+  playlist: PlaylistLite & {
+    createdAt: number | null;
+    updatedAt: number | null;
+    description: string | null;
+    kind: "manual" | "smart";
+    isFolder: boolean;
+    parentId: string | null;
+  };
+  tracks: Track[];
+}
+
+export interface LibraryData {
+  version: number;
+  liked: Track[];
+  playlists: PlaylistLite[];
+  playlistTracks: Record<string, { playlistId: string; trackId: string; position: number; addedAt: number | null }[]>;
+  history: HistoryEntry[];
+  searchHistory: string[];
+  /** Metadata index (v3): every track the library ever referenced. */
+  tracks: Record<string, Track>;
 }
 
 export interface ArtistLite {
@@ -177,6 +215,8 @@ export interface PlaylistLite {
   description: string | null;
   artwork: string | null;
   trackCount: number;
+  createdAt?: number | null;
+  updatedAt?: number | null;
 }
 
 export interface EngineStatusEvent {

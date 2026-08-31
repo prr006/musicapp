@@ -54,10 +54,8 @@ pub struct Settings {
     /// CSS accent identifier (`violet`, `ocean`, `sunset`, ...).
     #[serde(default = "default_accent")]
     pub accent: String,
-    #[serde(default)]
-    pub animations: bool,
     #[serde(default = "default_true")]
-    pub reduced_motion: bool,
+    pub animations: bool,
     #[serde(default)]
     pub compact: bool,
     #[serde(default)]

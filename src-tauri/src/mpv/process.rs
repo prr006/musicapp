@@ -73,11 +73,13 @@ pub struct MpvEndpoint {
     pub program: String,
     /// Socket path (unix) or pipe name (windows), already platform-shaped.
     pub ipc_endpoint: String,
+    /// Explicit yt-dlp binary for mpv's ytdl_hook (Windows-friendly).
+    pub ytdl_path: Option<String>,
     #[cfg(unix)]
     socket_path: std::path::PathBuf,
 }
 
-pub fn endpoint_for(program: &str) -> MpvEndpoint {
+pub fn endpoint_for(program: &str, ytdl_path: Option<String>) -> MpvEndpoint {
     #[cfg(unix)]
     {
         let path = std::env::temp_dir().join(format!("melo-mpv-{}.sock", std::process::id()));
@@ -86,6 +88,7 @@ pub fn endpoint_for(program: &str) -> MpvEndpoint {
         MpvEndpoint {
             program: program.to_string(),
             ipc_endpoint: path.to_string_lossy().into_owned(),
+            ytdl_path,
             socket_path: path,
         }
     }
@@ -94,14 +97,15 @@ pub fn endpoint_for(program: &str) -> MpvEndpoint {
         MpvEndpoint {
             program: program.to_string(),
             ipc_endpoint: format!(r"\\.\pipe\melo-mpv-{}", std::process::id()),
+            ytdl_path,
         }
     }
 }
 
 /// Spawn the mpv child process.
 fn spawn_process(endpoint: &MpvEndpoint) -> Result<Child, String> {
-    Command::new(&endpoint.program)
-        .arg("--idle=yes")
+    let mut cmd = Command::new(&endpoint.program);
+    cmd.arg("--idle=yes")
         .arg("--no-terminal")
         .arg("--no-video")
         .arg("--audio-display=no")
@@ -109,11 +113,23 @@ fn spawn_process(endpoint: &MpvEndpoint) -> Result<Child, String> {
         // Network streams: stall → buffering events instead of hard errors.
         .arg("--cache=yes")
         .arg("--demuxer-max-bytes=64M")
-        .arg(format!("--input-ipc-server={}", endpoint.ipc_endpoint))
+        // yt-dlp: explicit path when we found one (mpv only checks PATH and
+        // its own config dir — this makes portable Windows installs work).
+        .arg("--ytdl=yes");
+    if let Some(ytdl) = &endpoint.ytdl_path {
+        cmd.arg(format!("--script-opts=ytdl_hook-ytdl_path={ytdl}"));
+    }
+    cmd.arg(format!("--input-ipc-server={}", endpoint.ipc_endpoint))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.spawn()
         .map_err(|e| format!("could not start mpv ({}): {e}", endpoint.program))
 }
 
@@ -188,7 +204,8 @@ pub fn start(
         std::thread::Builder::new()
             .name("melo-mpv-writer".into())
             .spawn(move || {
-                let mut next_req = move || counter.fetch_add(1, Ordering::Relaxed);
+                let next_req =
+                    move || counter.fetch_add(1, Ordering::Relaxed);
                 // Initial observes + audio settings.
                 let mut boot = ipc::encode_observe_all(next_req());
                 boot.push(ipc::encode_command(&MpvCommand::SetVolume(initial_volume), next_req()));
@@ -199,9 +216,11 @@ pub fn start(
                     }
                 }
                 while let Ok(cmd) = cmd_rx.recv() {
-                    let line = ipc::encode_command(&cmd, next_req());
-                    if write_line(&mut out, &line).is_err() {
-                        break;
+                    // LoadUrl expands into multiple lines (pause + loadfile).
+                    for line in ipc::encode_command_seq(&cmd, &mut next_req) {
+                        if write_line(&mut out, &line).is_err() {
+                            break;
+                        }
                     }
                 }
             })

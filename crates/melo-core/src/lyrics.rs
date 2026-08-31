@@ -46,6 +46,9 @@ pub struct Lyrics {
     /// Track duration in ms as reported by LRCLIB (used to sanity-check sync).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Provider marked the track as instrumental (no vocal lyrics exist).
+    #[serde(default)]
+    pub instrumental: bool,
 }
 
 impl Lyrics {
@@ -55,6 +58,17 @@ impl Lyrics {
             provider: String::new(),
             lines: Vec::new(),
             duration_ms: None,
+            instrumental: false,
+        }
+    }
+
+    pub fn instrumental() -> Self {
+        Self {
+            synced: false,
+            provider: String::new(),
+            lines: Vec::new(),
+            duration_ms: None,
+            instrumental: true,
         }
     }
 
@@ -161,6 +175,7 @@ pub fn parse_lrc(input: &str) -> Result<Lyrics, LyricsParseError> {
         provider: "lrc".into(),
         lines,
         duration_ms: None,
+        instrumental: false,
     })
 }
 
@@ -181,6 +196,7 @@ pub fn parse_plain(input: &str, provider: &str) -> Lyrics {
         provider: provider.to_string(),
         lines,
         duration_ms: None,
+        instrumental: false,
     }
 }
 
@@ -275,23 +291,29 @@ pub struct LrclibEntry {
     #[serde(default)]
     pub duration: Option<f64>,
     #[serde(default)]
+    pub instrumental: bool,
+    #[serde(default)]
     pub synced_lyrics: Option<String>,
     #[serde(default)]
     pub plain_lyrics: Option<String>,
 }
 
 impl LrclibEntry {
-    /// Convert to our model: prefer synced, fall back to plain, else empty.
+    /// Convert to our model: synced > plain > instrumental > unavailable.
     pub fn into_lyrics(self) -> Lyrics {
+        let duration_ms = self.duration.map(|d| (d * 1000.0).round() as u64);
+        if self.instrumental {
+            return Lyrics::instrumental();
+        }
         if let Some(synced) = self.synced_lyrics.as_deref().and_then(parse_lrc_ok) {
             let mut lyrics = synced;
             lyrics.provider = "lrclib".into();
-            lyrics.duration_ms = self.duration.map(|d| (d * 1000.0) as u64);
+            lyrics.duration_ms = duration_ms;
             return lyrics;
         }
         if let Some(plain) = &self.plain_lyrics {
             let mut lyrics = parse_plain(plain, "lrclib");
-            lyrics.duration_ms = self.duration.map(|d| (d * 1000.0) as u64);
+            lyrics.duration_ms = duration_ms;
             return lyrics;
         }
         Lyrics::unavailable()
@@ -300,6 +322,65 @@ impl LrclibEntry {
 
 fn parse_lrc_ok(input: &str) -> Option<Lyrics> {
     parse_lrc(input).ok()
+}
+
+/// Pick the best LRCLIB search hit for a track. Scoring (higher wins):
+/// * exact-ish title match (+40), contains (+15)
+/// * exact artist match (+30), contains (+10)
+/// * duration within ±3 s (+25) or ±10 s (+10)
+/// * has synced lyrics (+8), not instrumental (+4)
+///
+/// Returns `None` when no entry is even a weak match (avoid showing lyrics
+/// for a completely different song).
+pub fn best_match(
+    entries: &[LrclibEntry],
+    title: &str,
+    artist: &str,
+    duration_secs: Option<f64>,
+) -> Option<&LrclibEntry> {
+    fn norm(s: &str) -> String {
+        s.to_lowercase().chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect::<String>()
+    }
+    let title_n = norm(title);
+    let artist_n = norm(artist);
+    let mut best: Option<(i32, &LrclibEntry)> = None;
+    for entry in entries {
+        let etitle = entry.track_name.as_deref().unwrap_or("");
+        let eartist = entry.artist_name.as_deref().unwrap_or("");
+        let mut score = 0;
+        if norm(etitle) == title_n && !title_n.is_empty() {
+            score += 40;
+        } else if norm(etitle).contains(&title_n) && !title_n.is_empty() {
+            score += 15;
+        }
+        if !artist_n.is_empty() {
+            if norm(eartist) == artist_n {
+                score += 30;
+            } else if norm(eartist).contains(&artist_n) || artist_n.contains(&norm(eartist)) {
+                score += 10;
+            }
+        }
+        if let (Some(want), Some(got)) = (duration_secs, entry.duration) {
+            let delta = (want - got).abs();
+            if delta <= 3.0 {
+                score += 25;
+            } else if delta <= 10.0 {
+                score += 10;
+            }
+        }
+        if entry.synced_lyrics.is_some() {
+            score += 8;
+        }
+        if !entry.instrumental {
+            score += 4;
+        }
+        if score >= 25 || (score >= 15 && entry.instrumental) {
+            if best.map(|(s, _)| score > s).unwrap_or(true) {
+                best = Some((score, entry));
+            }
+        }
+    }
+    best.map(|(_, e)| e)
 }
 
 #[cfg(test)]
@@ -445,6 +526,7 @@ mod tests {
             artist_name: Some("A".into()),
             album_name: None,
             duration: Some(180.0),
+            instrumental: false,
             synced_lyrics: Some("[00:01.00]one\n".into()),
             plain_lyrics: Some("one".into()),
         };
@@ -459,6 +541,7 @@ mod tests {
             artist_name: None,
             album_name: None,
             duration: None,
+            instrumental: false,
             synced_lyrics: None,
             plain_lyrics: Some("only plain".into()),
         };
@@ -468,10 +551,66 @@ mod tests {
     }
 
     #[test]
+    fn lrclib_instrumental_flag_short_circuits() {
+        let entry = LrclibEntry {
+            id: Some(3),
+            track_name: Some("T".into()),
+            artist_name: None,
+            album_name: None,
+            duration: None,
+            instrumental: true,
+            synced_lyrics: None,
+            plain_lyrics: None,
+        };
+        let l = entry.into_lyrics();
+        assert!(l.instrumental);
+        assert!(l.lines.is_empty());
+        assert!(!l.synced);
+    }
+
+    #[test]
+    fn lrclib_best_match_scores_correctly() {
+        let mk = |title: &str, artist: &str, dur: Option<f64>, synced: bool| LrclibEntry {
+            id: None,
+            track_name: Some(title.into()),
+            artist_name: Some(artist.into()),
+            album_name: None,
+            duration: dur,
+            instrumental: false,
+            synced_lyrics: synced.then(|| "[00:01.00]x".to_string()),
+            plain_lyrics: None,
+        };
+        let entries = vec![
+            mk("Neon River (Remix)", "Someone Else", Some(222.0), false),
+            mk("Neon River", "Aster Vale", Some(222.5), true),
+            mk("Completely Different", "Other Artist", Some(100.0), false),
+        ];
+        let best = best_match(&entries, "Neon River", "Aster Vale", Some(222.4)).unwrap();
+        assert_eq!(best.track_name.as_deref(), Some("Neon River"));
+
+        // No title/artist/duration overlap at all → no match rather than a
+        // wrong song's lyrics.
+        let none = vec![mk("Different Song", "Other", Some(999.0), false)];
+        assert!(best_match(&none, "Neon River", "Aster Vale", Some(222.0)).is_none());
+
+        // Duration tolerance: 2 s off still wins.
+        let close = vec![mk("Neon River", "Aster Vale", Some(220.0), false)];
+        assert!(best_match(&close, "Neon River", "Aster Vale", Some(222.0)).is_some());
+
+        // 60 s off with matching names still matches (names dominate).
+        let far = vec![mk("Neon River", "Aster Vale", Some(160.0), false)];
+        assert!(best_match(&far, "Neon River", "Aster Vale", Some(222.0)).is_some());
+    }
+
+    #[test]
     fn lyrics_roundtrip_through_json() {
         let lyrics = parsed();
         let json = serde_json::to_string(&lyrics).unwrap();
         let back: Lyrics = serde_json::from_str(&json).unwrap();
         assert_eq!(back, lyrics);
+        // Old serialized lyrics (no instrumental field) still load.
+        let legacy = serde_json::json!({"synced": true, "provider": "lrc", "lines": []});
+        let l: Lyrics = serde_json::from_value(legacy).unwrap();
+        assert!(!l.instrumental);
     }
 }

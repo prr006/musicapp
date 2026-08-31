@@ -10,8 +10,10 @@ import * as api from "@/app/api";
 import { Artwork } from "@/components/Artwork";
 import { Icon } from "@/components/Icon";
 import { useStore } from "@/app/store";
-import { openNowPlaying } from "@/app/stores/ui";
-import { playbackStore, positionStore } from "@/app/stores/playback";
+import { openNowPlaying, toggleQueue, useUi, pushToast } from "@/app/stores/ui";
+import { playbackStore, queueStore } from "@/app/stores/playback";
+import { useClock } from "@/app/stores/clock";
+import { isLiked, libraryStore } from "@/app/stores/library";
 import { trackColors } from "@/app/ipc/sampleData";
 import { activeLineIndex } from "@/lib/lyrics";
 import { formatTime } from "@/lib/format";
@@ -27,41 +29,57 @@ export function NowPlaying() {
   const shuffle = useStore(playbackStore, (s) => s.shuffle);
   const repeat = useStore(playbackStore, (s) => s.repeat);
   const speed = useStore(playbackStore, (s) => s.speed);
-  const position = useStore(positionStore, (s) => s.positionSecs);
-  const duration = useStore(positionStore, (s) => s.durationSecs);
+  const error = useStore(playbackStore, (s) => s.error);
+  const upcoming = useStore(queueStore, (s) => s.upcoming.length);
+  const liked = useStore(libraryStore, (s) => s.data?.liked ?? null);
+  const { queueOpen } = useUi();
+  const { position: rawPosition, duration: clockDuration } = useClock(0.25);
+  const duration = clockDuration ?? track?.durationSecs ?? null;
+  const position = rawPosition;
   const [lyrics, setLyrics] = useState<Lyrics | null>(null);
-  const [lyricsState, setLyricsState] = useState<"idle" | "loading" | "ready" | "missing">("idle");
+  const [lyricsState, setLyricsState] = useState<"idle" | "loading" | "ready" | "missing" | "instrumental">("idle");
+  const [offsetSecs, setOffsetSecs] = useState(0);
 
   const playing = status === "playing" || status === "buffering";
   const colors = track ? trackColors(track) : (["#8b5cf6", "#7c3aed"] as const);
+  const trackLiked = isLiked(liked, track?.id);
 
-  // Load lyrics per track (Phase 7 wires LRCLIB in Rust; the lookup model
-  // ships now and is driven purely by position).
+  // Load lyrics per track; the display stays driven purely by position.
   useEffect(() => {
     let cancelled = false;
-    if (!track) return;
+    setOffsetSecs(0);
+    if (!track) {
+      setLyrics(null);
+      setLyricsState("idle");
+      return;
+    }
     setLyricsState("loading");
     setLyrics(null);
     void api
-      .getLyrics(track.id)
+      .getLyrics(track)
       .then((result) => {
         if (cancelled) return;
-        if (result && result.lines.length > 0) {
+        if (!result || (result.lines.length === 0 && !result.instrumental)) {
+          setLyricsState("missing");
+        } else if (result.instrumental) {
+          setLyrics(result);
+          setLyricsState("instrumental");
+        } else {
           setLyrics(result);
           setLyricsState("ready");
-        } else {
-          setLyricsState("missing");
         }
       })
-      .catch(() => !cancelled && setLyricsState("missing"));
+      .catch(() => {
+        if (!cancelled) setLyricsState("missing");
+      });
     return () => {
       cancelled = true;
     };
   }, [track?.id]);
 
   const activeLine = useMemo(
-    () => (lyrics ? activeLineIndex(lyrics, position) : null),
-    [lyrics, position],
+    () => (lyrics ? activeLineIndex(lyrics, position + offsetSecs) : null),
+    [lyrics, position, offsetSecs],
   );
 
   return (
@@ -70,6 +88,13 @@ export function NowPlaying() {
       <div className="np-top">
         <span className="hint">Now playing</span>
         <div style={{ display: "flex", gap: 4 }}>
+          <button
+            className={`icon-button${queueOpen ? " accent" : ""}`}
+            title={`Queue (Q) — ${upcoming} upcoming`}
+            onClick={toggleQueue}
+          >
+            <Icon name="queue" size={18} />
+          </button>
           <button
             className="icon-button"
             title="Playback speed"
@@ -98,7 +123,12 @@ export function NowPlaying() {
             <div className="np-badges">
               <span className="badge">{status}</span>
               {speed !== 1 && <span className="badge">{speed}× speed</span>}
-              {status === "buffering" && <span className="badge">buffering</span>}
+              {lyrics && lyricsState === "ready" && (
+                <span className="badge">
+                  {lyrics.synced ? "synced lyrics" : "plain lyrics"} · {lyrics.provider}
+                </span>
+              )}
+              {error && <span className="badge" style={{ color: "var(--danger)" }}>{error}</span>}
             </div>
           </div>
         </div>
@@ -117,14 +147,49 @@ export function NowPlaying() {
                 No lyrics found for this track.
                 <br />
                 <span style={{ color: "var(--text-faint)", fontSize: 12 }}>
-                  Synced lyrics (LRCLIB) arrive in Phase 7 — and they follow the
-                  authoritative playback clock, not a frontend timer.
+                  MELO looks up LRCLIB by artist/title/duration; nothing was a
+                  close enough match to show.
                 </span>
               </span>
             </div>
           )}
+          {lyricsState === "instrumental" && (
+            <div className="lyrics-state">
+              <Icon name="note" size={26} filled />
+              <span>Instrumental — no lyrics by design.</span>
+            </div>
+          )}
           {lyricsState === "ready" && lyrics && (
-            <LyricList lyrics={lyrics} activeIndex={activeLine} position={position} />
+            <>
+              <div className="lyric-offset">
+                <button
+                  className="button ghost"
+                  style={{ padding: "2px 8px", fontSize: 11 }}
+                  title="Lyrics earlier"
+                  onClick={() => setOffsetSecs((o) => Math.max(-15, +(o - 0.5).toFixed(1)))}
+                >
+                  −0.5s
+                </button>
+                <span style={{ fontSize: 11, color: "var(--text-faint)" }}>
+                  sync {offsetSecs >= 0 ? "+" : ""}
+                  {offsetSecs.toFixed(1)}s
+                </span>
+                <button
+                  className="button ghost"
+                  style={{ padding: "2px 8px", fontSize: 11 }}
+                  title="Lyrics later"
+                  onClick={() => setOffsetSecs((o) => Math.min(15, +(o + 0.5).toFixed(1)))}
+                >
+                  +0.5s
+                </button>
+              </div>
+              <LyricList
+                lyrics={lyrics}
+                activeIndex={activeLine}
+                position={position}
+                offsetSecs={offsetSecs}
+              />
+            </>
           )}
         </div>
       </div>
@@ -190,8 +255,19 @@ export function NowPlaying() {
               onChange={(e) => void api.setVolume(Number(e.target.value))}
             />
           </div>
-          <button className="icon-button" title="Like (Phase 6)">
-            <Icon name="heart" size={18} />
+          <button
+            className={`icon-button${trackLiked ? " accent" : ""}`}
+            title={trackLiked ? "Remove from favorites" : "Add to favorites"}
+            disabled={!track}
+            onClick={() => {
+              if (!track) return;
+              void api
+                .toggleFavorite(track)
+                .then((now) => pushToast(now ? "Added to favorites" : "Removed from favorites", "success"))
+                .catch((e) => pushToast(String(e), "error"));
+            }}
+          >
+            <Icon name={trackLiked ? "heart-filled" : "heart"} size={18} />
           </button>
         </div>
       </div>
@@ -203,10 +279,12 @@ function LyricList({
   lyrics,
   activeIndex,
   position,
+  offsetSecs,
 }: {
   lyrics: Lyrics;
   activeIndex: number | null;
   position: number;
+  offsetSecs: number;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const activeRef = useRef<HTMLDivElement | null>(null);
@@ -236,7 +314,7 @@ function LyricList({
             activeIndex != null && i < activeIndex ? " past" : ""
           }`}
           onClick={() => {
-            if (line.timeMs != null) void api.seekTo(line.timeMs / 1000);
+            if (line.timeMs != null) void api.seekTo(Math.max(0, line.timeMs / 1000 - offsetSecs));
           }}
           title={line.timeMs != null ? `Seek to ${formatTime(line.timeMs / 1000)}` : undefined}
         >
