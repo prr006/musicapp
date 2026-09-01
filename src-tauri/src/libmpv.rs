@@ -76,7 +76,7 @@ struct MpvEventEndFile {
     reason: c_int,
     error: c_int,
     #[allow(dead_code)]
-    playlist_entry_id: i64,
+    playlist_entry_id: c_int,
 }
 
 type FnVersion = unsafe extern "C" fn() -> c_ulong;
@@ -110,7 +110,6 @@ struct Api {
     error_string: FnErrStr,
 }
 
-impl Api {
 impl Api {
     fn load(dll: &Path) -> Result<Self, String> {
         // Field types drive inference: each `symbol` call resolves to the
