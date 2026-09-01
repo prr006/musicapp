@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Component, useEffect, useRef, useState, type ReactNode } from 'react'
 import { MiniPlayer } from './components/MiniPlayer'
 import { NowPlaying } from './components/NowPlaying'
 import { QueuePanel } from './components/QueuePanel'
@@ -13,6 +13,33 @@ import { HomeView } from './views/HomeView'
 import { LibraryView } from './views/LibraryView'
 import { SearchView } from './views/SearchView'
 import { SettingsView } from './views/SettingsView'
+
+/**
+ * Last line of defence against a blank screen: any render-time exception is
+ * contained here and turned into an actionable error state instead of letting
+ * React unmount the whole tree (which leaves the user with a white window).
+ */
+class RouteBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <ErrorState
+          title="Something went wrong showing this page"
+          message={this.state.error.message || 'An unexpected error occurred.'}
+          onRetry={() => this.setState({ error: null })}
+          retryLabel="Try again"
+        />
+      )
+    }
+    return this.props.children
+  }
+}
 
 function Routes() {
   const route = useUIStore((s) => s.route)
@@ -106,7 +133,9 @@ export function App() {
               retryLabel="Reload"
             />
           ) : (
-            <Routes />
+            <RouteBoundary>
+              <Routes />
+            </RouteBoundary>
           )}
         </div>
         {queueOpen && <QueuePanel />}

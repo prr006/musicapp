@@ -22,8 +22,14 @@ export function SearchView() {
   const submitted = useSearchStore((s) => s.submitted)
   const history = useLibraryStore((s) => s.searchHistory)
 
+  // The Go backend marshals empty slices as JSON `null` (the yt-dlp fallback and
+  // video-only InnerTube responses have no album/artist lists at all). Never
+  // trust the response shape: normalise every section to an array here so a
+  // `null` section can't crash the render (which would blank the whole app).
   const songs = results?.songs ?? []
   const videos = results?.videos ?? []
+  const artists = results?.artists ?? []
+  const albums = results?.albums ?? []
   const all = [...songs, ...videos]
 
   return (
@@ -154,13 +160,13 @@ export function SearchView() {
             </section>
           )}
 
-          {results.artists.length > 0 && (
+          {artists.length > 0 && (
             <section className="section">
               <div className="section-head">
                 <h2>Artists</h2>
               </div>
               <div className="card-grid">
-                {results.artists.map((artist) => (
+                {artists.map((artist) => (
                   <MediaCard
                     key={artist.id}
                     title={artist.name}
@@ -174,13 +180,13 @@ export function SearchView() {
             </section>
           )}
 
-          {results.albums.length > 0 && (
+          {albums.length > 0 && (
             <section className="section">
               <div className="section-head">
                 <h2>Albums</h2>
               </div>
               <div className="card-grid">
-                {results.albums.map((album) => (
+                {albums.map((album) => (
                   <MediaCard
                     key={album.id}
                     title={album.title}

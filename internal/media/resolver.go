@@ -26,6 +26,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,6 +41,94 @@ var (
 	ErrNoAudio     = errors.New("this song has no playable audio stream")
 	ErrUnavailable = errors.New("media unavailable")
 )
+
+// ---- temporary diagnostics (MELO_RESOLVER_DIAG=1) ----
+//
+// These record, for a single failing video, every format yt-dlp returned and
+// why the picker accepted or rejected it. They exist only to capture the real
+// Windows failing case and are silent unless the env var is set. Remove this
+// block once the root cause is pinned down.
+
+var (
+	diagOnce   sync.Once
+	diagWriter io.Writer
+	diagPath   string
+	diagErr    error
+)
+
+func diagEnabled() bool {
+	return os.Getenv("MELO_RESOLVER_DIAG") != ""
+}
+
+// ensureDiag opens (creating it if needed) the resolver diagnostic log exactly
+// once. Any setup failure is recorded in diagErr and surfaced — never silently
+// swallowed — so a bad path or permission problem is visible instead of looking
+// like the feature simply isn't there.
+func ensureDiag() (string, bool) {
+	diagOnce.Do(func() {
+		if !diagEnabled() {
+			diagErr = errors.New("MELO_RESOLVER_DIAG is not set")
+			return
+		}
+		dir, err := os.UserConfigDir()
+		if err != nil {
+			diagErr = fmt.Errorf("cannot locate the config directory: %w", err)
+			return
+		}
+		logDir := filepath.Join(dir, "MELO")
+		if err := os.MkdirAll(logDir, 0o755); err != nil {
+			diagErr = fmt.Errorf("cannot create %s: %w", logDir, err)
+			return
+		}
+		path := filepath.Join(logDir, "resolver-diag.log")
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			diagErr = fmt.Errorf("cannot open %s: %w", path, err)
+			return
+		}
+		diagWriter, diagPath, diagErr = f, path, nil
+	})
+	if diagErr != nil {
+		return "", false
+	}
+	return diagPath, true
+}
+
+// InitDiag is called once at startup. When MELO_RESOLVER_DIAG is set it prints
+// a line to stderr stating exactly where the log will be written (or why it
+// cannot be), so a missing env var or a bad path is immediately visible in the
+// `wails dev` console instead of silently producing nothing.
+func InitDiag() {
+	if !diagEnabled() {
+		return
+	}
+	path, ok := ensureDiag()
+	if !ok {
+		fmt.Fprintf(os.Stderr, "melo: resolver diagnostics DISABLED: %v\n", diagErr)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "melo: resolver diagnostics ENABLED, log=%s\n", path)
+	diagf("resolver diagnostics ENABLED (MELO_RESOLVER_DIAG=%q), log=%s", os.Getenv("MELO_RESOLVER_DIAG"), path)
+}
+
+func diagf(format string, args ...any) {
+	if !diagEnabled() {
+		return
+	}
+	if _, ok := ensureDiag(); !ok {
+		fmt.Fprintf(os.Stderr, "melo: resolver diag write failed: %v\n", diagErr)
+		return
+	}
+	fmt.Fprintf(diagWriter, "[%s] %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
+}
+
+func truncateForDiag(raw []byte) string {
+	const max = 12000
+	if len(raw) <= max {
+		return string(raw)
+	}
+	return string(raw[:max]) + "\n… [truncated]"
+}
 
 type Runner interface {
 	Run(ctx context.Context, args ...string) ([]byte, error)
@@ -142,13 +233,16 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 	// uploads, PO-token-gated formats, manifest-only videos). We don't want
 	// yt-dlp choosing formats at all — ParseResolved picks from the full format
 	// list — so --ignore-no-formats-error makes it dump the list regardless.
-	out, err := r.runner.Run(ctx,
+	args := []string{
 		"--dump-single-json", "--no-playlist", "--no-warnings",
 		"--ignore-no-formats-error",
 		"--extractor-args", "youtube:player_client=web_music,web",
-		"https://www.youtube.com/watch?v="+sourceID,
-	)
+		"https://www.youtube.com/watch?v=" + sourceID,
+	}
+	diagf("resolve %s: yt-dlp %v", sourceID, args)
+	out, err := r.runner.Run(ctx, args...)
 	if err != nil {
+		diagf("resolve %s: yt-dlp exited with error: %s", sourceID, err.Error())
 		msg := strings.ToLower(err.Error())
 		switch {
 		case strings.Contains(msg, "private") || strings.Contains(msg, "unavailable") ||
@@ -219,13 +313,20 @@ func ParseResolved(raw []byte, sourceID, quality string) (Resolved, error) {
 		return Resolved{}, fmt.Errorf("%w: unreadable resolver output", ErrResolve)
 	}
 
+	diagf("resolve %s: raw yt-dlp JSON:\n%s", sourceID, truncateForDiag(raw))
+
 	// Collect everything the media element could actually play, split into
 	// audio-only and combined audio/video candidates.
+	diagf("resolve %s: yt-dlp returned %d formats", sourceID, len(info.Formats))
 	var audioOnly, combined []ytFormat
 	for _, f := range info.Formats {
-		if _, ok := playableAudio(f); !ok {
+		if reason := rejectReason(f); reason != "" {
+			diagf("  REJECT | format %s | ext %s | protocol %s | acodec %s | vcodec %s | abr %.0f | tbr %.0f | url=%t | %s",
+				f.FormatID, f.Ext, f.Protocol, f.ACodec, f.VCodec, f.ABR, f.TBR, f.URL != "", reason)
 			continue
 		}
+		diagf("  ACCEPT | format %s | ext %s | protocol %s | acodec %s | vcodec %s | abr %.0f | tbr %.0f | url=%t",
+			f.FormatID, f.Ext, f.Protocol, f.ACodec, f.VCodec, f.ABR, f.TBR, f.URL != "")
 		if f.VCodec == "none" || f.VCodec == "" {
 			audioOnly = append(audioOnly, f)
 		} else {
@@ -240,7 +341,9 @@ func ParseResolved(raw []byte, sourceID, quality string) (Resolved, error) {
 		candidates = combined
 	}
 	if len(candidates) == 0 {
-		return Resolved{}, ErrNoAudio
+		diagf("resolve %s: no playable stream (audio-only=%d combined=%d)", sourceID, len(audioOnly), len(combined))
+		return Resolved{}, fmt.Errorf("%w: %s exposes %d formats but none is a single progressive audio stream",
+			ErrNoAudio, sourceID, len(info.Formats))
 	}
 
 	rate := func(f ytFormat) float64 {
@@ -294,13 +397,36 @@ func ParseResolved(raw []byte, sourceID, quality string) (Resolved, error) {
 // HTMLAudioElement can consume through the plain-HTTP Range proxy, returning the
 // mime type to advertise when the CDN supplies none of its own.
 func playableAudio(f ytFormat) (string, bool) {
-	if f.URL == "" || f.ACodec == "" || f.ACodec == "none" {
+	if rejectReason(f) != "" {
 		return "", false
 	}
-	if !streamable(f.Protocol) {
-		return "", false
+	mime, _ := audioMime(f.Ext)
+	return mime, true
+}
+
+// rejectReason explains why a format is not playable through the Range proxy,
+// or "" when it is. It doubles as the per-format diagnostic used when
+// MELO_RESOLVER_DIAG is set.
+func rejectReason(f ytFormat) string {
+	switch {
+	case f.URL == "":
+		return "no url (PO-token/SABR-gated or manifest-only)"
+	case f.ACodec == "" || f.ACodec == "none":
+		return "no audio codec"
+	case !streamable(f.Protocol):
+		return fmt.Sprintf("protocol %q is not a single progressive stream", f.Protocol)
 	}
-	switch f.Ext {
+	if _, ok := audioMime(f.Ext); !ok {
+		return fmt.Sprintf("ext %q has no playable audio mapping", f.Ext)
+	}
+	return ""
+}
+
+// audioMime maps a yt-dlp container extension to the mime type HTMLAudioElement
+// expects. It is keyed on ext only (never on codec): the real codec inside a
+// container is decided by the browser's demuxer, not by the resolver.
+func audioMime(ext string) (string, bool) {
+	switch ext {
 	case "m4a", "mp4":
 		return "audio/mp4", true
 	case "mp3":
@@ -326,18 +452,8 @@ func streamable(protocol string) bool {
 }
 
 func mimeFor(f ytFormat) string {
-	if mime, ok := playableAudio(f); ok {
+	if mime, ok := audioMime(f.Ext); ok {
 		return mime
-	}
-	switch f.Ext {
-	case "m4a", "mp4":
-		return "audio/mp4"
-	case "webm":
-		return "audio/webm"
-	case "opus", "ogg", "oga":
-		return "audio/ogg"
-	case "mp3":
-		return "audio/mpeg"
 	}
 	return "audio/mpeg"
 }

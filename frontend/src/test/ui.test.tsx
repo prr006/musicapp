@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TrackRow } from '../components/TrackRow'
 import { SearchView } from '../views/SearchView'
 import { setBackend, type Backend } from '../bridge/backend'
-import type { Track } from '../bridge/types'
+import type { SearchResponse, Track } from '../bridge/types'
 import { defaultSettings } from '../lib/defaults'
 import { useLibraryStore } from '../state/libraryStore'
 import { playback } from '../state/playback'
@@ -114,6 +114,22 @@ describe('SearchView states', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/Couldn’t reach YouTube/))
     await userEvent.click(screen.getByRole('button', { name: /Retry search/i }))
     expect(be.search).toHaveBeenCalledTimes(2)
+  })
+
+  it('renders results when the provider returns null sections (yt-dlp fallback shape)', async () => {
+    // The Go backend marshals nil slices as JSON `null`; the yt-dlp fallback and
+    // video-only InnerTube responses have no albums/artists lists at all.
+    // This used to crash the render (blank page) via `null.length`.
+    stub({
+      search: vi.fn(async () => ({
+        query: 'x', songs: [song], videos: null, albums: null, artists: null, provider: 'yt-dlp',
+      } as unknown as SearchResponse)),
+    })
+    render(<SearchView />)
+    await act(async () => { await search.run('x') })
+    await waitFor(() => expect(screen.getByText('Nightfall')).toBeInTheDocument())
+    expect(screen.getByRole('heading', { name: 'Songs' })).toBeInTheDocument()
+    expect(useSearchStore.getState().status).toBe('results')
   })
 
   it('renders real provider artwork', async () => {

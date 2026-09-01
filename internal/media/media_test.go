@@ -179,6 +179,16 @@ func TestParseResolvedRejectsUnplayableFormats(t *testing.T) {
 	}
 }
 
+// TestParseResolvedEmptyFormats covers the case where yt-dlp itself drops every
+// candidate (PO-token/SABR-gated or DRM-skipped) and, thanks to
+// --ignore-no-formats-error, still dumps a JSON whose format list is empty.
+func TestParseResolvedEmptyFormats(t *testing.T) {
+	raw := []byte(`{"id": "vid", "title": "Song", "formats": []}`)
+	if _, err := ParseResolved(raw, "vid", "high"); !errors.Is(err, ErrNoAudio) {
+		t.Fatalf("expected ErrNoAudio for an empty format list, got %v", err)
+	}
+}
+
 // ---------------- representative yt-dlp JSON fixtures ----------------
 
 // TestParseResolvedTopicAudioUpload exercises a topic-style / audio upload: the
@@ -334,6 +344,12 @@ func TestResolverSurfacesRealErrors(t *testing.T) {
 	_, err = res2.Resolve(context.Background(), "vid", "high")
 	if err == nil || !strings.Contains(err.Error(), "couldn't reach YouTube") {
 		t.Fatalf("expected a network message, got %v", err)
+	}
+	// The extractor raises "No video formats found" when every candidate was
+	// dropped (PO-token/SABR-gated, DRM-skipped, or nothing downloadable).
+	res3 := NewResolver(&fakeRunner{err: errors.New("ERROR: [youtube] vid: No video formats found")})
+	if _, err = res3.Resolve(context.Background(), "vid", "high"); !errors.Is(err, ErrNoAudio) {
+		t.Fatalf("expected ErrNoAudio for a no-formats extractor error, got %v", err)
 	}
 	if _, err := res.Resolve(context.Background(), "", "high"); err == nil {
 		t.Fatal("expected an error for an empty source id")

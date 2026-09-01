@@ -9,11 +9,12 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
 import { setBackend, type Backend } from '../bridge/backend'
-import type { Track } from '../bridge/types'
+import type { SearchResponse, Track } from '../bridge/types'
 import { defaultSettings } from '../lib/defaults'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback } from '../state/playback'
 import { usePlayerStore } from '../state/playerStore'
+import { useSearchStore } from '../state/searchStore'
 import { useUIStore } from '../state/uiStore'
 
 function song(id: string, title: string): Track {
@@ -165,5 +166,33 @@ describe('MELO application', () => {
     stubBackend()
     render(<App />)
     expect(screen.getByRole('alert')).toHaveTextContent(/backend isn’t running/)
+  })
+
+  it('keeps search usable after a playback resolution failure', async () => {
+    const be = stubBackend()
+    // First search: normal full shape. After the resolver fails, the next search
+    // returns the null-section shape real responses can have (yt-dlp fallback /
+    // video-only). The search page must still render instead of going blank.
+    be.search = vi
+      .fn()
+      .mockResolvedValueOnce({ query: 'night', songs: [a, b], videos: [], albums: [], artists: [], provider: 'ytmusic' })
+      .mockResolvedValue({ query: 'night', songs: [a, b], videos: null, albums: null, artists: null, provider: 'yt-dlp' } as unknown as SearchResponse) as unknown as Backend['search']
+    be.getPlayable = vi.fn().mockRejectedValue(new Error('this song has no playable audio stream')) as unknown as Backend['getPlayable']
+
+    render(<App />)
+    await userEvent.type(screen.getByRole('textbox', { name: 'Search' }), 'night{enter}')
+    await waitFor(() => expect(screen.getByText('Nightfall')).toBeInTheDocument())
+
+    // Clicking a result now fails at the resolver.
+    await userEvent.click(screen.getByRole('button', { name: /Play Nightfall/i }))
+    await waitFor(() => expect(usePlayerStore.getState().status).toBe('error'))
+
+    // Search again: the page must render results, not a blank screen.
+    const input = screen.getByRole('textbox', { name: 'Search' })
+    await userEvent.clear(input)
+    await userEvent.type(input, 'night{enter}')
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Songs' })).toBeInTheDocument())
+    expect(screen.getAllByText('Nightfall').length).toBeGreaterThan(0)
+    expect(useSearchStore.getState().status).toBe('results')
   })
 })
