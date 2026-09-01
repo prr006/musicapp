@@ -12,6 +12,32 @@
 //! * libmpv stays authoritative: MELO caches the last observed values only to
 //!   answer `player_get_state`; it never guesses (no watchdog, no timers).
 //!
+//! Threading & affinity model (the Windows startup-freeze fix, 2026-09):
+//! * **Construction** — LoadLibraryW, symbol resolution, `mpv_create`,
+//!   `mpv_set_option_string*`, `mpv_observe_property`, `mpv_initialize` —
+//!   runs ONLY on the dedicated `melo-engine-start` thread spawned by
+//!   `crate::start_engine` (never the Tauri main/UI thread). Reason:
+//!   `mpv_create` starts mpv's core thread, whose pre-init playloop executes
+//!   the dispatch handshake; a caller of those functions can block inside
+//!   `mp_dispatch_lock` until the core thread next wakes — and pre-init, with
+//!   nothing scheduled, the core parks with an INFINITE deadline. Doing this
+//!   on an idle UI thread froze the whole app. A background thread that is
+//!   *allowed* to block is the documented-safe arrangement; post-init the
+//!   handshake concern does not exist.
+//! * **Runtime calls** — `mpv_command`, `mpv_set_property_string`,
+//!   `mpv_get_property_string`, `mpv_wakeup` — are made from Tauri IPC
+//!   threads and the event thread interchangeably. client.h: "The client API
+//!   is generally fully thread-safe, unless otherwise noted", and none of
+//!   these carry a threading note.
+//! * **`mpv_wait_event`** is called ONLY from the `melo-libmpv-events`
+//!   thread (client.h: only one thread at a time may wait).
+//! * **`mpv_terminate_destroy`** is called exactly once, from `shutdown`,
+//!   AFTER the event thread was joined — by then no other thread can be
+//!   inside libmpv. Shutdown cannot race initialization: a `Player` becomes
+//!   visible (installed into `MeloState`) only after construction fully
+//!   succeeded, and the app marks itself `exiting` before taking the engine
+//!   down, so an in-flight start aborts or self-destructs instead.
+//!
 //! Event constants/struct layouts follow `include/mpv/client.h` from the mpv
 //! repository (verified against master; the client API is ABI-stable).
 
@@ -28,8 +54,35 @@ use tauri::Emitter;
 use crate::events;
 
 // ---- raw client API (subset) --------------------------------------------
+//
+// Signatures verified against `include/mpv/client.h` @ mpv git 02a595ddc1 —
+// the exact source of the pinned zhongfly runtime build (client API 2.5,
+// MPV_CLIENT_API_VERSION = 0x00020005):
+//   unsigned long        mpv_client_api_version(void)
+//   mpv_handle          *mpv_create(void)
+//   int                  mpv_initialize(mpv_handle *)
+//   void                 mpv_terminate_destroy(mpv_handle *)
+//   int                  mpv_command(mpv_handle *, const char **)
+//   int                  mpv_set_property_string(mpv_handle *, const char *, const char *)
+//   char                *mpv_get_property_string(mpv_handle *, const char *)
+//   int                  mpv_set_option_string(mpv_handle *, const char *, const char *)
+//   int                  mpv_observe_property(mpv_handle *, uint64_t, const char *, mpv_format)
+//   mpv_event           *mpv_wait_event(mpv_handle *, double)
+//   void                 mpv_wakeup(mpv_handle *)
+//   void                 mpv_free(void *)
+//   const char          *mpv_error_string(int)
 
 type Handle = *mut c_void;
+
+/// Client-API generation this binding was verified against. The DLL name
+/// `libmpv-2.dll` pins the major; a different major is an ABI MELO has never
+/// been validated against, so construction is refused with a clear error
+/// instead of misbehaving later.
+const CLIENT_API_MAJOR_EXPECTED: c_ulong = 2;
+/// Minor version of client.h @ 02a595ddc1. Everything MELO uses predates it,
+/// so an older DLL is accepted (with a log line); a newer one is forward-
+/// compatible by mpv's ABI policy.
+const CLIENT_API_MINOR_VERIFIED: c_ulong = 5;
 
 mod event_id {
     pub const SHUTDOWN: i32 = 1;
@@ -75,8 +128,10 @@ struct MpvEventProperty {
 struct MpvEventEndFile {
     reason: c_int,
     error: c_int,
+    /// `int64_t` in client.h (id of the playlist entry this end event is
+    /// about). MELO never reads it, but the layout is kept true.
     #[allow(dead_code)]
-    playlist_entry_id: c_int,
+    playlist_entry_id: i64,
 }
 
 type FnVersion = unsafe extern "C" fn() -> c_ulong;
@@ -222,6 +277,20 @@ pub struct Player {
 
 impl Player {
     /// Load the DLL, initialize mpv, start the event thread.
+    ///
+    /// MUST be called from a thread that is allowed to block — never the
+    /// Tauri main/UI thread (see the module header). `crate::start_engine`
+    /// is the only caller and runs it on the dedicated `melo-engine-start`
+    /// thread. The order below is deterministic and every step is
+    /// sequential on that one thread:
+    ///   1. LoadLibrary + resolve the 13 symbols     (`Api::load`)
+    ///   2. gate the client-API version              (ABI check, no ctx yet)
+    ///   3. `mpv_create`                             (spawns mpv's core thread)
+    ///   4. `mpv_set_option_string` × 9              (pre-init, fixed order)
+    ///   5. `mpv_observe_property` × 8               (pre-init, ids 1..=8)
+    ///   6. `mpv_initialize`
+    ///   7. read `"mpv-version"`                     (post-init only)
+    ///   8. spawn `melo-libmpv-events`, publish ready
     pub fn start(
         dll: &Path,
         app: tauri::AppHandle,
@@ -230,25 +299,32 @@ impl Player {
         speed: f64,
     ) -> Result<Player, String> {
         let api = Api::load(dll)?;
+
+        // ABI gate before any mpv object exists, so a wrong DLL fails with
+        // an actionable message and needs no cleanup. (`c_ulong` on Windows
+        // x86_64 = the header's `unsigned long`.)
+        let raw_version = unsafe { (api.client_api_version)() };
+        let major = (raw_version >> 16) & 0xffff;
+        let minor = raw_version & 0xffff;
+        if major != CLIENT_API_MAJOR_EXPECTED {
+            return Err(format!(
+                "libmpv reports client API {major}.{minor}, but MELO supports \
+                 major 2 — {} is not a compatible libmpv-2.dll",
+                dll.display()
+            ));
+        }
+        if minor < CLIENT_API_MINOR_VERIFIED {
+            eprintln!(
+                "[melo] libmpv client API {major}.{minor} is older than the \
+                 verified {CLIENT_API_MAJOR_EXPECTED}.{CLIENT_API_MINOR_VERIFIED}; \
+                 continuing with the documented-stable subset"
+            );
+        }
+
         let ctx = unsafe { (api.create)() };
         if ctx.is_null() {
             return Err("mpv_create() returned NULL".into());
         }
-
-        let version = unsafe {
-            let v = (api.client_api_version)();
-            format!("{}.{}", v >> 16, v & 0xffff)
-        };
-        let mpv_version = unsafe {
-            let p = (api.get_property_string)(ctx, cstr("mpv-version").as_ptr());
-            if p.is_null() {
-                None
-            } else {
-                let s = CStr::from_ptr(p).to_string_lossy().into_owned();
-                (api.free)(p as *mut c_void);
-                Some(s)
-            }
-        };
 
         // Options must be set before mpv_initialize. Audio-only player,
         // idle keeps the engine alive between tracks, no scripts (MELO
@@ -305,6 +381,25 @@ impl Player {
             return Err(format!("mpv_initialize: {}", api.err_text(rc)));
         }
 
+        // Step 7: read the real version string only now. Pre-init,
+        // `mpv-version` is not available (mpv answers
+        // MPV_ERROR_INVALID_PARAMETER / NULL — the old pre-init read here
+        // was a no-op at best); post-init it is an ordinary property.
+        let mpv_version = unsafe {
+            let p = (api.get_property_string)(ctx, cstr("mpv-version").as_ptr());
+            if p.is_null() {
+                None
+            } else {
+                let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+                (api.free)(p as *mut c_void);
+                Some(s)
+            }
+        };
+        eprintln!(
+            "[melo] libmpv initialized: client API {major}.{minor}, {}",
+            mpv_version.as_deref().unwrap_or("mpv-version unavailable")
+        );
+
         let inner = Arc::new(Inner {
             api,
             ctx,
@@ -323,10 +418,19 @@ impl Player {
         });
 
         let thread_inner = inner.clone();
-        let handle = std::thread::Builder::new()
+        let handle = match std::thread::Builder::new()
             .name("melo-libmpv-events".into())
             .spawn(move || event_loop(thread_inner))
-            .map_err(|e| format!("event thread: {e}"))?;
+        {
+            Ok(h) => h,
+            Err(e) => {
+                // Never leak a live mpv core when the event thread cannot
+                // start: no events are consumed yet and this is the only
+                // reference, so tearing the context down here is safe.
+                unsafe { (inner.api.terminate_destroy)(inner.ctx) };
+                return Err(format!("event thread: {e}"));
+            }
+        };
 
         let player = Player {
             inner,
@@ -338,7 +442,7 @@ impl Player {
             events::RUNTIME_STATUS,
             events::RuntimeStatus {
                 phase: "ready",
-                message: format!("libmpv ready (client API {version})"),
+                message: format!("libmpv ready (client API {major}.{minor})"),
             },
         );
         Ok(player)
@@ -746,5 +850,23 @@ mod tests {
         assert_eq!(super::format::STRING, 1);
         assert_eq!(super::format::FLAG, 3);
         assert_eq!(super::format::DOUBLE, 5);
+    }
+
+    #[test]
+    fn struct_layouts_match_client_h() {
+        // mpv_event @ client.h (x86_64): int + int + u64 + ptr = 24 bytes.
+        assert_eq!(std::mem::size_of::<super::MpvEvent>(), 24);
+        // mpv_event_property: ptr + int(+pad) + ptr = 24 bytes.
+        assert_eq!(std::mem::size_of::<super::MpvEventProperty>(), 24);
+        // mpv_event_end_file prefix: int + int + int64 = 16 bytes
+        // (playlist_entry_id is int64_t in client.h).
+        assert_eq!(std::mem::size_of::<super::MpvEventEndFile>(), 16);
+    }
+
+    #[test]
+    fn client_api_gate_matches_pinned_runtime() {
+        // client.h @ 02a595ddc1 (the pinned zhongfly build) is API 2.5.
+        assert_eq!(super::CLIENT_API_MAJOR_EXPECTED, 2);
+        assert_eq!(super::CLIENT_API_MINOR_VERIFIED, 5);
     }
 }

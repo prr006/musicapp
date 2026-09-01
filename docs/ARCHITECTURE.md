@@ -28,11 +28,27 @@ supervisor, no duplicate playback state machine.
 
 ## 1. Playback engine: libmpv, in-process
 
-`src-tauri/src/libmpv.rs` is the ONLY media code in the project (~450 lines).
+`src-tauri/src/libmpv.rs` is the ONLY media code in the project.
 
+* **Startup threading (the Windows freeze fix)**: the engine is ALWAYS
+  constructed on a dedicated `melo-engine-start` background thread —
+  `start_engine` only spawns it and returns, so Tauri's `.setup()` never
+  waits on libmpv. `mpv_create` starts mpv's core thread whose pre-init
+  playloop runs the dispatch handshake; calling `mpv_set_option*` /
+  `mpv_initialize` synchronously on the idle UI thread could park both
+  threads forever inside `mp_dispatch_lock` (window "Not Responding", 0 CPU).
+  Once `mpv_initialize` returns, the finished `Player` is installed into the
+  app state and the UI gets a `runtime://status` "ready" event; failures
+  arrive as an "error" event with the real mpv message. Shutdown cannot race
+  startup: a `Player` becomes visible only after full initialization, and
+  the app flags `exiting` before tearing the engine down, so an in-flight
+  start aborts or destroys its own instance.
 * **Loading**: `libmpv-2.dll` is loaded at runtime with `libloading` from an
   absolute path provided by `runtime.rs`. No import library, no build-time
-  mpv requirement, no PATH lookup, and no subprocess to supervise.
+  mpv requirement, no PATH lookup, and no subprocess to supervise. Before
+  any mpv object exists, the reported client API version is gated against
+  the verified major (2) and logged; `"mpv-version"` is read only AFTER
+  `mpv_initialize`.
 * **API surface**: the string-based subset of the mpv client API
   (`mpv_command`, `mpv_set_property_string`, `mpv_observe_property`,
   `mpv_wait_event`, …). Constants/struct layouts follow

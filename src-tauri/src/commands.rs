@@ -59,8 +59,8 @@ fn player(state: &State<MeloState>) -> Result<Arc<Player>, String> {
         .unwrap_or_else(|p| p.into_inner())
         .clone()
         .ok_or_else(|| {
-            "Playback engine is not running (libmpv not installed or failed to start). \
-             Use Settings → Diagnostics → Repair runtime."
+            "Playback engine is not running (libmpv missing, still starting, \
+             or failed to start). Use Settings → Diagnostics → Repair runtime."
                 .into()
         })
 }

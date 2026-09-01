@@ -11,6 +11,10 @@ the repo root to re-test the first-run flow. The download must NOT cause
 ## 0. Cold start & runtime
 
 - ☐ App opens ≤ 5 s, no console window flashes.
+- ☐ **Second and later launches (freeze regression)**: with the runtime
+      already installed, EVERY launch shows a responsive window immediately
+      (drag it, open Settings) while libmpv initializes in the background —
+      never "Not Responding", and the engine-ready state arrives on its own.
 - ☐ First run without runtime: a runtime banner + toasts report install
       progress (libmpv + yt-dlp, pinned + SHA-256 verified), then the engine
       comes up — no PATH probing, no dev-server restart loop.

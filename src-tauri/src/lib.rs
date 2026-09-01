@@ -17,6 +17,7 @@ mod settings_store;
 mod ytdlp;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use melo_core::library::LibraryStore;
@@ -27,15 +28,40 @@ use tauri::Manager;
 use crate::libmpv::Player;
 
 pub struct MeloState {
-    /// The libmpv engine. `None` while the runtime is being installed or
+    /// The libmpv engine. `None` while the engine is still starting on its
+    /// dedicated background thread, while the runtime is being installed, or
     /// after a failure — commands then return an actionable error.
     pub player: Mutex<Option<Arc<Player>>>,
     pub runtime: RuntimeHandle,
     pub config_dir: PathBuf,
+    /// Claimed for the whole duration of an engine start, so concurrent
+    /// callers (boot, runtime-install callback, repair) can never construct
+    /// two libmpv instances.
+    pub engine_starting: AtomicBool,
+    /// Set the moment a window close is requested. The engine-start thread
+    /// checks it before AND after construction, so app shutdown can never
+    /// race (or dead-lock against) a libmpv initialization in flight.
+    pub exiting: AtomicBool,
 }
 
-/// Bring the engine up (idempotent). Called at startup when the DLL exists
-/// and again after a successful runtime install/repair.
+/// Bring the engine up. Idempotent and **asynchronous**: it only spawns the
+/// dedicated engine thread and returns immediately.
+///
+/// libmpv construction must NEVER run on the Tauri main/UI thread. `mpv_create`
+/// starts mpv's internal core thread, which executes the pre-init dispatch
+/// handshake inside its own playloop; a synchronous `mpv_set_option_string` /
+/// `mpv_initialize` from the idle Windows UI thread can park BOTH threads
+/// forever inside `mp_dispatch_lock` / `mp_dispatch_queue_process` (the
+/// startup freeze: window "Not responding", 0 CPU, before the event thread
+/// even existed). The complete construction sequence therefore runs on a
+/// dedicated `melo-engine-start` thread — the same shape as the proven
+/// first-run path, where the runtime installer thread started the engine and
+/// audio played fine.
+///
+/// When initialization succeeds, the finished `Player` is installed into
+/// `MeloState` and the UI learns about it via the `runtime://status` "ready"
+/// event. Failures surface as a `runtime://status` "error" event with the
+/// real mpv message — startup never blocks on any of this.
 pub fn start_engine(app: &tauri::AppHandle, _config_dir: &std::path::Path) {
     // `_config_dir`: the RuntimeHandle already resolved config-relative paths
     // (its own config_dir); the engine itself only needs the DLL path below.
@@ -44,24 +70,95 @@ pub fn start_engine(app: &tauri::AppHandle, _config_dir: &std::path::Path) {
         Some(s) => s,
         None => return,
     };
+    if state.exiting.load(Ordering::SeqCst) {
+        return; // app is on its way down; do not resurrect the engine
+    }
     if !state.runtime.libmpv_found() {
+        return;
+    }
+    // Already up? One engine, ever.
+    {
+        let guard = state.player.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(p) = guard.as_ref() {
+            if p.is_alive() {
+                return;
+            }
+        }
+    }
+    // Claim the single start slot; a concurrent caller (repair racing boot)
+    // must not construct a second libmpv instance.
+    if state.engine_starting.swap(true, Ordering::SeqCst) {
         return;
     }
     // Volume/mute/speed live in the frontend session; engine starts at
     // neutral defaults and the app applies its persisted values on boot.
     let dll = state.runtime.libmpv_path();
-    match Player::start(&dll, app.clone(), 80.0, false, 1.0) {
+    let handle = app.clone();
+    let after = handle.clone();
+    let spawned = std::thread::Builder::new()
+        .name("melo-engine-start".into())
+        .spawn(move || {
+            start_engine_thread(handle, dll);
+            // Release the start slot on EVERY exit path (success, failure,
+            // aborted-by-shutdown), so a later repair can retry.
+            if let Some(state) = after.try_state::<MeloState>() {
+                state.engine_starting.store(false, Ordering::SeqCst);
+            }
+        });
+    if let Err(e) = spawned {
+        state.engine_starting.store(false, Ordering::SeqCst);
+        eprintln!("[melo] engine-start thread spawn failed: {e}");
+        let _ = tauri::Emitter::emit(
+            app,
+            events::RUNTIME_STATUS,
+            events::RuntimeStatus {
+                phase: "error",
+                message: format!(
+                    "Couldn't start a thread for the playback engine ({e}). \
+                     Use Settings → Diagnostics → Repair runtime."
+                ),
+            },
+        );
+    }
+}
+
+/// Body of the one-shot `melo-engine-start` thread (see `start_engine`).
+/// This is the ONLY place `Player::start` is called from: LoadLibrary →
+/// symbol resolve → mpv_create → options → observe → mpv_initialize all
+/// happen here, off the UI thread.
+fn start_engine_thread(handle: tauri::AppHandle, dll: PathBuf) {
+    if let Some(state) = handle.try_state::<MeloState>() {
+        if state.exiting.load(Ordering::SeqCst) {
+            return; // close was requested while we were spawning
+        }
+    }
+    let started = Player::start(&dll, handle.clone(), 80.0, false, 1.0);
+    // `State` borrows the app handle; re-resolve it on this thread.
+    let Some(state) = handle.try_state::<MeloState>() else {
+        return;
+    };
+    match started {
         Ok(player) => {
-            let mut guard = state.player.lock().unwrap_or_else(|p| p.into_inner());
-            // Replace (and implicitly stop) any previous engine.
-            if let Some(old) = guard.replace(Arc::new(player)) {
+            if state.exiting.load(Ordering::SeqCst) {
+                // Window close won the race: tear the fresh engine down
+                // instead of installing it into a dying app.
+                player.shutdown();
+                return;
+            }
+            let old = {
+                let mut guard = state.player.lock().unwrap_or_else(|p| p.into_inner());
+                guard.replace(Arc::new(player))
+                // Lock dropped BEFORE shutting the old engine down: joining
+                // its event thread must never block IPC commands.
+            };
+            if let Some(old) = old {
                 old.shutdown();
             }
         }
         Err(e) => {
             eprintln!("[melo] engine start failed: {e}");
             let _ = tauri::Emitter::emit(
-                app,
+                &handle,
                 events::RUNTIME_STATUS,
                 events::RuntimeStatus {
                     phase: "error",
@@ -95,6 +192,8 @@ pub fn run() {
                 player: Mutex::new(None),
                 runtime: runtime.clone(),
                 config_dir: config_dir.clone(),
+                engine_starting: AtomicBool::new(false),
+                exiting: AtomicBool::new(false),
             });
             app.manage(settings.clone());
             app.manage(library);
@@ -102,6 +201,9 @@ pub fn run() {
             app.manage(lrclib);
 
             // Engine now, or after a one-time verified runtime install.
+            // Both paths are asynchronous: `start_engine` only spawns the
+            // dedicated engine thread — `.setup()` must NEVER wait on
+            // libmpv (a synchronous engine start froze the Windows UI).
             if runtime.libmpv_found() {
                 start_engine(app.handle(), &config_dir);
             } else {
@@ -120,6 +222,10 @@ pub fn run() {
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 if let Some(state) = window.app_handle().try_state::<MeloState>() {
+                    // Flag the shutdown BEFORE touching the engine: a start
+                    // still in flight on the engine thread will then tear its
+                    // own fresh instance down instead of racing this one.
+                    state.exiting.store(true, Ordering::SeqCst);
                     if let Some(player) = state
                         .player
                         .lock()
