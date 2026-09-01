@@ -226,40 +226,75 @@ func (r *Resolver) Invalidate(sourceID string) {
 	}
 }
 
+// resolveClients is the ordered, bounded set of YouTube player-client
+// configurations the resolver tries, in order, until one yields a browser-
+// playable stream. It exists because yt-dlp 2026.08.19 gates media formats
+// behind a GVS PO token for most clients:
+//
+//   - web, web_safari, web_music, web_creator, mweb: HTTPS/DASH require a PO
+//     token; unauthenticated and without a PO-token provider they return only
+//     storyboard (mhtml) formats.
+//   - android, android_vr, ios: HTTPS requires a PO token or a player token.
+//   - visionos, web_embedded, tv, tv_downgraded: no PO-token requirement.
+//
+// MELO is unauthenticated, ships no PO-token provider and no JS runtime, so the
+// only reliable PO-token-free *and* JS-free client is visionos — which is
+// exactly why yt-dlp's own unauthenticated default is "visionos,web". The
+// second entry is the PO-token-free fallback for videos visionos cannot serve
+// (e.g. made-for-kids).
+var resolveClients = []string{
+	"visionos,web",
+	"web_embedded,tv_downgraded",
+}
+
 func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolved, error) {
-	// --dump-single-json implies --simulate, so yt-dlp never downloads; but it
-	// still runs its own *default* format selection and aborts with "Requested
-	// format is not available" when that selection can't match a video (audio-only
-	// uploads, PO-token-gated formats, manifest-only videos). We don't want
-	// yt-dlp choosing formats at all — ParseResolved picks from the full format
-	// list — so --ignore-no-formats-error makes it dump the list regardless.
-	args := []string{
-		"--dump-single-json", "--no-playlist", "--no-warnings",
-		"--ignore-no-formats-error",
-		"--extractor-args", "youtube:player_client=web_music,web",
-		"https://www.youtube.com/watch?v=" + sourceID,
-	}
-	diagf("resolve %s: yt-dlp %v", sourceID, args)
-	out, err := r.runner.Run(ctx, args...)
-	if err != nil {
-		diagf("resolve %s: yt-dlp exited with error: %s", sourceID, err.Error())
-		msg := strings.ToLower(err.Error())
-		switch {
-		case strings.Contains(msg, "private") || strings.Contains(msg, "unavailable") ||
-			strings.Contains(msg, "removed") || strings.Contains(msg, "age"):
-			return Resolved{}, fmt.Errorf("%w: %s", ErrUnavailable, firstLine(err.Error()))
-		case strings.Contains(msg, "requested format is not available") || strings.Contains(msg, "no video formats"):
-			// Defensive: --ignore-no-formats-error should prevent this, but if a
-			// different yt-dlp raises it anyway, report "no playable stream" rather
-			// than a cryptic selector error.
-			return Resolved{}, fmt.Errorf("%w: %s", ErrNoAudio, firstLine(err.Error()))
-		case strings.Contains(msg, "resolve host") || strings.Contains(msg, "network") ||
-			strings.Contains(msg, "timed out") || strings.Contains(msg, "urlopen"):
-			return Resolved{}, fmt.Errorf("couldn't reach YouTube: %s", firstLine(err.Error()))
+	// Bounded, deterministic fallback across client sets: try each in order and
+	// stop at the first that produces a browser-playable stream. Only
+	// "no playable stream" advances to the next set; real failures (network,
+	// unavailable, unreadable output) are returned immediately and never masked.
+	var lastErr error
+	for i, clients := range resolveClients {
+		args := []string{
+			"--dump-single-json", "--no-playlist", "--no-warnings",
+			"--ignore-no-formats-error",
+			"--extractor-args", "youtube:player_client=" + clients,
+			"https://www.youtube.com/watch?v=" + sourceID,
 		}
-		return Resolved{}, fmt.Errorf("%w: %s", ErrResolve, firstLine(err.Error()))
+		diagf("resolve %s: attempt %d/%d yt-dlp %v", sourceID, i+1, len(resolveClients), args)
+		out, err := r.runner.Run(ctx, args...)
+		if err != nil {
+			diagf("resolve %s: yt-dlp exited with error: %s", sourceID, err.Error())
+			msg := strings.ToLower(err.Error())
+			switch {
+			case strings.Contains(msg, "private") || strings.Contains(msg, "unavailable") ||
+				strings.Contains(msg, "removed") || strings.Contains(msg, "age"):
+				return Resolved{}, fmt.Errorf("%w: %s", ErrUnavailable, firstLine(err.Error()))
+			case strings.Contains(msg, "requested format is not available") || strings.Contains(msg, "no video formats"):
+				// This client set exposed no downloadable formats; try the next.
+				lastErr = fmt.Errorf("%w: %s", ErrNoAudio, firstLine(err.Error()))
+				continue
+			case strings.Contains(msg, "resolve host") || strings.Contains(msg, "network") ||
+				strings.Contains(msg, "timed out") || strings.Contains(msg, "urlopen"):
+				return Resolved{}, fmt.Errorf("couldn't reach YouTube: %s", firstLine(err.Error()))
+			}
+			return Resolved{}, fmt.Errorf("%w: %s", ErrResolve, firstLine(err.Error()))
+		}
+		res, perr := ParseResolved(out, sourceID, quality)
+		if perr == nil {
+			return res, nil
+		}
+		if !errors.Is(perr, ErrNoAudio) {
+			// A real failure (unavailable, live, unreadable output), not a lack
+			// of formats — surface it rather than retrying with another client.
+			return Resolved{}, perr
+		}
+		lastErr = perr
+		diagf("resolve %s: attempt %d/%d had no playable stream; trying the next client set", sourceID, i+1, len(resolveClients))
 	}
-	return ParseResolved(out, sourceID, quality)
+	if lastErr != nil {
+		return Resolved{}, lastErr
+	}
+	return Resolved{}, ErrNoAudio
 }
 
 func firstLine(s string) string {

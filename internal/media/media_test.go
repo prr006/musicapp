@@ -35,6 +35,33 @@ func (f *fakeRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 	return f.out, f.err
 }
 
+// clientArgsRunner returns a canned JSON payload per requested player-client
+// set, so tests can drive the bounded client-fallback logic deterministically.
+type clientArgsRunner struct {
+	calls []string
+	outs  map[string][]byte
+}
+
+func (r *clientArgsRunner) Run(_ context.Context, args ...string) ([]byte, error) {
+	clients := ""
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--extractor-args" && strings.HasPrefix(args[i+1], "youtube:player_client=") {
+			clients = strings.TrimPrefix(args[i+1], "youtube:player_client=")
+		}
+	}
+	r.calls = append(r.calls, clients)
+	if out, ok := r.outs[clients]; ok {
+		return out, nil
+	}
+	return []byte(`{"id":"vid","formats":[]}`), nil
+}
+
+func storyboardOnlyJSON() []byte {
+	return []byte(`{"id":"vid","title":"Song","formats":[
+		{"format_id":"sb0","ext":"mhtml","acodec":"none","vcodec":"none","protocol":"mhtml","url":"https://cdn/sb0"}
+	]}`)
+}
+
 func infoJSON(t *testing.T, expire int64, formats []map[string]any) []byte {
 	t.Helper()
 	raw, err := json.Marshal(map[string]any{
@@ -331,6 +358,68 @@ func TestResolverExpiredEntryRefetches(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&r.calls); got != 2 {
 		t.Fatalf("expired entry should be refetched, got %d calls", got)
+	}
+}
+
+// TestResolverStopsAtFirstPlayableClientSet verifies the happy path: the
+// preferred client set yields a playable stream, so no fallback is attempted.
+func TestResolverStopsAtFirstPlayableClientSet(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	runner := &clientArgsRunner{outs: map[string][]byte{
+		resolveClients[0]: infoJSON(t, exp, []map[string]any{audioFmt("140", "m4a", 128, exp)}),
+	}}
+	res := NewResolver(runner)
+	got, err := res.Resolve(context.Background(), "vid", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.URL, "/140") {
+		t.Fatalf("expected the preferred set's result, got %s", got.URL)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected exactly 1 attempt, got %d: %v", len(runner.calls), runner.calls)
+	}
+}
+
+// TestResolverFallsBackToSecondClientSet mirrors the real Einaudi failure: the
+// preferred set returns only storyboards (no playable audio), so the resolver
+// must try the fallback set instead of giving up.
+func TestResolverFallsBackToSecondClientSet(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	runner := &clientArgsRunner{outs: map[string][]byte{
+		resolveClients[0]: storyboardOnlyJSON(),
+		resolveClients[1]: infoJSON(t, exp, []map[string]any{audioFmt("140", "m4a", 128, exp)}),
+	}}
+	res := NewResolver(runner)
+	got, err := res.Resolve(context.Background(), "vid", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.URL, "/140") {
+		t.Fatalf("expected the fallback set's result, got %s", got.URL)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected exactly 2 attempts, got %d: %v", len(runner.calls), runner.calls)
+	}
+	if runner.calls[0] != resolveClients[0] || runner.calls[1] != resolveClients[1] {
+		t.Fatalf("client sets tried out of order: %v", runner.calls)
+	}
+}
+
+// TestResolverBoundedFallbackExhaustsAllSets verifies the fallback is bounded:
+// every set yields no playable audio, so the resolver returns ErrNoAudio after
+// exactly len(resolveClients) attempts (no uncontrolled retries).
+func TestResolverBoundedFallbackExhaustsAllSets(t *testing.T) {
+	runner := &clientArgsRunner{outs: map[string][]byte{
+		resolveClients[0]: storyboardOnlyJSON(),
+		resolveClients[1]: storyboardOnlyJSON(),
+	}}
+	res := NewResolver(runner)
+	if _, err := res.Resolve(context.Background(), "vid", "high"); !errors.Is(err, ErrNoAudio) {
+		t.Fatalf("expected ErrNoAudio after exhausting all sets, got %v", err)
+	}
+	if len(runner.calls) != len(resolveClients) {
+		t.Fatalf("expected exactly %d attempts, got %d: %v", len(resolveClients), len(runner.calls), runner.calls)
 	}
 }
 
