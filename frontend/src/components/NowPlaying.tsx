@@ -13,6 +13,7 @@ export function NowPlaying() {
   const error = usePlayer((s) => s.error)
   const speed = usePlayer((s) => s.speed)
   const lyricsOpen = useUIStore((s) => s.lyricsOpen)
+  const queueOpen = useUIStore((s) => s.queueOpen)
   const liked = useLibraryStore((s) => (current ? s.liked.some((t) => t.id === current.id) : false))
   const showLyrics = useLibraryStore((s) => s.settings.showLyrics)
 
@@ -28,16 +29,26 @@ export function NowPlaying() {
           {status === 'loading' ? 'Loading' : status === 'playing' ? 'Playing' : status === 'error' ? 'Error' : 'Paused'}
         </div>
         <div className="row">
+          {showLyrics && (
+            <button
+              className={`icon-btn ${withLyrics ? 'active' : ''}`}
+              onClick={() => ui.toggleLyrics(!lyricsOpen)}
+              aria-label="Toggle lyrics"
+              aria-pressed={withLyrics}
+              title={withLyrics ? 'Hide lyrics (Y)' : 'Show lyrics (Y)'}
+              type="button"
+            >
+              <LyricsIcon size={18} />
+            </button>
+          )}
           <button
-            className={`icon-btn ${withLyrics ? 'active' : ''}`}
-            onClick={() => ui.toggleLyrics(!lyricsOpen)}
-            aria-label="Toggle lyrics"
-            aria-pressed={withLyrics}
+            className={`icon-btn ${queueOpen ? 'active' : ''}`}
+            onClick={() => ui.toggleQueue()}
+            aria-label="Queue"
+            aria-pressed={queueOpen}
+            title="Queue (Q)"
             type="button"
           >
-            <LyricsIcon size={18} />
-          </button>
-          <button className="icon-btn" onClick={() => ui.toggleQueue()} aria-label="Queue" type="button">
             <QueueIcon size={18} />
           </button>
         </div>

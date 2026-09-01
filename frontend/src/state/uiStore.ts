@@ -47,19 +47,40 @@ let toastId = 0
 export const ui = {
   navigate(route: Route): void {
     const current = get().route
-    if (JSON.stringify(current) === JSON.stringify(route)) return
-    set({ route, history: [...get().history, current], future: [] })
+    const same = JSON.stringify(current) === JSON.stringify(route)
+    // Navigating dismisses the expanded Now Playing (and its lyrics pane) so the
+    // route is immediately visible — even when the target is the route the user
+    // is already on, the click still reveals it. The queue drawer stays put.
+    set({
+      route,
+      history: same ? get().history : [...get().history, current],
+      future: [],
+      nowPlayingOpen: false,
+      lyricsOpen: false,
+    })
   },
   back(): void {
     const { history, route, future } = get()
     if (history.length === 0) return
     const previous = history[history.length - 1]
-    set({ route: previous, history: history.slice(0, -1), future: [route, ...future] })
+    set({
+      route: previous,
+      history: history.slice(0, -1),
+      future: [route, ...future],
+      nowPlayingOpen: false,
+      lyricsOpen: false,
+    })
   },
   forward(): void {
     const { future, route, history } = get()
     if (future.length === 0) return
-    set({ route: future[0], future: future.slice(1), history: [...history, route] })
+    set({
+      route: future[0],
+      future: future.slice(1),
+      history: [...history, route],
+      nowPlayingOpen: false,
+      lyricsOpen: false,
+    })
   },
   toggleQueue(open?: boolean): void {
     set({ queueOpen: open ?? !get().queueOpen })

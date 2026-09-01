@@ -14,11 +14,11 @@ export function QueuePanel() {
   const autoQueue = usePlayer((s) => s.autoQueue)
   const contextLabel = usePlayer((s) => s.contextLabel)
   const status = usePlayer((s) => s.status)
+  const current = usePlayer((s) => s.current)
   const [saving, setSaving] = useState(false)
   const [name, setName] = useState('')
 
   const upcoming = queue.slice(index + 1)
-  const current = index >= 0 ? queue[index] : null
 
   return (
     <aside className="panel" aria-label="Play queue">
@@ -51,7 +51,7 @@ export function QueuePanel() {
         )}
 
         <div className="queue-group-title">
-          <span>Next up {upcoming.length > 0 && `· ${formatCount(upcoming.length, 'song')}`}</span>
+          <span>Up next {upcoming.length > 0 && `· ${formatCount(upcoming.length, 'song')}`}</span>
           {upcoming.length > 0 && (
             <button className="link" onClick={() => playback.clearUpcoming()} type="button" style={{ color: 'var(--text-3)' }}>
               Clear
@@ -128,20 +128,33 @@ export function QueuePanel() {
                 Clear
               </button>
             </div>
-            {autoQueue.slice(0, 10).map((track) => (
+            {autoQueue.slice(0, 10).map((track, i) => (
               <div
                 className="track-row compact"
                 key={`auto-${track.id}`}
                 role="button"
                 tabIndex={0}
-                onClick={() => void playback.play(track)}
-                onKeyDown={(e) => e.key === 'Enter' && void playback.play(track)}
+                onClick={() => void playback.playDiscovered(track)}
+                onKeyDown={(e) => e.key === 'Enter' && void playback.playDiscovered(track)}
                 style={{ opacity: 0.72 }}
               >
                 <Artwork src={track.artwork} alt={track.title} style={{ width: 44, height: 44 }} />
                 <div className="track-main">
                   <div className="track-title">{track.title}</div>
                   <div className="track-sub">{track.artist}</div>
+                </div>
+                <div className="track-end">
+                  <button
+                    className="icon-btn sm"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      playback.removeFromAutoQueue(i)
+                    }}
+                    aria-label="Remove from autoplay"
+                    type="button"
+                  >
+                    <CloseIcon size={14} />
+                  </button>
                 </div>
               </div>
             ))}

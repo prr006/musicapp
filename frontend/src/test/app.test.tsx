@@ -36,7 +36,11 @@ function stubBackend(): Backend {
     getState: vi.fn(async () => ({
       settings: defaultSettings(), liked: [], playlists: [], history: [], searchHistory: [], session: null, version: 1,
     })),
-    getDiagnostics: vi.fn(),
+    getDiagnostics: vi.fn(async () => ({
+      appVersion: '0.0.0', goVersion: 'go1.21', platform: 'linux', dataDir: '/tmp',
+      streamProxy: 'off', resolver: { installed: false, path: '', version: '', message: '' },
+      resolverBinary: '', mediaKeys: 'off', tray: 'on',
+    })),
     search: vi.fn(async () => ({ query: 'night', songs: [a, b], videos: [], albums: [], artists: [], provider: 'ytmusic' })),
     getPlayable: vi.fn(async (t: Track) => ({
       trackId: t.id, url: `http://local/${t.sourceId}`, mimeType: 'audio/mp4', duration: 120, bitrate: 128, expiresAt: 0,
@@ -86,7 +90,7 @@ beforeEach(() => {
 })
 
 describe('MELO application', () => {
-  it('walks search → single-click play → mini player → queue → EOF advance', async () => {
+  it('walks search → single-click play → mini player → queue → autoplay advance', async () => {
     stubBackend()
     render(<App />)
 
@@ -97,27 +101,113 @@ describe('MELO application', () => {
     await userEvent.type(screen.getByRole('textbox', { name: 'Search' }), 'night{enter}')
     await waitFor(() => expect(screen.getByText('Nightfall')).toBeInTheDocument())
 
-    // Single click plays.
+    // Single click plays ONLY the chosen track.
     await userEvent.click(screen.getByRole('button', { name: /Play Nightfall/i }))
     await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe(a.id))
     expect(usePlayerStore.getState().status).toBe('playing')
+    // Search-result siblings must NOT become the queue.
+    expect(usePlayerStore.getState().queue.map((t) => t.id)).toEqual([a.id])
 
     // Mini player reflects the current track.
     const player = document.querySelector('.player') as HTMLElement
     expect(within(player).getByText('Nightfall')).toBeInTheDocument()
     expect(within(player).getByText('Halcyon')).toBeInTheDocument()
 
-    // Queue panel lists what is coming next.
+    // The global queue panel separates the explicit queue from autoplay.
     await userEvent.click(within(player).getByRole('button', { name: 'Queue' }))
     const panel = await screen.findByRole('complementary', { name: /Play queue/i })
-    expect(within(panel).getByText('Paper Lanterns')).toBeInTheDocument()
+    // "Paper Lanterns" is an autoplay suggestion, not a queued search sibling.
+    await waitFor(() => expect(within(panel).getByText('Paper Lanterns')).toBeInTheDocument())
 
-    // Natural end of file advances exactly once.
+    // Natural end of file advances exactly once, into autoplay.
     act(() => {
       playback.engine.el.dispatchEvent(new Event('ended'))
     })
     await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe(b.id))
-    expect(usePlayerStore.getState().index).toBe(1)
+    expect(usePlayerStore.getState().playingFrom).toBe('autoplay')
+  })
+
+  it('does not mutate current track or queues while searching unrelated terms', async () => {
+    stubBackend()
+    render(<App />)
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Search' }), 'night{enter}')
+    await userEvent.click(await screen.findByRole('button', { name: /Play Nightfall/i }))
+    await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
+    // Let the autoplay pipeline settle so we have a stable baseline.
+    await waitFor(() => expect(usePlayerStore.getState().autoQueue.map((t) => t.id)).toEqual([b.id]))
+    const currentBefore = usePlayerStore.getState().current?.id
+    const queueBefore = usePlayerStore.getState().queue.map((t) => t.id)
+    const autoBefore = usePlayerStore.getState().autoQueue.map((t) => t.id)
+
+    // A fresh search must never rewrite the session.
+    const input = screen.getByRole('textbox', { name: 'Search' })
+    await userEvent.clear(input)
+    await userEvent.type(input, 'lantern{enter}')
+    await waitFor(() => expect(screen.getByText('Paper Lanterns')).toBeInTheDocument())
+
+    expect(usePlayerStore.getState().current?.id).toBe(currentBefore)
+    expect(usePlayerStore.getState().queue.map((t) => t.id)).toEqual(queueBefore)
+    expect(usePlayerStore.getState().autoQueue.map((t) => t.id)).toEqual(autoBefore)
+  })
+
+  it('keeps one global queue across every route', async () => {
+    stubBackend()
+    render(<App />)
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Search' }), 'night{enter}')
+    await userEvent.click(await screen.findByRole('button', { name: /Play Nightfall/i }))
+    await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
+
+    const extra = song('c', 'Ember Glow')
+    act(() => {
+      playback.addToQueue([extra])
+    })
+    const queue = () => usePlayerStore.getState().queue.map((t) => t.id)
+    expect(queue()).toEqual([a.id, extra.id])
+
+    // The same single queue survives navigation across the whole app.
+    for (const label of ['Your Library', 'Search', 'Settings', 'Home']) {
+      await userEvent.click(screen.getByRole('button', { name: label }))
+      expect(queue()).toEqual([a.id, extra.id])
+    }
+  })
+
+  it('keeps the sidebar reachable while the expanded Now Playing is open', async () => {
+    stubBackend()
+    render(<App />)
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Search' }), 'night{enter}')
+    await userEvent.click(await screen.findByRole('button', { name: /Play Nightfall/i }))
+    await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
+
+    // Expand Now Playing.
+    const player = document.querySelector('.player') as HTMLElement
+    await userEvent.click(within(player).getByRole('button', { name: 'Open now playing' }))
+    expect(useUIStore.getState().nowPlayingOpen).toBe(true)
+    expect(screen.getByRole('region', { name: 'Now playing' })).toBeInTheDocument()
+
+    // The overlay lives inside the main column, never over the sidebar.
+    const np = screen.getByRole('region', { name: 'Now playing' })
+    expect(np.closest('main')).toBeInTheDocument()
+    expect(np.closest('nav')).toBeNull()
+
+    // Sidebar navigation takes effect immediately from the expanded view.
+    await userEvent.click(screen.getByRole('button', { name: 'Your Library' }))
+    expect(useUIStore.getState().route).toEqual({ name: 'library', tab: 'songs' })
+
+    await userEvent.click(screen.getByRole('button', { name: 'Search' }))
+    expect(useUIStore.getState().route).toEqual({ name: 'search' })
+
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(useUIStore.getState().route).toEqual({ name: 'settings' })
+
+    await userEvent.click(screen.getByRole('button', { name: 'Home' }))
+    expect(useUIStore.getState().route).toEqual({ name: 'home' })
+
+    // Player controls still receive clicks after navigation.
+    await userEvent.click(within(player).getByRole('button', { name: 'Queue' }))
+    expect(useUIStore.getState().queueOpen).toBe(true)
   })
 
   it('keeps like state in the library and the mini player in sync', async () => {

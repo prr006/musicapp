@@ -133,7 +133,7 @@ export function SearchView() {
                     key={track.id}
                     track={track}
                     index={i}
-                    onPlay={() => void playback.play(track, { tracks: all, index: i, label: `Search: ${submitted}` })}
+                    onPlay={() => void playback.play(track)}
                   />
                 ))}
               </div>
@@ -151,9 +151,7 @@ export function SearchView() {
                     key={track.id}
                     track={track}
                     index={i}
-                    onPlay={() =>
-                      void playback.play(track, { tracks: all, index: songs.length + i, label: `Search: ${submitted}` })
-                    }
+                    onPlay={() => void playback.play(track)}
                   />
                 ))}
               </div>
