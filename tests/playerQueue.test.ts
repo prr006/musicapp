@@ -26,10 +26,10 @@ function track(title: string): Track {
     artists: [{ id: `a${seq}`, name: `Artist ${seq}` }],
     album: null,
     durationSecs: 180,
-    artworkUrl: null,
+    artwork: null,
+    isLocal: false,
     metadata: {},
-    addedAt: null,
-  } as unknown as Track;
+  };
 }
 
 describe("queue machine (real implementation)", () => {
@@ -156,24 +156,98 @@ describe("queue machine (real implementation)", () => {
     expect(q.currentItem()?.track.title).toBe("A");
   });
 
-  it("removing the playing item advances to the next one", () => {
+  it("removing the playing item returns a load decision for the follow-up", () => {
     const q = new QueueMachine(7);
     q.startSequence([track("A"), track("B")], false);
     const aId = q.currentItem()?.id;
-    q.remove(aId!);
+    const removal = q.remove(aId!);
+    expect(removal.advanced?.item.track.title).toBe("B");
+    expect(removal.stopped).toBe(false);
     expect(q.currentItem()?.track.title).toBe("B");
+    // The removed track does NOT leak into history.
+    expect(q.snapshot().history.map((h) => h.track.title)).toEqual([]);
   });
 
-  it("previous walks history and restarts when history is empty", () => {
+  it("removing the LAST playing item reports a clean stop", () => {
     const q = new QueueMachine(7);
-    q.startSequence([track("A"), track("B")], false);
+    q.startSequence([track("Only")], false);
+    const removal = q.remove(q.currentItem()!.id);
+    expect(removal.advanced).toBeNull();
+    expect(removal.stopped).toBe(true);
+    expect(q.currentItem()).toBeNull();
+    expect(q.exhausted).toBe(true);
+  });
+
+  it("removing the playing item honors repeat-all wrap", () => {
+    const q = new QueueMachine(7);
+    q.startSequence([track("A"), track("B"), track("C")], false);
+    q.setRepeat("all");
     q.next(); // → B
-    const p = q.previous();
-    expect(p?.item.track.title).toBe("A");
-    expect(p?.seekTo).toBe(0);
-    const restart = q.previous(); // no history → restart current
-    expect(restart?.item.track.title).toBe("A");
-    expect(restart?.seekTo).toBe(0);
+    q.next(); // → C (last in order)
+    const removal = q.remove(q.currentItem()!.id);
+    expect(removal.advanced?.item.track.title).toBe("A"); // wrapped
+    expect(removal.stopped).toBe(false);
+  });
+
+  it("removing the last playing item with repeat OFF stops (no restart of played tracks)", () => {
+    const q = new QueueMachine(7);
+    q.startSequence([track("A"), track("B"), track("C")], false);
+    q.next(); // → B
+    q.next(); // → C, order exhausted
+    const removal = q.remove(q.currentItem()!.id);
+    expect(removal.advanced).toBeNull(); // A/B already played — no restart
+    expect(removal.stopped).toBe(true);
+  });
+
+  it("shuffleUpcoming reshuffles only the upcoming order", () => {
+    const q = new QueueMachine(7);
+    q.startSequence([track("A"), track("B"), track("C"), track("D")], false);
+    const currentBefore = q.currentItem()?.id;
+    q.shuffleUpcoming();
+    expect(q.currentItem()?.id).toBe(currentBefore);
+    const before = q.upcomingItems().map((i) => i.track.title);
+    q.shuffleUpcoming();
+    const after = q.upcomingItems().map((i) => i.track.title);
+    // Same membership, possibly different order (deterministic seeds).
+    expect(after.slice().sort()).toEqual(before.slice().sort());
+    expect(q.upcomingItems().length).toBe(3);
+  });
+
+  it("previous restarts the current track past the threshold, walks history before it", () => {
+    const q = new QueueMachine(7);
+    q.startSequence([track("A"), track("B"), track("C")], false);
+    q.next(); // → B (history: [A])
+    q.next(); // → C (history: [B, A])
+
+    // 40 s in: restart C in place — no history mutation.
+    const restart = q.previous(40);
+    expect(restart?.restart).toBe(true);
+    expect(restart?.item.track.title).toBe("C");
+    expect(q.snapshot().history.map((h) => h.track.title)).toEqual(["B", "A"]);
+
+    // 1 s in: walk back to B, then A.
+    const back = q.previous(1);
+    expect(back?.restart).toBe(false);
+    expect(back?.item.track.title).toBe("B");
+    expect(back?.seekTo).toBe(0);
+    const back2 = q.previous(0);
+    expect(back2?.item.track.title).toBe("A");
+
+    // History empty, nothing current-position left: restart current.
+    const tail = q.previous(0);
+    expect(tail?.restart).toBe(true);
+    expect(tail?.item.track.title).toBe("A");
+  });
+
+  it("re-playing a history item then advancing does not duplicate history", () => {
+    const q = new QueueMachine(7);
+    q.startSequence([track("A"), track("B"), track("C")], false);
+    q.next(); // → B (history [A])
+    q.jumpTo(q.snapshot().history[0]!.id); // back to A
+    q.next(); // → B again
+    const titles = q.snapshot().history.map((h) => h.track.title);
+    expect(titles.filter((t) => t === "A").length).toBe(1);
+    expect(titles[0]).toBe("A");
   });
 
   it("history grows most-recent-first and queueTracks returns play order", () => {

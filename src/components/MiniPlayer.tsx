@@ -1,6 +1,7 @@
 /**
  * Persistent bottom player (spec §10). Renders backend state only; every
- * interaction is a command. Position comes from the throttled position store.
+ * interaction is a command. Position comes from the interpolated clock
+ * (anchored on libmpv samples — see stores/clock.ts).
  */
 
 import * as api from "@/app/api";
@@ -8,7 +9,8 @@ import { Artwork } from "@/components/Artwork";
 import { Icon } from "@/components/Icon";
 import { useStore } from "@/app/store";
 import { openNowPlaying, toggleQueue, uiStore } from "@/app/stores/ui";
-import { playbackStore, positionStore, queueStore } from "@/app/stores/playback";
+import { playbackStore, queueStore } from "@/app/stores/playback";
+import { useClock } from "@/app/stores/clock";
 import { artistLine } from "@/types/domain";
 import { formatTime } from "@/lib/format";
 
@@ -20,26 +22,25 @@ export function MiniPlayer() {
   const shuffle = useStore(playbackStore, (s) => s.shuffle);
   const repeat = useStore(playbackStore, (s) => s.repeat);
   const error = useStore(playbackStore, (s) => s.error);
-  const position = useStore(positionStore, (s) => s.positionSecs);
-  const duration = useStore(positionStore, (s) => s.durationSecs);
   const queueOpen = useStore(uiStore, (s) => s.queueOpen);
   const upcomingCount = useStore(queueStore, (s) => s.upcoming.length);
+  const { position, duration: clockDuration } = useClock(0.25);
+  const duration = clockDuration ?? track?.durationSecs ?? null;
 
   const playing = status === "playing" || status === "buffering";
+  const loading = status === "loading";
   const pct = duration ? Math.min(100, (position / duration) * 100) : 0;
+
+  function seekFromEvent(e: React.MouseEvent<HTMLDivElement | HTMLButtonElement>): void {
+    if (!duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    void api.seekTo(((e.clientX - rect.left) / rect.width) * duration);
+  }
 
   return (
     <footer className="player">
       {/* thin full-width progress rail */}
-      <div
-        className="player-progress"
-        title="Seek"
-        onClick={(e) => {
-          if (!duration) return;
-          const rect = e.currentTarget.getBoundingClientRect();
-          void api.seekTo(((e.clientX - rect.left) / rect.width) * duration);
-        }}
-      >
+      <div className="player-progress" title="Seek" onClick={seekFromEvent}>
         <div className="fill" style={{ width: `${pct}%` }} />
       </div>
 
@@ -51,7 +52,10 @@ export function MiniPlayer() {
         <Artwork track={track} size={54} rounded={10} />
         {track ? (
           <div className="player-track-info">
-            <span className="player-title">{track.title}</span>
+            <span className="player-title">
+              {track.title}
+              {loading && <span className="hint" style={{ marginLeft: 8 }}>loading…</span>}
+            </span>
             <span className="player-artist">{artistLine(track)}</span>
             {error && (
               <span className="player-artist" style={{ color: "var(--danger)" }}>
@@ -98,21 +102,20 @@ export function MiniPlayer() {
           >
             <Icon name={repeat === "one" ? "repeat-one" : "repeat"} size={16} />
           </button>
+          <button
+            className="icon-button"
+            title="Stop — clears playback, never skips"
+            onClick={() => void api.stop()}
+          >
+            <Icon name="stop" size={14} filled />
+          </button>
         </div>
         <div className="player-times">
           <span>{formatTime(position)}</span>
-          <div
-            className="bar"
-            title="Seek"
-            onClick={(e) => {
-              if (!duration) return;
-              const rect = e.currentTarget.getBoundingClientRect();
-              void api.seekTo(((e.clientX - rect.left) / rect.width) * duration);
-            }}
-          >
+          <div className="bar" title="Seek" onClick={seekFromEvent}>
             <div className="fill" style={{ width: `${pct}%` }} />
           </div>
-          <span>{formatTime(duration ?? track?.durationSecs)}</span>
+          <span>{formatTime(duration)}</span>
         </div>
       </div>
 

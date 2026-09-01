@@ -29,10 +29,11 @@ function ensureLoop(): void {
 }
 
 /**
- * Sink for backend position events — wired once by useAppBridge. `playing`
- * comes from the latest playback state snapshot (status events and position
- * events both originate in the same engine loop, so they cannot disagree
- * for more than one tick).
+ * Sink for authoritative position samples — anchored by the playback
+ * controller (engine `player://position`/`player://state` events and
+ * controller state resets on track change/stop/seek). `playing` comes from
+ * the latest engine state, so the derived clock freezes on pause/buffering
+ * and re-anchors on every engine update.
  */
 export function onPositionEvent(
   sample: Omit<ClockSample, "receivedAtMs"> & { receivedAtMs?: number },

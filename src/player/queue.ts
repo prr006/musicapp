@@ -45,6 +45,21 @@ export type LoadDecision =
   | { kind: "load"; item: QueueItem; restart?: boolean }
   | { kind: "none"; exhausted: boolean };
 
+/** What to do after removing an item (`QueueMachine.remove`). */
+export interface RemovalDecision {
+  /** The removed item was the current one and playback should move on. */
+  advanced: { item: QueueItem; token: number } | null;
+  /** True when the queue ran dry — the engine must stop (nothing to play). */
+  stopped: boolean;
+}
+
+/**
+ * When Previous restarts the current track instead of going back (seconds of
+ * playback). Matches common desktop-player behavior: a quick tap restarts,
+ * holding through the song goes to the previous item.
+ */
+export const PREVIOUS_RESTART_THRESHOLD_SECS = 3;
+
 export interface QueueState {
   /** Added order (source of truth for ids → tracks). */
   items: QueueItem[];
@@ -111,7 +126,7 @@ export class QueueMachine {
   // ---- user operations ----------------------------------------------------
 
   /** Replace whatever plays with `track` (history keeps the old current). */
-  playNow(track: Track): { item: QueueItem; token: number } {
+  playNow(track: Track): { item: QueueItem; token: number } | null {
     return this.playNowAll([track]);
   }
 
@@ -128,9 +143,10 @@ export class QueueMachine {
     return this.selectCurrent(first);
   }
 
-  private playNowAll(tracks: Track[]): { item: QueueItem; token: number } {
+  private playNowAll(tracks: Track[]): { item: QueueItem; token: number } | null {
     if (tracks.length === 0) {
-      return this.selectCurrent(this.state.currentId ?? this.state.order[0] ?? "");
+      const fallback = this.state.currentId ?? this.state.order[0];
+      return fallback ? this.selectCurrent(fallback) : null;
     }
     const added = tracks.map((track) => ({ id: nextId(), track }));
     this.state.items.push(...added);
@@ -182,40 +198,79 @@ export class QueueMachine {
     return null;
   }
 
-  /** Manual previous: history first, else restart current. */
-  previous(): { item: QueueItem; token: number; seekTo: number } | null {
+  /**
+   * Manual previous. Two behaviors, mirroring desktop players:
+   * * position > `PREVIOUS_RESTART_THRESHOLD_SECS` → restart the CURRENT
+   *   track (`restart: true`, no queue mutation, history untouched);
+   * * otherwise → the most recent history item, else the first upcoming
+   *   item, else restart the current one from zero.
+   */
+  previous(positionSecs = 0): {
+    item: QueueItem;
+    token: number;
+    seekTo: number;
+    restart: boolean;
+  } | null {
+    const current = this.currentItem();
+    if (current && positionSecs > PREVIOUS_RESTART_THRESHOLD_SECS) {
+      return { item: current, token: this.nextToken(), seekTo: 0, restart: true };
+    }
     const prev = this.state.history[0];
     if (prev) {
       this.state.history.shift();
       const result = this.selectCurrent(prev.id);
-      return { ...result, seekTo: 0 };
+      return { ...result, seekTo: 0, restart: false };
     }
-    const current = this.currentItem();
+    // No history: go to the first upcoming item if the current one just
+    // started, otherwise restart the current one.
     if (current) {
-      return { item: current, token: this.nextToken(), seekTo: 0 };
+      return { item: current, token: this.nextToken(), seekTo: 0, restart: true };
+    }
+    const first = this.state.order[0];
+    if (first) {
+      const result = this.selectCurrent(first);
+      return { ...result, seekTo: 0, restart: false };
     }
     return null;
   }
 
-  remove(id: string): void {
+  /**
+   * Remove an item. Removing the CURRENT one is a single advance to the next
+   * item (repeat rules apply); the controller receives the decision so the
+   * engine actually loads the follow-up — the removed track must not keep
+   * playing.
+   */
+  remove(id: string): RemovalDecision {
     const idx = this.state.items.findIndex((i) => i.id === id);
-    if (idx < 0) return;
+    if (idx < 0) return { advanced: null, stopped: false };
     if (id === this.state.currentId) {
-      // Removing the playing item advances to the next one (one advance).
+      // Drop it without pushing it into history (the user removed it).
       this.state.items.splice(idx, 1);
       this.state.currentId = null;
-      this.rebuildOrder();
+      // NOTE: the order is NOT rebuilt here — it only ever contains
+      // not-yet-played items, so `order[0]` is the true follow-up and
+      // already-played tracks don't restart when repeat is off.
       const follow = this.state.order[0];
       if (follow) {
-        this.selectCurrent(follow);
-      } else {
-        this.bump();
+        const result = this.selectCurrent(follow);
+        return { advanced: result, stopped: false };
       }
-      return;
+      if (this.state.repeat === "all" && this.state.items.length > 0) {
+        this.state.history = [];
+        this.rebuildOrder();
+        const first = this.state.order[0];
+        if (first) {
+          const result = this.selectCurrent(first);
+          return { advanced: result, stopped: false };
+        }
+      }
+      this.bump();
+      return { advanced: null, stopped: true };
     }
     this.state.items.splice(idx, 1);
     this.state.order = this.state.order.filter((o) => o !== id);
     this.bump();
+    return { advanced: null, stopped: false };
   }
 
   move(id: string, up: boolean): void {
@@ -265,6 +320,27 @@ export class QueueMachine {
   setRepeat(mode: RepeatMode): void {
     this.state.repeat = mode;
     this.bump();
+  }
+
+  /**
+   * Reshuffle ONLY the upcoming order (new seed). The current track and the
+   * history are untouched — this never restarts or interrupts playback.
+   */
+  shuffleUpcoming(): void {
+    if (this.state.order.length < 2) return;
+    this.seed = (this.seed * 1664525 + 1013904223 + this.state.rev) >>> 0;
+    const pending = this.state.order;
+    const rng = mulberry32(this.seed);
+    for (let i = pending.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [pending[i], pending[j]] = [pending[j], pending[i]];
+    }
+    this.bump();
+  }
+
+  /** First item to (re)start from when the queue is exhausted (Play button). */
+  firstItem(): QueueItem | null {
+    return this.currentItem() ?? this.upcomingItems()[0] ?? this.state.items[0] ?? null;
   }
 
   // ---- engine events ------------------------------------------------------
@@ -337,12 +413,24 @@ export class QueueMachine {
 
   // ---- internals -----------------------------------------------------------
 
+  /**
+   * Most-recent-first history. An item never appears twice (jumping back to
+   * a history item and advancing again moves it to the front instead of
+   * duplicating it).
+   */
+  private pushHistory(item: QueueItem): void {
+    this.state.history = [
+      item,
+      ...this.state.history.filter((h) => h.id !== item.id),
+    ];
+    if (this.state.history.length > 200) this.state.history.length = 200;
+  }
+
   /** Shared advance logic (manual next + EOF). */
   private advance(): { kind: "load"; item: QueueItem; token: number } | { kind: "none"; exhausted: boolean } {
     const current = this.currentItem();
     if (current) {
-      this.state.history.unshift(current);
-      if (this.state.history.length > 200) this.state.history.pop();
+      this.pushHistory(current);
       this.state.currentId = null;
     }
     const nextIdInOrder = this.state.order[0];

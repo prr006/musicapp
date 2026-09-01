@@ -83,6 +83,26 @@ fn opt_secs(v: &Value, key: &str) -> Option<f64> {
     }
 }
 
+/// Best available thumbnail URL for a flat playlist entry:
+/// `thumbnail` → last (largest) entry of `thumbnails` → the deterministic
+/// YouTube thumbnail URL derived from the video id. YouTube serves the
+/// latter for essentially every non-deleted video, so search results keep
+/// real artwork even when yt-dlp's flat mode omits the field.
+pub fn flat_entry_artwork(entry: &Value, id: &str) -> Option<String> {
+    if let Some(t) = opt_str(entry, "thumbnail") {
+        return Some(t);
+    }
+    let from_list = entry
+        .get("thumbnails")
+        .and_then(|t| t.as_array())
+        .and_then(|list| list.last())
+        .and_then(|last| last.get("url"))
+        .and_then(|u| u.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    from_list.or_else(|| Some(format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg")))
+}
+
 /// Build a `Track` from a flat playlist entry. `None` when the entry has no
 /// usable video id.
 pub fn track_from_flat_entry(entry: &Value) -> Option<Track> {
@@ -100,6 +120,7 @@ pub fn track_from_flat_entry(entry: &Value) -> Option<Track> {
         id: artist_id(channel_id.as_deref(), &artist_name),
         name: artist_name,
     };
+    let artwork = flat_entry_artwork(entry, &id);
     Some(Track {
         id: format!("yt:{id}"),
         source: crate::domain::TrackSource::YouTube,
@@ -108,7 +129,7 @@ pub fn track_from_flat_entry(entry: &Value) -> Option<Track> {
         artists: vec![artist],
         album: None, // flat search has no album; album pages refine later
         duration_secs: opt_secs(entry, "duration"),
-        artwork: opt_str(entry, "thumbnail"),
+        artwork,
         is_local: false,
         metadata: Default::default(),
     })
@@ -268,13 +289,36 @@ mod tests {
         assert_eq!(bare.title, "(untitled)");
         assert_eq!(bare.artists[0].name, "Unknown artist");
         assert!(bare.duration_secs.is_none());
-        assert!(bare.artwork.is_none());
+        // No thumbnail in the entry: the deterministic YouTube URL keeps
+        // real artwork on screen instead of a placeholder tile.
+        assert_eq!(
+            bare.artwork.as_deref(),
+            Some("https://i.ytimg.com/vi/bbb222/hqdefault.jpg")
+        );
         // Unknown artist still gets a STABLE id (name hash).
         let other = parse_search_document(SEARCH_DOC, 10).unwrap();
         assert_eq!(bare.artists[0].id, other[1].artists[0].id);
         // Negative duration treated as unknown.
         assert!(tracks[2].duration_secs.is_none());
         assert_eq!(tracks[2].artists[0].name, "Club Streams");
+    }
+
+    #[test]
+    fn artwork_falls_back_to_thumbnails_list() {
+        let doc = r#"{"entries": [{
+            "id": "ddd444",
+            "title": "Thumb From List",
+            "uploader": "Someone",
+            "thumbnails": [
+                {"url": "https://i.ytimg.com/vi/ddd444/hqdefault.jpg", "width": 480},
+                {"url": "https://i.ytimg.com/vi/ddd444/maxresdefault.jpg", "width": 1280}
+            ]
+        }]}"#;
+        let tracks = parse_search_document(doc, 5).unwrap();
+        assert_eq!(
+            tracks[0].artwork.as_deref(),
+            Some("https://i.ytimg.com/vi/ddd444/maxresdefault.jpg")
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ import { openNowPlaying, toggleQueue, useUi, pushToast } from "@/app/stores/ui";
 import { playbackStore, queueStore } from "@/app/stores/playback";
 import { useClock } from "@/app/stores/clock";
 import { isLiked, libraryStore } from "@/app/stores/library";
-import { trackColors } from "@/app/ipc/sampleData";
+import { trackColors } from "@/lib/colors";
 import { activeLineIndex } from "@/lib/lyrics";
 import { formatTime } from "@/lib/format";
 import { artistLine, type Lyrics } from "@/types/domain";
@@ -121,7 +121,7 @@ export function NowPlaying() {
               {track?.album ? ` — ${track.album.title}` : ""}
             </p>
             <div className="np-badges">
-              <span className="badge">{status}</span>
+              <span className="badge">{status === "loading" ? "loading…" : status}</span>
               {speed !== 1 && <span className="badge">{speed}× speed</span>}
               {lyrics && lyricsState === "ready" && (
                 <span className="badge">
@@ -186,7 +186,6 @@ export function NowPlaying() {
               <LyricList
                 lyrics={lyrics}
                 activeIndex={activeLine}
-                position={position}
                 offsetSecs={offsetSecs}
               />
             </>
@@ -236,6 +235,13 @@ export function NowPlaying() {
           >
             <Icon name={repeat === "one" ? "repeat-one" : "repeat"} size={18} />
           </button>
+          <button
+            className="icon-button"
+            title="Stop — clears playback, never skips"
+            onClick={() => void api.stop()}
+          >
+            <Icon name="stop" size={15} filled />
+          </button>
         </div>
 
         <div className="np-extras">
@@ -278,12 +284,10 @@ export function NowPlaying() {
 function LyricList({
   lyrics,
   activeIndex,
-  position,
   offsetSecs,
 }: {
   lyrics: Lyrics;
   activeIndex: number | null;
-  position: number;
   offsetSecs: number;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -322,7 +326,6 @@ function LyricList({
         </div>
       ))}
       <div style={{ height: 120 }} />
-      <span style={{ display: "none" }}>{position.toFixed(2)}</span>
     </div>
   );
 }

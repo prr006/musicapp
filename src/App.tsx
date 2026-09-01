@@ -14,7 +14,7 @@ import { Toasts } from "@/components/Toasts";
 import { TopBar } from "@/components/TopBar";
 import { useAppBridge } from "@/app/useAppBridge";
 import { useShortcuts } from "@/app/useShortcuts";
-import { useUi } from "@/app/stores/ui";
+import { useRuntimeStatus, uiStore, useUi } from "@/app/stores/ui";
 import { HomeView } from "@/views/HomeView";
 import { SearchView } from "@/views/SearchView";
 import { LibraryView } from "@/views/LibraryView";
@@ -24,6 +24,7 @@ export default function App() {
   useShortcuts();
 
   const ui = useUi();
+  const runtime = useRuntimeStatus();
 
   // Apply appearance settings to the document root.
   useEffect(() => {
@@ -46,6 +47,26 @@ export default function App() {
         <Sidebar />
         <main className="main" data-route={ui.view}>
           <TopBar />
+          {(runtime.phase === "installing" || runtime.phase === "error") && (
+            <div
+              className={`runtime-banner${runtime.phase === "error" ? " error" : ""}`}
+              role="status"
+            >
+              {runtime.phase === "installing" ? (
+                <div className="spinner" />
+              ) : null}
+              <span className="msg">{runtime.message}</span>
+              {runtime.phase === "error" && (
+                <button
+                  className="button"
+                  style={{ padding: "4px 12px", fontSize: 12 }}
+                  onClick={() => uiStore.set({ settingsOpen: true })}
+                >
+                  Repair runtime
+                </button>
+              )}
+            </div>
+          )}
           <div className="content">
             {ui.view === "home" && <HomeView />}
             {ui.view === "search" && <SearchView query={ui.searchQuery} />}

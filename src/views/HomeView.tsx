@@ -63,7 +63,7 @@ export function HomeView() {
                 {artistLine(current.track)} · {status}
               </div>
             </div>
-            <button className="button" onClick={() => void api.play()}>
+            <button className="button" onClick={() => void api.togglePlay()}>
               <Icon name="play" size={14} filled /> Resume
             </button>
           </div>

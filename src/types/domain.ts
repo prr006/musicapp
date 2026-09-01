@@ -223,11 +223,6 @@ export interface PlaylistLite {
   updatedAt?: number | null;
 }
 
-export interface EngineStatusEvent {
-  health: "starting" | "running" | "restarting" | "dead";
-  message: string;
-}
-
 /** Small helper used across list UIs. */
 export function artistLine(track: Track): string {
   return track.artists.length

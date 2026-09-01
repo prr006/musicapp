@@ -6,11 +6,12 @@
  * queue store mirrors the app-level queue machine. React never writes here;
  * it calls the controller/api and events flow back.
  *
- * `positionStore` is deliberately separate: it updates at the engine's
- * position cadence and only progress-dependent components subscribe.
+ * Position is deliberately NOT in these stores: the ONE position
+ * representation is the interpolated clock in stores/clock.ts (anchored on
+ * engine samples); progress-dependent components subscribe to `useClock`.
  */
 
-import { createStore, useStore } from "@/app/store";
+import { createStore } from "@/app/store";
 import type { PlaybackSnapshot, QueueView } from "@/types/domain";
 
 const IDLE_SNAPSHOT: PlaybackSnapshot = {
@@ -40,25 +41,3 @@ export const queueStore = createStore<QueueView>({
   rev: 0,
 });
 
-export const positionStore = createStore<{ positionSecs: number; durationSecs: number | null }>({
-  positionSecs: 0,
-  durationSecs: null,
-});
-
-// ---- ergonomic selectors -------------------------------------------------
-
-export function usePlayback(): PlaybackSnapshot {
-  return useStore(playbackStore, (s) => s);
-}
-
-export function useIsPlaying(): boolean {
-  return useStore(playbackStore, (s) => s.status === "playing" || s.status === "buffering");
-}
-
-export function useCurrentTrack() {
-  return useStore(playbackStore, (s) => s.currentTrack);
-}
-
-export function usePosition(): { positionSecs: number; durationSecs: number | null } {
-  return useStore(positionStore, (s) => s);
-}

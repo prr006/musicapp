@@ -1,6 +1,7 @@
 /**
  * Queue drawer (spec §4): current + upcoming (drag to reorder) and history.
- * All mutations are commands; the view re-renders from `queue://view` events.
+ * All mutations are commands; the view re-renders from the queue store.
+ * Single click jumps to an item; row action buttons stop propagation.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -46,6 +47,34 @@ export function QueuePanel() {
     <aside className="queue-panel" role="dialog" aria-label="Queue">
       <div className="queue-head">
         <h3>Queue</h3>
+        <button
+          className={`icon-button${view.shuffle ? " toggled" : ""}`}
+          style={{ width: 30, height: 30 }}
+          title={`Shuffle ${view.shuffle ? "on" : "off"}`}
+          onClick={() => void api.setShuffle(!view.shuffle)}
+        >
+          <Icon name="shuffle" size={14} />
+        </button>
+        <button
+          className={`icon-button${view.repeat !== "off" ? " toggled" : ""}`}
+          style={{ width: 30, height: 30 }}
+          title={`Repeat: ${view.repeat}`}
+          onClick={() =>
+            void api.setRepeat(view.repeat === "off" ? "all" : view.repeat === "all" ? "one" : "off")
+          }
+        >
+          <Icon name={view.repeat === "one" ? "repeat-one" : "repeat"} size={14} />
+        </button>
+        {tab === "queue" && view.upcoming.length > 1 && (
+          <button
+            className="button ghost"
+            style={{ padding: "5px 12px", fontSize: 12 }}
+            onClick={() => void api.shuffleUpcoming()}
+            title="Reshuffle the upcoming order (keeps the current track)"
+          >
+            Shuffle list
+          </button>
+        )}
         {tab === "queue" && view.upcoming.length > 0 && (
           <>
             <button
@@ -167,7 +196,6 @@ export function QueuePanel() {
 
 function QueueRow({
   item,
-  index,
   isHistory,
   dragging,
   dragOver,
@@ -195,53 +223,54 @@ function QueueRow({
       onDragOver={onDragOver}
       onDrop={onDrop}
       onDragEnd={onDragEnd}
-      onDoubleClick={() => void api.jumpTo(item.id)}
-      title="Double-click to jump here"
+      onClick={() => void api.jumpTo(item.id)}
+      title={isHistory ? "Play again" : "Play from here"}
     >
       <Artwork track={item.track} size={40} rounded={6} />
       <div style={{ minWidth: 0 }}>
         <div className="qi-title">{item.track.title}</div>
         <div className="qi-artist">{artistLine(item.track)}</div>
       </div>
-      {!isHistory && (
-        <div style={{ display: "flex", gap: 0 }}>
+      <div style={{ display: "flex", gap: 0 }} onClick={(e) => e.stopPropagation()}>
+        {!isHistory && (
+          <>
+            <button
+              className="icon-button"
+              style={{ width: 26, height: 26 }}
+              title="Move up"
+              onClick={() => void api.moveQueueItem(item.id, true)}
+            >
+              <Icon name="chevron-up" size={13} />
+            </button>
+            <button
+              className="icon-button"
+              style={{ width: 26, height: 26 }}
+              title="Move down"
+              onClick={() => void api.moveQueueItem(item.id, false)}
+            >
+              <Icon name="chevron-down" size={13} />
+            </button>
+            <button
+              className="icon-button"
+              style={{ width: 26, height: 26 }}
+              title="Remove"
+              onClick={() => void api.removeFromQueue(item.id)}
+            >
+              <Icon name="x" size={12} />
+            </button>
+          </>
+        )}
+        {isHistory && (
           <button
             className="icon-button"
             style={{ width: 26, height: 26 }}
-            title="Move up"
-            onClick={() => void api.moveQueueItem(item.id, true)}
+            title="Play again"
+            onClick={() => void api.jumpTo(item.id)}
           >
-            <Icon name="chevron-up" size={13} />
+            <Icon name="play" size={13} filled />
           </button>
-          <button
-            className="icon-button"
-            style={{ width: 26, height: 26 }}
-            title="Move down"
-            onClick={() => void api.moveQueueItem(item.id, false)}
-          >
-            <Icon name="chevron-down" size={13} />
-          </button>
-          <button
-            className="icon-button"
-            style={{ width: 26, height: 26 }}
-            title="Remove"
-            onClick={() => void api.removeFromQueue(item.id)}
-          >
-            <Icon name="x" size={12} />
-          </button>
-        </div>
-      )}
-      {isHistory && (
-        <button
-          className="icon-button"
-          style={{ width: 26, height: 26 }}
-          title="Play again"
-          onClick={() => void api.jumpTo(item.id)}
-        >
-          <Icon name="play" size={13} filled />
-        </button>
-      )}
-      <span style={{ display: "none" }}>{index}</span>
+        )}
+      </div>
     </div>
   );
 }

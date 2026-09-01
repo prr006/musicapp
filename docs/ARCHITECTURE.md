@@ -69,6 +69,15 @@ latest sample + engine speed and **re-anchors on every engine state event**
 stale the clock freezes rather than drift. There is no independent
 frontend timer driving playback.
 
+### Track-change contract (stop-first)
+
+Every track change in the controller (`src/player/controller.ts`) follows
+one strict order: **stop the old file → reset visible state (title, artist,
+artwork, position, clock) → publish the new track as "loading" → only then
+resolve + `player_load`**. The old song never plays under the new title, and
+a generation counter (`loadGen`) discards resolves that finish after a newer
+play request. Engine events are additionally guarded by the load `epoch`.
+
 ## 3. Queue — an application concept
 
 The queue lives entirely in the frontend (`src/player/queue.ts`, pure and
@@ -78,10 +87,15 @@ unit-tested). The engine knows nothing about it.
   (`END_FILE reason=eof`). Manual stop (`reason=stop`) never advances.
 * Duplicate EOF notifications cannot double-advance: each load gets a fresh
   token and only the current file's token may advance the queue.
-* Manual Next advances exactly once; Previous walks history.
+* Manual Next advances exactly once. Previous restarts the current track
+  when more than `PREVIOUS_RESTART_THRESHOLD_SECS` (3 s) has played,
+  otherwise walks history (documented desktop-player behavior).
 * Shuffle is seeded/deterministic; repeat supports off/one/all.
+* Removing the CURRENT item is a single advance decided by the queue and
+  executed by the controller — the removed track never keeps playing.
 * Autoplay (continue with related music after the queue is exhausted) is a
-  SEPARATE service (`src/player/autoplay.ts`), disabled by default.
+  SEPARATE service (`src/player/autoplay.ts`), OFF by default; when enabled
+  it picks the most-played music already in the library (no network).
 
 ## 4. YouTube / yt-dlp — independent of the player
 

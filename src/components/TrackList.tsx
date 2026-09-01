@@ -79,13 +79,26 @@ export function TrackList({
             <div
               key={`${track.id}-${i}`}
               role="listitem"
+              tabIndex={0}
               className={`track-row${current ? " current" : ""}`}
-              onDoubleClick={() => void api.playNow(track)}
+              title={`Play “${track.title}”`}
+              onClick={() => void api.playNow(track)}
+              onKeyDown={(e) => {
+                // Row is keyboard-focusable; Enter plays. Secondary buttons
+                // swallow their own keys (they never bubble to the row).
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void api.playNow(track);
+                }
+              }}
             >
               <button
                 className="track-index"
                 title="Play"
-                onClick={() => void api.playNow(track)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void api.playNow(track);
+                }}
                 style={{ background: "none", cursor: "pointer" }}
               >
                 {current ? <Icon name="note" size={13} filled /> : i + 1}
@@ -105,17 +118,18 @@ export function TrackList({
                 className={`icon-button${trackLiked ? " accent" : ""}`}
                 style={{ width: 30, height: 30 }}
                 title={trackLiked ? "Remove from favorites" : "Add to favorites"}
-                onClick={() => {
+                onClick={(e) => {
+                  e.stopPropagation();
                   void api
                     .toggleFavorite(track)
                     .then((now) => pushToast(now ? "Added to favorites" : "Removed from favorites", "success"))
-                    .catch((e) => pushToast(String(e), "error"));
+                    .catch((err) => pushToast(String(err), "error"));
                 }}
               >
                 <Icon name={trackLiked ? "heart-filled" : "heart"} size={14} />
               </button>
               {onMove && (
-                <div style={{ display: "flex" }}>
+                <div style={{ display: "flex" }} onClick={(e) => e.stopPropagation()}>
                   <button
                     className="icon-button"
                     style={{ width: 26, height: 30 }}

@@ -1,15 +1,15 @@
 /**
- * Event wiring: subscribes to engine + runtime + library events exactly once
- * and routes them into stores. Engine events flow through the controller
- * (queue decisions) and the clock (position interpolation with resync).
+ * Event wiring: subscribes to library + runtime events exactly once and
+ * routes them into stores. ALL engine events (state/position/end) flow
+ * through the playback controller (queue decisions + clock anchoring) —
+ * there is exactly one handler chain per engine event.
  */
 
 import { getBridge } from "@/app/ipc";
 import { Events } from "@/app/ipc/contract";
 import { onLibraryUpdated } from "@/app/stores/library";
-import { onPositionEvent } from "@/app/stores/clock";
-import { pushToast } from "@/app/stores/ui";
-import { positionStore, playbackStore } from "@/app/stores/playback";
+import { pushToast, setRuntimeStatus } from "@/app/stores/ui";
+import { autoplayService } from "@/player/autoplay";
 
 export interface Wiring {
   dispose(): void;
@@ -19,42 +19,26 @@ export function wireEvents(): Wiring {
   const bridge = getBridge();
   const offs: Array<() => void> = [];
 
-  // Engine state: authoritative snapshot. Every state change re-anchors the
-  // interpolated clock (pause/resume/seek/buffering/track change all arrive
-  // here), so the UI can never drift from the engine.
   offs.push(
-    bridge.on(Events.playerState, (s) => {
-      onPositionEvent({
-        positionSecs: s.positionSecs,
-        durationSecs: s.durationSecs,
-        speed: s.speed,
-        playing: s.status === "playing",
-      });
-      positionStore.set({ positionSecs: s.positionSecs, durationSecs: s.durationSecs });
+    bridge.on(Events.libraryUpdated, (data) => {
+      onLibraryUpdated(data);
+      // Local autoplay pool + play-count weights (most-played artists first).
+      autoplayService.setPool(Object.values(data?.tracks ?? {}));
+      const counts: Record<string, number> = {};
+      for (const entry of data?.history ?? []) {
+        const artistId = entry.track?.artists?.[0]?.id ?? entry.track?.id;
+        if (artistId) counts[artistId] = (counts[artistId] ?? 0) + 1;
+      }
+      autoplayService.setPlayCounts(counts);
     }),
   );
 
-  // Position samples (the truth between state changes). Interpolation uses
-  // the engine's own speed + playing state, never a frontend guess.
-  offs.push(
-    bridge.on(Events.playerPosition, (p) => {
-      const snap = playbackStore.get();
-      onPositionEvent({
-        positionSecs: p.positionSecs,
-        durationSecs: p.durationSecs,
-        speed: snap.speed,
-        playing: snap.status === "playing",
-      });
-      positionStore.set({ positionSecs: p.positionSecs, durationSecs: p.durationSecs });
-    }),
-  );
-
-  offs.push(bridge.on(Events.libraryUpdated, onLibraryUpdated));
-
+  // Engine `runtime://status` is consumed by the controller too (engine-ready
+  // resync); this subscription surfaces the first-run/repair state in the UI.
   offs.push(
     bridge.on(Events.runtimeStatus, (s) => {
-      if (s.phase === "error") pushToast(s.message, "error");
-      else if (s.phase === "installing") pushToast(s.message, "info");
+      setRuntimeStatus(s.phase, s.message);
+      if (s.phase === "installing") pushToast(s.message, "info");
     }),
   );
 
