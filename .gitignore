@@ -14,3 +14,10 @@ coverage/
 # mobile icons not needed (desktop-first)
 src-tauri/icons/android/
 src-tauri/icons/ios/
+
+# Managed runtime: mpv / yt-dlp / 7zr are downloaded on first run — never
+# committed. The dir itself ships (kept via .keep) so tauri bundle resources
+# (`runtime/bin/*`) and the dev-mode lookup always have a home.
+src-tauri/runtime/bin/*
+!src-tauri/runtime/bin/.keep
+src-tauri/runtime/tools/

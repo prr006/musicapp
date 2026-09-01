@@ -26,6 +26,7 @@ export const getQueue = () => call("get_queue");
 export const getLibrary = () => call("get_library");
 export const getSettings = () => call("get_settings");
 export const getDiagnostics = () => call("get_diagnostics");
+export const repairRuntime = () => call("repair_runtime");
 export const setSettings = (settings: CommandArgs["set_settings"]["settings"]) =>
   call("set_settings", { settings });
 export const search = (query: string, limit?: number) => call("search", { query, limit });

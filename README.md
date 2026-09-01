@@ -66,12 +66,39 @@ docs/MANUAL_TEST.md   Human test checklist (Windows-first)
 
 * [Node.js](https://nodejs.org) ≥ 20
 * [Rust](https://rustup.rs) (stable)
-* **[mpv](https://mpv.io)** — discovered in this order: `MELO_MPV_PATH`
-  env var → `mpv/mpv.exe`-style path next to the app → `PATH`
-* **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** on `PATH` for YouTube
-  search/streaming (mpv's built-in ytdl hook is enabled either way; an
-  explicit path is passed through when found). Local files play without it.
 * Windows: WebView2 (installed by the Tauri bootstrapper)
+
+### Playback runtime (mpv + yt-dlp) — managed, no PATH needed
+
+MELO is a standalone app and **manages its own playback runtime**; nothing has
+to be installed or added to `PATH`. On first run (and via **Settings →
+Diagnostics → Repair runtime**) it downloads:
+
+* **mpv** — x86_64 build from the
+  [`zhongfly/mpv-winbuild`](https://github.com/zhongfly/mpv-winbuild) GitHub
+  release (a `.7z`, extracted with the standalone `7zr.exe` fetched from
+  7-zip.org)
+* **yt-dlp** — stable `yt-dlp.exe` from
+  [yt-dlp releases](https://github.com/yt-dlp/yt-dlp/releases/latest)
+
+Binaries are located deterministically, in this order (first hit wins; there is
+**no PATH fallback**):
+
+1. `MELO_MPV_PATH` / `MELO_YTDLP_PATH` — explicit per-binary override, used
+   verbatim
+2. `MELO_RUNTIME_DIR` — explicit runtime root (`<dir>/bin`)
+3. Dev checkout: `<repo>/src-tauri/runtime/bin` (this is where
+   `npm run tauri dev` downloads and caches them — survives `cargo clean`)
+4. Bundled install: `<install_dir>/runtime/bin` (shipped via
+   `tauri.conf.json → bundle.resources` when present at build time)
+5. Managed download dir: `<config>/runtime/bin` (default for installed apps)
+
+Both binaries are always spawned by **absolute path** (mpv additionally gets
+`--ytdl-path=<abs yt-dlp>`), so playback never silently picks up whatever
+happens to be on `PATH`. If the runtime is missing and can't be downloaded,
+playback fails with a clear message pointing at
+**Settings → Diagnostics → Repair runtime**. Non-Windows platforms don't
+auto-download: set `MELO_MPV_PATH` / `MELO_YTDLP_PATH` instead.
 
 ## Development
 

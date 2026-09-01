@@ -60,8 +60,16 @@ mpv, yt-dlp, or the filesystem.
 ## 3. Process supervision & reliability
 
 * **mpv spawn** (`src-tauri/src/mpv/process.rs`): `--idle=yes --input-ipc-server`
-  (or named pipe on Windows), `--ytdl=yes` with an explicit yt-dlp path when
-  discovered, `CREATE_NO_WINDOW` on Windows so no console flashes.
+  (or named pipe on Windows), `--ytdl=yes` with `--ytdl-path=<managed yt-dlp>`
+  when available, `CREATE_NO_WINDOW` on Windows so no console flashes. The
+  program itself is always an **absolute path** from the managed runtime
+  (`src-tauri/src/runtime.rs`) — never a bare `mpv` from `PATH`.
+* **Managed runtime** (`src-tauri/src/runtime.rs`): deterministic lookup
+  (env overrides → dev checkout → bundled → managed config dir; no PATH), a
+  first-run background download (mpv `.7z` via `7zr.exe`, stable `yt-dlp.exe`)
+  reporting progress through `engine://status`, and a repair path used by
+  Settings → Diagnostics. The bootstrap reloads the shared `RuntimeHandle` so
+  the resolver and engine see the new binaries without an app restart.
 * **Loading policy** (`mpv/ipc.rs`): every load normalizes pause state first
   (`set_property pause <p>`) and then `loadfile <url> replace` — two request
   ids, version-safe (no loadfile options map). Start positions are applied as

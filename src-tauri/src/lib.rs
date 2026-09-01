@@ -18,6 +18,7 @@ mod lrclib;
 mod mpv;
 mod playback_service;
 mod resolver;
+mod runtime;
 mod settings_store;
 mod ytdlp_proc;
 
@@ -31,11 +32,12 @@ use melo_core::library::LibraryStore;
 use melo_core::persistence::Settings;
 use playback_service::PlaybackHandle;
 use resolver::ResolverService;
+use runtime::RuntimeHandle;
 use settings_store::SettingsStore;
 
 pub struct MeloState {
     pub playback: PlaybackHandle,
-    pub mpv_program: String,
+    pub runtime: RuntimeHandle,
 }
 
 pub fn run() {
@@ -52,41 +54,45 @@ pub fn run() {
             let library = Arc::new(LibraryStore::open(&config_dir.join("library.json")));
             let current: Settings = settings.get();
 
-            // mpv location: env override → exe-relative → PATH.
-            let mpv_program = std::env::var("MELO_MPV_PATH").unwrap_or_else(|_| {
-                let beside_exe = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-                    .and_then(|dir| {
-                        ["mpv.exe", "mpv"]
-                            .iter()
-                            .map(|n| dir.join(n))
-                            .find(|p| p.is_file())
-                    });
-                match beside_exe {
-                    Some(p) => p.to_string_lossy().into_owned(),
-                    None => "mpv".to_string(),
-                }
-            });
+            // Managed runtime (standalone app — no PATH dependency).
+            // Deterministic lookup (env override → dev checkout → bundled →
+            // config-managed) with a first-run download when missing.
+            let runtime = RuntimeHandle::resolve(&config_dir);
 
-            let resolver = Arc::new(ResolverService::new(settings.clone()));
+            let resolver = Arc::new(ResolverService::new(settings.clone(), runtime.clone()));
             let lyrics_cache = config_dir.join("lyrics-cache");
             let lrclib = Arc::new(LrclibClient::new(Some(lyrics_cache)));
 
             let playback = playback_service::spawn(
                 app.handle().clone(),
                 config_dir,
-                mpv_program.clone(),
+                runtime.clone(),
                 current.resume_last_session,
                 resolver.clone(),
                 library.clone(),
             );
+            let playback_for_bootstrap = playback.clone();
 
-            app.manage(MeloState { playback, mpv_program });
+            app.manage(MeloState {
+                playback,
+                runtime: runtime.clone(),
+            });
             app.manage(settings);
             app.manage(library);
             app.manage(resolver);
             app.manage(lrclib);
+
+            // First-run bootstrap: download missing runtime pieces in the
+            // background, then bring the engine up. Playback commands sent
+            // in the meantime fail with a clear repair message instead of
+            // silently hunting the PATH.
+            if !runtime.mpv_found() || !runtime.ytdlp_found() {
+                let app_handle = app.handle().clone();
+                runtime::bootstrap_and_report(app_handle, runtime.clone(), move || {
+                    playback_for_bootstrap.start_engine();
+                });
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -146,6 +152,7 @@ pub fn run() {
             commands::get_settings,
             commands::set_settings,
             commands::get_diagnostics,
+            commands::repair_runtime,
         ])
         .run(tauri::generate_context!())
         .expect("error while running MELO");

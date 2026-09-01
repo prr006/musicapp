@@ -544,18 +544,42 @@ pub fn set_settings(
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Diagnostics {
-    pub mpv_program: String,
+    pub runtime_dir: Option<String>,
+    pub mpv_path: Option<String>,
+    pub mpv_found: bool,
     pub ytdlp_found: bool,
     pub ytdlp_path: Option<String>,
     pub quality_label: &'static str,
 }
 
 #[tauri::command]
-pub fn get_diagnostics(state: State<'_, MeloState>, resolver: State<'_, Arc<ResolverService>>) -> Diagnostics {
+pub fn get_diagnostics(
+    state: State<'_, MeloState>,
+    resolver: State<'_, Arc<ResolverService>>,
+) -> Diagnostics {
+    let rt = state.runtime.with_clone();
     Diagnostics {
-        mpv_program: state.mpv_program.clone(),
+        runtime_dir: rt.install_bin.to_str().map(|s| s.to_owned()),
+        mpv_path: rt.mpv.to_str().map(|s| s.to_owned()),
+        mpv_found: rt.mpv_found,
         ytdlp_found: resolver.ytdlp_found(),
         ytdlp_path: resolver.ytdlp_path(),
         quality_label: resolver.quality_label(),
     }
+}
+
+/// Re-download mpv + yt-dlp into the managed runtime dir. Runs in the
+/// background (same code path as first-run bootstrap); progress arrives via
+/// `ENGINE_STATUS` events and completion re-attempts the engine start.
+#[tauri::command]
+pub fn repair_runtime(app: tauri::AppHandle, state: State<'_, MeloState>) {
+    let runtime = state.runtime.clone();
+    let playback = state.playback.clone();
+    // Remove managed binaries (cheap) then re-download in the background;
+    // progress arrives via engine-status events and the engine restarts on
+    // completion through the on_ready callback below.
+    crate::runtime::reset_for_repair(&runtime);
+    crate::runtime::bootstrap_and_report(app, runtime, move || {
+        playback.start_engine();
+    });
 }

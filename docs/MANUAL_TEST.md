@@ -2,8 +2,10 @@
 
 Human verification for the things unit tests can't prove: real audio, real
 YouTube, real process crashes. Primary target: **Windows 10/11**.
-Prereqs: `mpv` on `PATH` (or `MELO_MPV_PATH` set), `yt-dlp` on `PATH`,
-`npm install` done, `npm run tauri dev` running (or an installed build).
+Prereqs: `npm install` done, `npm run tauri dev` running (or an installed
+build). **No mpv/yt-dlp install needed** — the first run downloads the managed
+runtime (see README → "Playback runtime"); delete
+`src-tauri/runtime/bin/{mpv.exe,yt-dlp.exe}` to re-test the first-run flow.
 
 Legend: ☐ = to run · note anything unexpected with steps + screenshot.
 
@@ -13,8 +15,13 @@ Legend: ☐ = to run · note anything unexpected with steps + screenshot.
 - ☐ Nothing plays automatically, even after a previous session was playing.
 - ☐ Mini player shows "Nothing playing"; Home shows previously collected
       content (or the honest empty state on a fresh profile).
-- ☐ Settings → Diagnostics shows the real mpv path and `yt-dlp: <path>`
-      (or an honest "not found" warning if unset — local files must still play).
+- ☐ First run without a runtime: a toast reports runtime installation
+      progress (mpv + yt-dlp download), then the engine comes up — no PATH
+      probing, no console window from the downloader/extractor.
+- ☐ Settings → Diagnostics shows the managed mpv + yt-dlp paths under
+      `runtime/bin` and a **Repair runtime** button.
+- ☐ Settings → Diagnostics → Repair runtime re-downloads and the engine
+      restarts on its own (toast on completion).
 
 ## 1. Search & play (YouTube)
 

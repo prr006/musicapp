@@ -65,6 +65,8 @@ pub enum ToService {
     SetHistoryEnabled(bool),
     /// Save the session now (window closing).
     Flush,
+    /// Bring the engine process up (runtime became available).
+    StartEngine,
 }
 
 /// Cheap, cloneable handle used by Tauri commands.
@@ -88,6 +90,12 @@ impl PlaybackHandle {
         let _ = self.tx.send(ToService::Flush);
     }
 
+    /// (Re)start the engine process — used after the runtime bootstrap
+    /// installed mpv while the app was running.
+    pub fn start_engine(&self) {
+        let _ = self.tx.send(ToService::StartEngine);
+    }
+
     pub fn snapshot(&self) -> Arc<PlaybackSnapshot> {
         self.snapshot
             .lock()
@@ -106,8 +114,7 @@ impl PlaybackHandle {
 struct EngineState {
     engine: Option<mpv::RunningEngine>,
     restarts: u32,
-    program: String,
-    ytdl_path: Option<String>,
+    runtime: crate::runtime::RuntimeHandle,
     health: EngineHealth,
 }
 
@@ -162,7 +169,7 @@ fn completion_of(position: f64, duration: Option<f64>) -> f64 {
 pub fn spawn(
     app: tauri::AppHandle,
     config_dir: PathBuf,
-    mpv_program: String,
+    runtime: crate::runtime::RuntimeHandle,
     resume_last_session: bool,
     resolver: Arc<ResolverService>,
     library: Arc<LibraryStore>,
@@ -201,8 +208,7 @@ pub fn spawn(
             let mut engine_state = EngineState {
                 engine: None,
                 restarts: 0,
-                program: mpv_program,
-                ytdl_path: resolver.ytdlp_path(),
+                runtime: runtime.clone(),
                 health: EngineHealth::Starting,
             };
             start_engine(&mut engine_state, &tx, &app, core.snapshot().volume, core.snapshot().muted);
@@ -397,6 +403,20 @@ pub fn spawn(
                         dirty_session = false;
                         last_save = Instant::now();
                         continue;
+                    }
+                    ToService::StartEngine => {
+                        // Runtime bootstrap finished while the app was
+                        // running: bring the engine up with the fresh paths.
+                        if engine_state.engine.is_none() {
+                            engine_state.restarts = 0;
+                            start_engine(
+                                &mut engine_state,
+                                &tx,
+                                &app,
+                                core.snapshot().volume,
+                                core.snapshot().muted,
+                            );
+                        }
                     }
                 }
 
@@ -638,6 +658,23 @@ fn start_engine(
     volume: f64,
     muted: bool,
 ) {
+    if !engine_state.runtime.mpv_found() {
+        // Managed runtime missing: never spawn a bare "mpv" from PATH.
+        engine_state.health = EngineHealth::Dead;
+        let intended = engine_state.runtime.mpv_string();
+        let _ = app.emit(
+            events::ENGINE_STATUS,
+            events::EngineStatus {
+                health: engine_state.health,
+                message: format!(
+                    "Playback engine (mpv) is not installed yet — expected at {intended}. \
+                     MELO downloads it automatically; if that failed, use \
+                     Settings → Diagnostics → Repair runtime."
+                ),
+            },
+        );
+        return;
+    }
     let (engine_tx, engine_rx) = mpsc::channel::<EngineEvent>();
     // Bridge: engine events → service loop.
     let service_tx = tx.clone();
@@ -651,7 +688,10 @@ fn start_engine(
             }
         });
 
-    let endpoint = mpv::endpoint_for(&engine_state.program, engine_state.ytdl_path.clone());
+    let endpoint = mpv::endpoint_for(
+        &engine_state.runtime.mpv_string(),
+        engine_state.runtime.ytdlp_path_string(),
+    );
     match mpv::start(&endpoint, engine_tx, volume, muted) {
         Ok(engine) => {
             engine_state.engine = Some(engine);
@@ -668,8 +708,10 @@ fn start_engine(
                 events::ENGINE_STATUS,
                 events::EngineStatus {
                     health: engine_state.health,
-                    message: "Couldn't start the playback engine. Is mpv installed and on PATH?"
-                        .into(),
+                    message: format!(
+                        "Couldn't start mpv ({detail}). Use Settings → Diagnostics → \
+                         Repair runtime to reinstall it."
+                    ),
                 },
             );
         }

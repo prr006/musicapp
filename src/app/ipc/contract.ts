@@ -63,6 +63,7 @@ export const Commands = {
   get_settings: null,
   set_settings: null,
   get_diagnostics: null,
+  repair_runtime: null,
 } as const;
 
 export type CommandName = keyof typeof Commands;

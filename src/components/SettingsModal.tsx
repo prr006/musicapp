@@ -16,6 +16,7 @@ export function SettingsModal() {
   const current = useSettings();
   const [draft, setDraft] = useState<Settings>(current);
   const [saving, setSaving] = useState(false);
+  const [repairing, setRepairing] = useState(false);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
 
   useEffect(() => setDraft(current), [current]);
@@ -177,7 +178,15 @@ export function SettingsModal() {
           {diagnostics ? (
             <div className="diag-box">
               <div>
-                mpv: <code>{diagnostics.mpvProgram}</code>
+                mpv:{" "}
+                {diagnostics.mpvFound ? (
+                  <code>{diagnostics.mpvPath}</code>
+                ) : (
+                  <span style={{ color: "var(--danger)" }}>
+                    not installed at <code>{diagnostics.mpvPath ?? "?"}</code> — playback
+                    unavailable until the runtime is repaired
+                  </span>
+                )}
               </div>
               <div>
                 yt-dlp:{" "}
@@ -190,7 +199,33 @@ export function SettingsModal() {
                 )}
               </div>
               <div>
+                Runtime dir: <code>{diagnostics.runtimeDir ?? "unknown"}</code>
+              </div>
+              <div>
                 Audio quality: <code>{diagnostics.qualityLabel}</code>
+              </div>
+              <div style={{ marginTop: 8 }}>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  disabled={repairing}
+                  onClick={async () => {
+                    setRepairing(true);
+                    try {
+                      await api.repairRuntime();
+                      pushToast("Downloading playback runtime…", "info");
+                    } catch (e) {
+                      pushToast(
+                        e instanceof Error ? e.message : "Repair failed to start",
+                        "error",
+                      );
+                    } finally {
+                      setRepairing(false);
+                    }
+                  }}
+                >
+                  {repairing ? "Repairing…" : "Repair runtime"}
+                </button>
               </div>
             </div>
           ) : (

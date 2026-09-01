@@ -24,7 +24,8 @@ The complete Tauri command/event surface. TypeScript mirrors live in
 | `get_queue`          | `QueueView`              | boot / reconnect               |
 | `get_library`        | `LibraryData`            | boot + after `library://updated` |
 | `get_settings`       | `Settings`               |                                |
-| `get_diagnostics`    | `Diagnostics`            | mpv program, yt-dlp presence, quality label |
+| `get_diagnostics`    | `Diagnostics`            | runtime dir, mpv/yt-dlp presence + paths, quality label |
+| `repair_runtime`     | —                        | re-download the managed runtime (async; progress via `engine://status`) |
 | `get_lyrics`         | `Lyrics \| null`         | `{ track }` — LRCLIB lookup     |
 | `search`             | `SearchResults`          | `{ query, limit? }` — yt-dlp   |
 

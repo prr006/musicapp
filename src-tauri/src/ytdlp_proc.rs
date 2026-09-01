@@ -5,50 +5,13 @@
 //! flashes on every search/resolve. Timeouts are enforced by polling
 //! `try_wait` so a hung yt-dlp can never wedge playback.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use melo_core::persistence::AudioQuality;
 use melo_core::providers::ProviderError;
 use melo_core::ytdlp;
-
-/// Locate the yt-dlp binary: `MELO_YTDLP_PATH` → next to the exe → PATH.
-pub fn discover() -> Option<PathBuf> {
-    if let Ok(from_env) = std::env::var("MELO_YTDLP_PATH") {
-        let p = PathBuf::from(from_env);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for name in ["yt-dlp.exe", "yt-dlp", "yt-dlp_x86.exe"] {
-                let candidate = dir.join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    // PATH lookup: probe the binary once with --version.
-    let mut probe = Command::new("yt-dlp");
-    probe.arg("--version");
-    hide_window(&mut probe);
-    if let Ok(mut child) = probe
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null())
-        .spawn()
-    {
-        if let Ok(status) = child.wait() {
-            if status.success() {
-                return Some(PathBuf::from("yt-dlp"));
-            }
-        }
-    }
-    None
-}
 
 fn hide_window(cmd: &mut Command) {
     #[cfg(windows)]
@@ -59,7 +22,7 @@ fn hide_window(cmd: &mut Command) {
     }
 }
 
-fn base_command(binary: &PathBuf) -> Command {
+fn base_command(binary: &Path) -> Command {
     let mut cmd = Command::new(binary);
     cmd.arg("--no-warnings")
         .arg("--ignore-config")
@@ -122,7 +85,7 @@ pub fn search(binary: &PathBuf, query: &str, limit: u32) -> Result<Vec<melo_core
 
 /// Resolve a YouTube video id to a direct media URL.
 pub fn resolve(
-    binary: &PathBuf,
+    binary: &Path,
     source_id: &str,
     quality: AudioQuality,
 ) -> Result<melo_core::providers::ResolvedMedia, ProviderError> {

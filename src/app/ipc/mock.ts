@@ -480,11 +480,15 @@ export function createMockBridge(): IpcBridge {
           return nowait(library.snapshot());
         case "get_diagnostics":
           return nowait({
-            mpvProgram: "mock-engine",
+            runtimeDir: "mock://runtime/bin",
+            mpvPath: "mock://runtime/bin/mpv.exe",
+            mpvFound: true,
             ytdlpFound: true,
             ytdlpPath: "mock://yt-dlp",
             qualityLabel: "Mock quality · ≤128 kbps",
           });
+        case "repair_runtime":
+          return nowait(undefined);
 
         // ---- transport ----
         case "player_toggle_play":
