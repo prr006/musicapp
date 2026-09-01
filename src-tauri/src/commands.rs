@@ -217,7 +217,11 @@ pub fn queue_set_repeat(mode: RepeatMode, state: State<'_, MeloState>) -> Result
 }
 
 #[tauri::command]
-pub fn queue_start(tracks: Vec<Track>, shuffle: bool, state: State<'_, MeloState>) -> Result<(), String> {
+pub fn queue_start(
+    tracks: Vec<Track>,
+    shuffle: bool,
+    state: State<'_, MeloState>,
+) -> Result<(), String> {
     require_tracks(&tracks)?;
     ok(&state, UserCommand::StartSequence { tracks, shuffle })
 }

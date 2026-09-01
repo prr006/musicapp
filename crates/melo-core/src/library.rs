@@ -175,7 +175,8 @@ impl LibraryData {
 
     pub fn duplicate_playlist(&mut self, id: &str, new_title: &str) -> Option<Playlist> {
         let source_tracks = self.playlist_tracks.get(id)?.clone();
-        let mut copy = self.create_playlist(new_title, self.playlist(id).and_then(|p| p.description.clone()));
+        let mut copy =
+            self.create_playlist(new_title, self.playlist(id).and_then(|p| p.description.clone()));
         let now = ids::now_ms();
         // Iterate by reference so `source_tracks` is still owned afterwards
         // for the final count.
@@ -488,7 +489,10 @@ impl LibraryStore {
                     path,
                     &backup,
                 );
-                eprintln!("[melo] library file was corrupt ({err}); backed up to {}", backup.display());
+                eprintln!(
+                    "[melo] library file was corrupt ({err}); backed up to {}",
+                    backup.display()
+                );
                 (LibraryData::new(), true)
             }
         };

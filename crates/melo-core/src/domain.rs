@@ -12,9 +12,15 @@ use crate::ids::{AlbumId, ArtistId, PlaylistId, TrackId};
 /// Where a track came from. New providers are added here; nothing else in the
 /// domain needs to change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum TrackSource {
+    /// Canonical wire value is `"youtube"` — shared by the IPC contract, the
+    /// TS domain types (`src/types/domain.ts`), the dev mock, and every
+    /// persisted JSON document (see docs/DATA_MODEL.md). Note that a blanket
+    /// `rename_all = "kebab-case"` would render `YouTube` as `"you-tube"`,
+    /// so the renames are explicit.
+    #[serde(rename = "youtube")]
     YouTube,
+    #[serde(rename = "local")]
     Local,
 }
 

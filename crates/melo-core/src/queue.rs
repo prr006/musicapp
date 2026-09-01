@@ -183,7 +183,12 @@ impl QueueMachine {
     /// Upcoming items in play order (everything after the cursor).
     pub fn upcoming(&self) -> Vec<QueueItem> {
         match self.cursor {
-            Some(c) => self.order.iter().skip(c + 1).map(|id| self.item_by_id(id).cloned().unwrap()).collect(),
+            Some(c) => self
+                .order
+                .iter()
+                .skip(c + 1)
+                .map(|id| self.item_by_id(id).cloned().unwrap())
+                .collect(),
             None => self.order.iter().map(|id| self.item_by_id(id).cloned().unwrap()).collect(),
         }
     }

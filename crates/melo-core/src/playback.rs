@@ -440,7 +440,14 @@ impl PlaybackCore {
                 } else {
                     self.state.buffering_pct = None;
                     if self.state.status == PlaybackStatus::Buffering {
-                        self.state.status = PlaybackStatus::Playing;
+                        // Settle using the remembered pause intent: a pause
+                        // requested (or echoed) mid-buffering must not be
+                        // lost when the buffer refills.
+                        self.state.status = if self.engine_paused {
+                            PlaybackStatus::Paused
+                        } else {
+                            PlaybackStatus::Playing
+                        };
                     }
                     self.touch_state();
                 }
@@ -580,7 +587,11 @@ impl PlaybackCore {
         self.state.duration_secs = track.duration_secs;
         self.state.error = None;
         self.state.buffering_pct = None;
-        self.eof_handled = false;
+        // Deliberately NOT resetting `eof_handled` here: the latch from the
+        // just-completed load must survive until the NEXT `FileLoaded`
+        // re-arms it, so the trailing `eof-reached` / `idle-active`
+        // observers of the previous file can never double-advance the queue
+        // while this load is still in flight (spec §3).
         self.expecting_stop = true; // loadfile replace ends the previous file
         self.resume_at = None;
         self.publish_position(true);
@@ -613,8 +624,16 @@ impl PlaybackCore {
                     self.touch_state();
                 }
             }
-            PlaybackStatus::Loading | PlaybackStatus::Playing | PlaybackStatus::Paused
-            | PlaybackStatus::Buffering => {
+            PlaybackStatus::Loading => {
+                // Loading ≠ playing (spec §5): the track is not ready yet, so
+                // the status stays `Loading` and the intent is remembered in
+                // `engine_paused`. `FileLoaded` settles it (`Paused` vs
+                // `Playing`) the moment the file is actually ready — this
+                // mirrors what the `PropertyPaused` echo path already does.
+                self.engine_paused = want_paused;
+                out.push(PlayerCommand::SetPaused(want_paused));
+            }
+            PlaybackStatus::Playing | PlaybackStatus::Paused | PlaybackStatus::Buffering => {
                 self.state.status = if want_paused {
                     PlaybackStatus::Paused
                 } else {

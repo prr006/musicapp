@@ -102,6 +102,8 @@ export function createMockBridge(): IpcBridge {
   let resumeAt: number | null = state.positionSecs > 0 ? state.positionSecs : null;
   let eofHandled = false;
   let loadTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Pause intent requested while still loading (honored at load end). */
+  let pauseIntent = false;
   let historyEnabled = true;
 
   function snapshot(): PlaybackSnapshot {
@@ -224,7 +226,7 @@ export function createMockBridge(): IpcBridge {
     }
   }
 
-  function loadTrack(item: QueueItem, startAt?: number): void {
+  function loadTrack(item: QueueItem, startAt?: number, startPaused = false): void {
     if (loadTimer) clearTimeout(loadTimer);
     finalizeHistory();
     const start = startAt ?? resumeAt ?? 0;
@@ -234,13 +236,20 @@ export function createMockBridge(): IpcBridge {
     state.error = null;
     state.bufferingPct = null;
     state.status = "loading";
-    eofHandled = false;
+    // Like the service's pause-normalization before every loadfile: each
+    // load carries its own intended pause state; a pause the user requests
+    // during the loading window below overrides it.
+    pauseIntent = startPaused;
     if (historyEnabled) library.recordPlay(item.track);
     publishPlayback();
     publishQueue();
     publishPosition();
     loadTimer = setTimeout(() => {
-      state.status = "playing";
+      loadTimer = null;
+      eofHandled = false;
+      // A pause requested while loading is honored now that the track is
+      // ready (loading ≠ playing; the intent was remembered, not lost).
+      state.status = pauseIntent ? "paused" : "playing";
       publishPlayback();
     }, LOAD_LATENCY_MS);
   }
@@ -263,11 +272,17 @@ export function createMockBridge(): IpcBridge {
       const current = queue.current();
       if (current || !queue.isEmpty) {
         if (current) {
-          loadTrack(current, resumeAt ?? 0);
+          loadTrack(current, resumeAt ?? 0, wantPaused);
         } else {
           applyStep(queue.advance(true));
         }
       }
+      return;
+    }
+    // Loading ≠ playing: remember the intent; the status settles when the
+    // load completes (loadTrack's timer), exactly like the Rust core.
+    pauseIntent = wantPaused;
+    if (state.status === "loading") {
       return;
     }
     state.status = wantPaused ? "paused" : "playing";
@@ -278,6 +293,9 @@ export function createMockBridge(): IpcBridge {
   function handleUser(cmd: UserCmd): void {
     switch (cmd.t) {
       case "toggle-play":
+        // Toggle while loading is a no-op (mirrors the Rust core): there is
+        // nothing sounding yet to toggle — pause intent comes via "pause".
+        if (state.status === "loading") break;
         setPaused(!(state.status === "playing" || state.status === "buffering"));
         break;
       case "play":

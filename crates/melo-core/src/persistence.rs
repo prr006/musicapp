@@ -118,7 +118,13 @@ pub struct SessionSnapshot {
 }
 
 impl SessionSnapshot {
-    pub fn capture(queue: &QueueMachine, volume: f64, muted: bool, speed: f64, position_secs: f64) -> Self {
+    pub fn capture(
+        queue: &QueueMachine,
+        volume: f64,
+        muted: bool,
+        speed: f64,
+        position_secs: f64,
+    ) -> Self {
         Self {
             queue: queue.clone(),
             volume,

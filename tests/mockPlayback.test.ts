@@ -67,6 +67,29 @@ describe("mock playback engine (browser preview shim)", () => {
     expect(snap().status).toBe("playing");
   });
 
+  it("remembers a pause requested during loading and settles paused, not playing", async () => {
+    // Mirrors the Rust test `pause_during_loading_is_remembered_and_not_lost`:
+    // loading ≠ playing; the intent latches and applies when the load lands.
+    await bridge.invoke("queue_play_now", { track: track(1) });
+    expect(snap().status).toBe("loading");
+    await bridge.invoke("player_pause");
+    expect(snap().status).toBe("loading"); // still loading, intent remembered
+    await vi.advanceTimersByTimeAsync(400); // load completes
+    expect(snap().status).toBe("paused"); // NOT playing — the pause held
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(snap().status).toBe("paused"); // and it never silently resumed
+    await bridge.invoke("player_play");
+    expect(snap().status).toBe("playing");
+  });
+
+  it("treats toggle-play during loading as a no-op", async () => {
+    await bridge.invoke("queue_play_now", { track: track(1) });
+    await bridge.invoke("player_toggle_play");
+    expect(snap().status).toBe("loading");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(snap().status).toBe("playing"); // the stray toggle changed nothing
+  });
+
   it("auto-advances to the next track at EOF (no frontend timers involved)", async () => {
     await bridge.invoke("queue_start", { tracks: [track(1), track(2)], shuffle: false });
     await vi.advanceTimersByTimeAsync(400); // load track 1

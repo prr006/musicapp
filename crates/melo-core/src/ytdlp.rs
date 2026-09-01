@@ -360,10 +360,20 @@ mod tests {
         assert!(cache.get("a", 1500).is_none(), "expired");
         assert!(cache.get("a", 1500).is_none(), "expired entries are purged");
 
+        // Cap eviction, isolated from TTL: with a 1000 ms TTL, insert three
+        // entries 100 ms apart and probe at a time when NONE of them can be
+        // expired yet — so a miss can only mean eviction by the size cap
+        // (oldest entry first).
         cache.put("b".into(), media(2), 2000);
-        cache.put("c".into(), media(3), 3000); // cap 2 → evicts oldest (b@2000)
-        assert!(cache.get("b", 3100).is_none());
-        assert!(cache.get("c", 3100).is_some());
+        cache.put("c".into(), media(3), 2100);
+        assert!(cache.get("c", 2100).is_some());
+        cache.put("d".into(), media(4), 2200); // at cap (2) → evicts oldest: b@2000
+        assert!(
+            cache.get("b", 2200).is_none(),
+            "b must be gone via cap eviction (only 200 ms old, not expired)"
+        );
+        assert!(cache.get("c", 2200).is_some());
+        assert!(cache.get("d", 2200).is_some());
         assert_eq!(cache.len(), 2);
 
         let key = ResolveCache::key("vid", AudioQuality::High);

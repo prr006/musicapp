@@ -449,9 +449,21 @@ mod tests {
         // The spec's example: position = 83.42s → 1:23.42 chorus.
         let idx = lyrics.active_index(83.42).unwrap();
         assert_eq!(lyrics.lines[idx].text, "Chorus");
-        // Just before the chorus line.
+        // 1 ms earlier the chorus has NOT started (a line becomes active at
+        // its own timestamp, inclusive), so the active line is the most
+        // recent one at or before 83.41 — "Repeated hook" @ 45.10. The
+        // fixture has no line between 45.10 and 83.42 (see
+        // `parses_timestamps_in_various_formats`); "First verse" @ 12.50
+        // stopped being active when the hook began.
         let idx = lyrics.active_index(83.41).unwrap();
+        assert_eq!(lyrics.lines[idx].text, "Repeated hook");
+        // Just before the hook starts, "First verse" is still active — the
+        // previous-line-stays-active property holds at every boundary.
+        let idx = lyrics.active_index(45.09).unwrap();
         assert_eq!(lyrics.lines[idx].text, "First verse");
+        // Exactly AT a line's timestamp it becomes active (inclusive).
+        let idx = lyrics.active_index(45.10).unwrap();
+        assert_eq!(lyrics.lines[idx].text, "Repeated hook");
     }
 
     #[test]
