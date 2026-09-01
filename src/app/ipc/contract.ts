@@ -25,6 +25,8 @@ export const Commands = {
   player_set_volume: null,
   player_set_mute: null,
   player_set_speed: null,
+  player_set_normalization: null,
+  record_play_progress: null,
   resolve_track: null,
   get_session: null,
   set_session: null,
@@ -60,6 +62,8 @@ export interface CommandArgs {
   player_set_volume: { volume: number };
   player_set_mute: { muted: boolean };
   player_set_speed: { speed: number };
+  player_set_normalization: { enabled: boolean };
+  record_play_progress: { trackId: string; playedSecs: number; completion: number };
   resolve_track: { sourceId: string; quality?: string };
   set_session: { session: unknown };
   search: { query: string; limit?: number };
@@ -97,6 +101,8 @@ export interface CommandResult {
   player_set_volume: void;
   player_set_mute: void;
   player_set_speed: void;
+  player_set_normalization: void;
+  record_play_progress: void;
   resolve_track: ResolvedMedia;
   get_session: unknown;
   set_session: void;

@@ -1229,3 +1229,30 @@ input[type="text"].setting-input {
   border-radius: 999px;
   padding: 1px 7px;
 }
+
+/* Runtime status banner (first-run download / engine unavailable) */
+.runtime-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin: 0 0 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--accent-soft);
+  font-size: 13px;
+}
+.runtime-banner .spinner {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+  flex-shrink: 0;
+}
+.runtime-banner .msg {
+  flex: 1;
+  min-width: 0;
+}
+.runtime-banner.error {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}

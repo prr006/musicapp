@@ -141,6 +141,12 @@ pub fn player_set_speed(speed: f64, state: State<'_, MeloState>) -> Result<(), S
     player(&state)?.set_speed(speed)
 }
 
+/// Volume normalization toggle (libmpv `af=loudnorm`).
+#[tauri::command]
+pub fn player_set_normalization(enabled: bool, state: State<'_, MeloState>) -> Result<(), String> {
+    player(&state)?.set_normalization(enabled)
+}
+
 // ----------------------------------------------------------------------
 // Resolve (yt-dlp) — independent of the player
 // ----------------------------------------------------------------------
@@ -195,6 +201,32 @@ pub fn record_play(
 ) -> Result<(), String> {
     require_tracks(std::slice::from_ref(&track))?;
     library.with_mut(|l| l.record_play(&track, melo_core::ids::now_ms()));
+    let _ = app.emit(events::LIBRARY_UPDATED, library.snapshot());
+    Ok(())
+}
+
+/// Update the reached position/completion of the most recent history entry
+/// for a track (drives "Recently played" progress). Called on track switch,
+/// stop and session flush by the frontend controller.
+#[tauri::command]
+pub fn record_play_progress(
+    track_id: String,
+    played_secs: f64,
+    completion: f64,
+    library: State<'_, Arc<LibraryStore>>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let track_id = track_id.trim().to_string();
+    if track_id.is_empty() {
+        return Err("track_id must not be empty".into());
+    }
+    if !played_secs.is_finite() || played_secs < 0.0 {
+        return Err("played_secs must be a non-negative number".into());
+    }
+    if !completion.is_finite() || !(0.0..=1.0).contains(&completion) {
+        return Err("completion must be between 0 and 1".into());
+    }
+    library.with_mut(|l| l.finish_recent_for(&track_id, played_secs, completion));
     let _ = app.emit(events::LIBRARY_UPDATED, library.snapshot());
     Ok(())
 }

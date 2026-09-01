@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import * as api from "@/app/api";
 import { Icon } from "@/components/Icon";
 import { applySettings, pushToast, uiStore, useSettings } from "@/app/stores/ui";
+import { autoplayService } from "@/player/autoplay";
 import type { AudioQuality, CloseAction, Diagnostics, Settings, Theme } from "@/types/domain";
 
 const ACCENTS = ["violet", "ocean", "emerald", "sunset", "amber"] as const;
@@ -24,7 +25,7 @@ export function SettingsModal() {
   useEffect(() => {
     void api
       .getDiagnostics()
-      .then(setDiagnostics)
+      .then((d) => setDiagnostics(d as Diagnostics | null))
       .catch(() => setDiagnostics(null));
   }, []);
 
@@ -33,6 +34,9 @@ export function SettingsModal() {
     try {
       await api.setSettings(draft);
       applySettings(draft);
+      // Apply playback-behavior toggles immediately (engine side + service).
+      await api.setNormalization(draft.volumeNormalization);
+      autoplayService.setEnabled(draft.autoplaySimilar);
       pushToast("Settings saved", "success");
       uiStore.set({ settingsOpen: false });
     } catch (e) {
@@ -114,25 +118,13 @@ export function SettingsModal() {
               <option value="highest">Highest available</option>
             </select>
           </Row>
-          <Row label="Volume normalization" hint="Even loudness across tracks (not yet implemented).">
+          <Row label="Volume normalization" hint="Even loudness across tracks (libmpv loudnorm filter).">
             <Switch
               on={draft.volumeNormalization}
               onChange={(v) => setDraft({ ...draft, volumeNormalization: v })}
             />
           </Row>
-          <Row label="Crossfade" hint="Off by default until reliably implemented (spec §25).">
-            <select
-              className="setting-select"
-              value={draft.crossfadeSecs}
-              onChange={(e) => setDraft({ ...draft, crossfadeSecs: Number(e.target.value) })}
-            >
-              <option value={0}>Off</option>
-              <option value={2}>2 seconds</option>
-              <option value={4}>4 seconds</option>
-              <option value={6}>6 seconds</option>
-            </select>
-          </Row>
-          <Row label="Autoplay similar music" hint="When the queue runs dry.">
+          <Row label="Autoplay similar music" hint="When the queue runs dry, continue with the most-played music in your library.">
             <Switch
               on={draft.autoplaySimilar}
               onChange={(v) => setDraft({ ...draft, autoplaySimilar: v })}

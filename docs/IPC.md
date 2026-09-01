@@ -19,6 +19,7 @@ thin shell around libmpv; the queue and app logic live in the frontend.
 | `player_set_volume`| `volume` 0–100                        | —      | |
 | `player_set_mute`  | `muted`                               | —      | |
 | `player_set_speed` | `speed` 0.25–4                        | —      | |
+| `player_set_normalization` | `enabled`                      | —      | libmpv `af=loudnorm` toggle |
 
 ### Resolve / search
 
@@ -30,7 +31,8 @@ thin shell around libmpv; the queue and app logic live in the frontend.
 
 ### Library / history / session / settings / runtime
 
-`favorites_toggle`, `record_play` (listening history), `playlist_create`,
+`favorites_toggle`, `record_play` (listening history), `record_play_progress`
+(reached position/completion for "Recently played"), `playlist_create`,
 `playlist_rename`, `playlist_set_description`, `playlist_delete`,
 `playlist_duplicate`, `playlist_add_tracks`, `playlist_remove_track`,
 `playlist_reorder_track`, `playlist_tracks`, `history_clear`,

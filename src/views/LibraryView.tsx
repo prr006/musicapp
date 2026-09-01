@@ -350,10 +350,12 @@ function PlaylistsView({ playlists, library }: { playlists: PlaylistLite[]; libr
             const count = rows.length || pl.trackCount;
             return (
               <button key={pl.id} className="card" onClick={() => openPlaylist(pl.id)}>
-                <Artwork
-                  track={rows.length > 0 ? trackById(library, rows[0].trackId) : null}
+                <PlaylistCover
+                  tracks={rows
+                    .slice(0, 4)
+                    .map((r) => trackById(library, r.trackId))
+                    .filter((t): t is Track => !!t)}
                   size={148}
-                  rounded={12}
                 />
                 <div className="card-title">{pl.title}</div>
                 <div className="card-sub">
@@ -371,6 +373,39 @@ function PlaylistsView({ playlists, library }: { playlists: PlaylistLite[]; libr
 
 function trackById(library: LibraryData, id: string): Track | null {
   return library.tracks[id] ?? null;
+}
+
+/**
+ * Playlist cover: a 2×2 mosaic of the playlist's REAL track artwork when
+ * available, degrading to 1/2/3 tiles and finally to a plain placeholder.
+ * Never invents artwork — empty playlists show the generic tile.
+ */
+function PlaylistCover({ tracks, size }: { tracks: Track[]; size: number }) {
+  if (tracks.length === 0) {
+    return <Artwork track={null} size={size} rounded={12} />;
+  }
+  if (tracks.length === 1) {
+    return <Artwork track={tracks[0]} size={size} rounded={12} />;
+  }
+  const half = size / 2;
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        borderRadius: 12,
+        overflow: "hidden",
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gridTemplateRows: "1fr 1fr",
+        flexShrink: 0,
+      }}
+    >
+      {tracks.slice(0, 4).map((t, i) => (
+        <Artwork key={`${t.id}-${i}`} track={t} size={half} rounded={0} />
+      ))}
+    </div>
+  );
 }
 
 function PlaylistDetail({ playlist, library }: { playlist: PlaylistLite | null; library: LibraryData }) {

@@ -31,6 +31,7 @@ export type IconName =
   | "share"
   | "more"
   | "offline"
+  | "stop"
   | "note";
 
 const PATHS: Record<IconName, string> = {
@@ -67,6 +68,7 @@ const PATHS: Record<IconName, string> = {
   more: "M12 8a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4z",
   offline: "M2.4 1.7L1 3.1l2.7 2.7A10 10 0 002 12a10 10 0 0010 10c2.4 0 4.6-.85 6.3-2.3l2.6 2.6 1.4-1.4L2.4 1.7zM12 20a8 8 0 01-8-8c0-1.5.4-2.9 1.1-4.1l11 11A7.9 7.9 0 0112 20zm6.3-2.9l1.5 1.5A8 8 0 0012 4c-1.2 0-2.4.3-3.4.8l1.5 1.5A6 6 0 0118 12c0 .9-.2 1.7-.5 2.5l.8 1.6z",
   note: "M12 3v10.55A4 4 0 1014 17V7h4V3h-6z",
+  stop: "M7 7h10v10H7z",
 };
 
 export function Icon({

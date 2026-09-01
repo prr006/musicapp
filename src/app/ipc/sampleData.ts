@@ -52,18 +52,6 @@ export const SAMPLE_TRACKS: Track[] = [
   track(8, "Analog Heart", { id: "sampleart:4", name: "Juno Waves" }, { id: "samplealb:4", title: "Analog Heart" }, 252, ["#ff5e5e", "#ffb020"]),
 ];
 
-export function trackColors(t: Track): [string, string] {
-  const fromExtra = t.metadata?.extra?.["colors"] as [string, string] | undefined;
-  if (fromExtra && Array.isArray(fromExtra) && fromExtra.length === 2) {
-    return fromExtra;
-  }
-  // Deterministic fallback palette from the id hash.
-  let h = 0;
-  for (const ch of t.id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  const hue = h % 360;
-  return [`hsl(${hue} 80% 55%)`, `hsl(${(hue + 60) % 360} 80% 45%)`];
-}
-
 /** Synced lyrics for two demo tracks (fictional). */
 export const SAMPLE_LYRICS: Record<string, string> = {
   "sample:1": [

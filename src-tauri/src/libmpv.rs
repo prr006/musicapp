@@ -406,6 +406,12 @@ impl Player {
         self.set_property("speed", &format!("{speed:.3}"))
     }
 
+    /// Volume normalization (loudness evening) via libmpv's `loudnorm`
+    /// audio filter. Applied live and re-applied by the app after boot.
+    pub fn set_normalization(&self, on: bool) -> Result<(), String> {
+        self.set_property("af", if on { "loudnorm" } else { "" })
+    }
+
     pub fn state(&self) -> EngineState {
         self.inner.state.lock().unwrap().clone()
     }
@@ -702,6 +708,9 @@ unsafe fn handle_property(inner: &Arc<Inner>, prop: &MpvEventProperty) {
                 s.muted = *(prop.data as *const c_int) != 0;
             }
             s.epoch = epoch;
+            // These ARE engine truth (UI slider/mute/speed must reflect the
+            // actual player, e.g. after boot re-apply or a repair restart).
+            publish(inner);
         }
         _ => {}
     }

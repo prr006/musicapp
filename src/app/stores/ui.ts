@@ -33,6 +33,9 @@ interface UiState {
   toasts: Toast[];
   /** Playlist drill-down inside the Playlists view. */
   openPlaylistId: string | null;
+  /** Managed-runtime phase (first-run install / ready / error). */
+  runtimePhase: "starting" | "installing" | "ready" | "error";
+  runtimeMessage: string;
 }
 
 export const uiStore = createStore<UiState>({
@@ -45,6 +48,8 @@ export const uiStore = createStore<UiState>({
   online: typeof navigator === "undefined" ? true : navigator.onLine,
   toasts: [],
   openPlaylistId: null,
+  runtimePhase: "starting",
+  runtimeMessage: "",
 });
 
 let toastSeq = 1;
@@ -89,6 +94,20 @@ export function useSettings(): Settings {
 
 export function openPlaylist(id: string | null): void {
   uiStore.set({ openPlaylistId: id });
+}
+
+export function setRuntimeStatus(
+  phase: UiState["runtimePhase"],
+  message: string,
+): void {
+  uiStore.set({ runtimePhase: phase, runtimeMessage: message });
+}
+
+/** Select phase/message separately — stable primitives for cheap compares. */
+export function useRuntimeStatus(): { phase: UiState["runtimePhase"]; message: string } {
+  const phase = useStore(uiStore, (s) => s.runtimePhase);
+  const message = useStore(uiStore, (s) => s.runtimeMessage);
+  return { phase, message };
 }
 
 /** Close every overlay (used by Escape and route changes). */

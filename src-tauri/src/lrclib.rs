@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use melo_core::domain::Track;
-use melo_core::lyrics::{best_match, LrclibEntry, Lyrics};
+use melo_core::lyrics::{best_match, clean_title_for_lyrics, LrclibEntry, Lyrics};
 use melo_core::persistence::{load_json, save_json_atomic};
 use melo_core::providers::ProviderError;
 
@@ -45,7 +45,11 @@ impl LrclibClient {
     /// Errors are categorized (`Offline`/`Timeout`/`RateLimited`/…).
     pub fn lyrics_for(&self, track: &Track) -> Result<Option<Lyrics>, ProviderError> {
         let artist = track.artists.first().map(|a| a.name.as_str()).unwrap_or("");
-        let title = track.title.as_str();
+        // YouTube titles carry release junk ("(Official Video)") that breaks
+        // provider exact-matching — query with the cleaned title, keep the
+        // original for display.
+        let cleaned_title = clean_title_for_lyrics(&track.title);
+        let title = cleaned_title.as_str();
         let album = track.album.as_ref().map(|a| a.title.as_str()).unwrap_or("");
 
         if let Some(cached) = self.read_cache(track) {

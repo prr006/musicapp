@@ -3,9 +3,9 @@
  * (from track colors or a hash) otherwise. No network for the sample catalog.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { trackColors } from "@/app/ipc/sampleData";
+import { trackColors } from "@/lib/colors";
 import type { Track } from "@/types/domain";
 
 export function Artwork({
@@ -21,8 +21,11 @@ export function Artwork({
 }) {
   const [a, b] = useMemo(() => (track ? trackColors(track) : ["#3a3f4d", "#23262f"]), [track]);
   const initials = track ? initialsOf(track.title) : "♪";
+  const [broken, setBroken] = useState(false);
 
-  if (track?.artwork) {
+  useEffect(() => setBroken(false), [track?.artwork]);
+
+  if (track?.artwork && !broken) {
     return (
       <img
         src={track.artwork}
@@ -33,6 +36,7 @@ export function Artwork({
         style={{ borderRadius: rounded, objectFit: "cover" }}
         loading="lazy"
         draggable={false}
+        onError={() => setBroken(true)}
       />
     );
   }

@@ -8,8 +8,10 @@ import * as api from "@/app/api";
 import { tauriAvailable } from "@/app/ipc";
 import { wireEvents } from "@/app/wiring";
 import { applySettings, pushToast, uiStore } from "@/app/stores/ui";
+import type { Settings } from "@/types/domain";
 import { onLibraryUpdated } from "@/app/stores/library";
 import { playbackController } from "@/player/controller";
+import { autoplayService } from "@/player/autoplay";
 
 export function useAppBridge(): void {
   useEffect(() => {
@@ -18,7 +20,14 @@ export function useAppBridge(): void {
     const disposeController = playbackController.wire();
 
     void api.getLibrary().then(onLibraryUpdated).catch(noop);
-    void api.getSettings().then(applySettings).catch(noop);
+    void api
+      .getSettings()
+      .then((raw) => raw as Settings)
+      .then((settings) => {
+        applySettings(settings);
+        autoplayService.setEnabled(settings.autoplaySimilar);
+      })
+      .catch(noop);
 
     if (!tauriAvailable()) {
       pushToast("Browser preview — mock native boundary (no real audio)", "info");
@@ -37,6 +46,8 @@ export function useAppBridge(): void {
 
     const flush = () => playbackController.flushSession();
     window.addEventListener("beforeunload", flush);
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", flush);
 
     return () => {
       wiring.dispose();
@@ -44,6 +55,8 @@ export function useAppBridge(): void {
       window.removeEventListener("online", goOnline);
       window.removeEventListener("offline", goOffline);
       window.removeEventListener("beforeunload", flush);
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", flush);
     };
   }, []);
 }

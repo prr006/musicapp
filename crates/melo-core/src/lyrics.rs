@@ -328,6 +328,86 @@ fn parse_lrc_ok(input: &str) -> Option<Lyrics> {
     parse_lrc(input).ok()
 }
 
+/// Title noise removed before querying LRCLIB. YouTube music titles carry
+/// release-junk that breaks exact provider matches ("Song (Official Video)"
+/// vs the canonical "Song"). Conservative: only bracketed segments that
+/// clearly name a video artifact, plus explicit resolutions/keywords, are
+/// stripped — never artist names or parenthetical song parts like
+/// "(Remix)" or "(feat. X)" which LRCLIB entries often carry too.
+pub fn clean_title_for_lyrics(title: &str) -> String {
+    /// Long phrases: matched as substrings (they cannot appear inside a
+    /// normal word).
+    const NOISE_CONTAINS: &[&str] = &[
+        "official music video",
+        "official lyric video",
+        "official video",
+        "official audio",
+        "lyric video",
+        "lyrics video",
+        "music video",
+        "visualizer",
+        "visualiser",
+        "audio only",
+        "video oficial",
+        "video lyrics",
+    ];
+    /// Short tokens: matched only as the WHOLE bracket content (a plain
+    /// "mv"/"4k"/"hd" inside a word must not trigger a strip).
+    const NOISE_EXACT: &[&str] = &["mv", "m/v", "4k", "hd", "hq", "1080p", "720p", "audio"];
+    let mut cleaned = String::with_capacity(title.len());
+    let mut rest = title.trim();
+    'outer: while !rest.is_empty() {
+        let open = rest.find(['(', '[', '{']).unwrap_or(rest.len());
+        let close_char = match rest.chars().next() {
+            Some('(') => ')',
+            Some('[') => ']',
+            Some('{') => '}',
+            _ => {
+                // Plain run up to the next bracket.
+                let (run, tail) = rest.split_at(open);
+                cleaned.push_str(run);
+                rest = tail;
+                continue;
+            }
+        };
+        // Text before the bracket.
+        let (run, tail) = rest.split_at(open);
+        cleaned.push_str(run);
+        rest = tail;
+        // Find the matching close for this bracket.
+        let Some(close) = rest.find(close_char) else {
+            // Unterminated bracket: keep everything as-is.
+            cleaned.push_str(rest);
+            break;
+        };
+        let inner = &rest[1..close];
+        let inner_lower = inner.trim().to_lowercase();
+        let is_noise = NOISE_EXACT.iter().any(|n| inner_lower == *n)
+            || NOISE_CONTAINS.iter().any(|n| inner_lower.contains(*n));
+        if is_noise {
+            // Drop the noise bracket entirely.
+            rest = &rest[close + 1..];
+            continue 'outer;
+        }
+        // Keep meaningful brackets (Remix, feat., part names…).
+        cleaned.push_str(&rest[..close + 1]);
+        rest = &rest[close + 1..];
+    }
+    // Collapse separators left by removed brackets ("Song  -  " / extra
+    // spaces) and trim, then drop an UNBRACKETED trailing noise segment
+    // ("Song - Official Video" — common YouTube upload title shape).
+    let mut collapsed = cleaned.trim().trim_end_matches(['-', '|', ':']).trim().to_string();
+    if let Some(sep) = collapsed.rfind(" - ") {
+        let tail = collapsed[sep + 3..].trim().to_lowercase();
+        let tail_is_noise = NOISE_EXACT.iter().any(|n| tail == *n)
+            || NOISE_CONTAINS.iter().any(|n| tail.contains(*n));
+        if tail_is_noise {
+            collapsed = collapsed[..sep].trim_end_matches(['-', '|', ':']).trim().to_string();
+        }
+    }
+    collapsed
+}
+
 /// Pick the best LRCLIB search hit for a track. Scoring (higher wins):
 /// * exact-ish title match (+40), contains (+15)
 /// * exact artist match (+30), contains (+10)
@@ -612,6 +692,39 @@ mod tests {
         let lyrics = entry.clone().into_lyrics();
         assert!(lyrics.synced);
         assert_eq!(lyrics.lines.len(), 2);
+    }
+
+    #[test]
+    fn title_cleaning_strips_video_artifacts_not_song_parts() {
+        use super::clean_title_for_lyrics;
+        // YouTube release junk is removed so LRCLIB exact matches work.
+        assert_eq!(
+            clean_title_for_lyrics("Neon River (Official Music Video)"),
+            "Neon River"
+        );
+        assert_eq!(clean_title_for_lyrics("Slow Light [LYRIC VIDEO]"), "Slow Light");
+        assert_eq!(clean_title_for_lyrics("Analog Heart (Audio)"), "Analog Heart");
+        assert_eq!(clean_title_for_lyrics("Static Bloom [MV]"), "Static Bloom");
+        assert_eq!(clean_title_for_lyrics("Paper Satellites (4K)"), "Paper Satellites");
+        assert_eq!(clean_title_for_lyrics("Tidefall - Official Video"), "Tidefall");
+        // Song-meaningful brackets survive (providers index them too).
+        assert_eq!(
+            clean_title_for_lyrics("Glass Horizon (feat. Nova Piper)"),
+            "Glass Horizon (feat. Nova Piper)"
+        );
+        assert_eq!(
+            clean_title_for_lyrics("Midnight Cartography (Remix)"),
+            "Midnight Cartography (Remix)"
+        );
+        // "mv"-inside-a-word must NOT strip anything.
+        assert_eq!(
+            clean_title_for_lyrics("Cassette Domvs (Live)"),
+            "Cassette Domvs (Live)"
+        );
+        // Already-clean titles pass through untouched.
+        assert_eq!(clean_title_for_lyrics("Neon River"), "Neon River");
+        // Unterminated bracket: keep as-is, never panic.
+        assert_eq!(clean_title_for_lyrics("Weird (unclosed"), "Weird (unclosed");
     }
 
     #[test]

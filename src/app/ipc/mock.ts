@@ -37,7 +37,23 @@ export function createMockBridge(): IpcBridge {
     emit("library://updated", library.snapshot());
   });
   let sessionStore: unknown = null;
-  let mockSettings = { volume: 80 };
+  let mockSettings: Record<string, unknown> = {
+    theme: "dark",
+    accent: "violet",
+    animations: true,
+    compact: false,
+    showLyricsTranslation: false,
+    audioQuality: "standard",
+    volumeNormalization: false,
+    crossfadeSecs: 0,
+    gapless: true,
+    autoplaySimilar: false,
+    resumeLastSession: false,
+    closeAction: "quit",
+    notificationsTrackChange: false,
+    historyEnabled: true,
+    downloadDir: null,
+  };
 
   const engine: FakeEngine = {
     timer: null,
@@ -164,6 +180,16 @@ export function createMockBridge(): IpcBridge {
       case "player_set_speed":
         engine.state.speed = a.speed as number;
         publishState();
+        return nowait(undefined);
+      case "player_set_normalization":
+        // libmpv af=loudnorm is a native-only effect; the mock accepts it.
+        return nowait(undefined);
+      case "record_play_progress":
+        library.finishRecentFor(
+          String(a.trackId),
+          (a.playedSecs as number) ?? 0,
+          (a.completion as number) ?? 0,
+        );
         return nowait(undefined);
       case "resolve_track": {
         const id = String(a.sourceId ?? "");
