@@ -105,10 +105,13 @@ pub fn run() {
             if runtime.libmpv_found() {
                 start_engine(app.handle(), &config_dir);
             } else {
+                // `ensure_and_report` takes ownership of one AppHandle; the
+                // ready-callback needs its own clone (E0382 otherwise).
                 let app_handle = app.handle().clone();
+                let ready_handle = app_handle.clone();
                 let cfg = config_dir.clone();
                 runtime::ensure_and_report(app_handle, runtime.clone(), move || {
-                    start_engine(&app_handle, &cfg);
+                    start_engine(&ready_handle, &cfg);
                 });
             }
 
