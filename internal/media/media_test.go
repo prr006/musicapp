@@ -109,13 +109,169 @@ func TestParseResolvedPrefersM4AAtSameBitrate(t *testing.T) {
 
 func TestParseResolvedNoAudio(t *testing.T) {
 	raw := infoJSON(t, 0, []map[string]any{
-		{"format_id": "v", "ext": "mp4", "acodec": "aac", "vcodec": "h264", "url": "https://cdn/v", "protocol": "https"},
+		// Video-only stream: no audio track at all, so nothing is playable.
+		{"format_id": "v", "ext": "mp4", "acodec": "none", "vcodec": "h264", "url": "https://cdn/v", "protocol": "https"},
+		// Storyboard/image stream: neither audio nor video.
+		{"format_id": "sb", "ext": "mhtml", "acodec": "none", "vcodec": "none", "url": "https://cdn/sb", "protocol": "https"},
 	})
 	if _, err := ParseResolved(raw, "vid", "high"); !errors.Is(err, ErrNoAudio) {
 		t.Fatalf("expected ErrNoAudio, got %v", err)
 	}
 	if _, err := ParseResolved([]byte("garbage"), "vid", "high"); !errors.Is(err, ErrResolve) {
 		t.Fatalf("expected ErrResolve, got %v", err)
+	}
+}
+
+// TestParseResolvedFallsBackToCombinedAV covers uploads that expose no
+// audio-only stream (e.g. legacy progressive-only videos). The webview's
+// HTMLAudioElement plays the audio track of a combined mp4/webm, so the
+// resolver must still return a playable stream instead of giving up.
+func TestParseResolvedFallsBackToCombinedAV(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	raw := infoJSON(t, exp, []map[string]any{
+		{"format_id": "18", "ext": "mp4", "acodec": "mp4a.40.2", "vcodec": "avc1.42001E", "abr": 96, "tbr": 500,
+			"width": 640, "height": 360, "url": fmt.Sprintf("https://cdn/18?expire=%d", exp), "protocol": "https", "filesize": 5000000},
+		{"format_id": "43", "ext": "webm", "acodec": "vorbis", "vcodec": "vp8.0", "abr": 128, "tbr": 700,
+			"width": 640, "height": 360, "url": fmt.Sprintf("https://cdn/43?expire=%d", exp), "protocol": "https"},
+	})
+	res, err := ParseResolved(raw, "vid", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.URL, "/43") {
+		t.Fatalf("expected highest-bitrate combined A/V fallback, got %s", res.URL)
+	}
+	if res.MimeType != "audio/webm" {
+		t.Fatalf("expected an audio mime type for the combined fallback, got %s", res.MimeType)
+	}
+}
+
+// TestParseResolvedPrefersAudioOnlyOverCombined verifies the resolver never
+// pulls a video stream when a real audio-only stream exists (even if the video
+// stream has a higher tbr).
+func TestParseResolvedPrefersAudioOnlyOverCombined(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	raw := infoJSON(t, exp, []map[string]any{
+		audioFmt("140", "m4a", 128, exp),
+		{"format_id": "18", "ext": "mp4", "acodec": "mp4a.40.2", "vcodec": "avc1.42001E", "abr": 96, "tbr": 600,
+			"height": 360, "url": fmt.Sprintf("https://cdn/18?expire=%d", exp), "protocol": "https"},
+	})
+	res, err := ParseResolved(raw, "vid", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.URL, "/140") {
+		t.Fatalf("expected the audio-only stream, got %s", res.URL)
+	}
+}
+
+// TestParseResolvedRejectsUnplayableFormats ensures manifest streams (HLS/DASH)
+// and video-only streams are never returned: the media element can only consume
+// a single progressive HTTP resource.
+func TestParseResolvedRejectsUnplayableFormats(t *testing.T) {
+	raw := infoJSON(t, 0, []map[string]any{
+		{"format_id": "hls", "ext": "mp4", "acodec": "mp4a.40.2", "vcodec": "avc1.42001E", "url": "https://cdn/h.m3u8", "protocol": "m3u8_native"},
+		{"format_id": "dash", "ext": "m4a", "acodec": "mp4a.40.2", "vcodec": "none", "url": "https://cdn/d.mpd", "protocol": "http_dash_segments"},
+		{"format_id": "vo", "ext": "mp4", "acodec": "none", "vcodec": "avc1.64001f", "url": "https://cdn/vo", "protocol": "https"},
+	})
+	if _, err := ParseResolved(raw, "vid", "high"); !errors.Is(err, ErrNoAudio) {
+		t.Fatalf("expected ErrNoAudio for manifest/video-only formats, got %v", err)
+	}
+}
+
+// ---------------- representative yt-dlp JSON fixtures ----------------
+
+// TestParseResolvedTopicAudioUpload exercises a topic-style / audio upload: the
+// video exposes audio-only formats and no video stream at all. This is exactly
+// the shape that used to make yt-dlp's default "best/bestvideo+bestaudio"
+// selection fail and, before the resolver passed --ignore-no-formats-error,
+// abort with "Requested format is not available".
+func TestParseResolvedTopicAudioUpload(t *testing.T) {
+	raw := []byte(`{
+	  "id": "abc123topic",
+	  "title": "Song - Topic",
+	  "track": "Song",
+	  "artist": "Artist",
+	  "album": "Album",
+	  "uploader": "Artist - Topic",
+	  "channel": "Artist - Topic",
+	  "duration": 210.0,
+	  "thumbnail": "https://i.ytimg.com/vi/abc123topic/hqdefault.jpg",
+	  "formats": [
+	    {"format_id":"249","url":"https://cdn/249?expire=1","ext":"webm","acodec":"opus","vcodec":"none","abr":50,"tbr":50,"protocol":"https","filesize":1200000,"mime_type":"audio/webm; codecs=\"opus\"","http_headers":{"User-Agent":"ua"},"audio_ext":"webm"},
+	    {"format_id":"250","url":"https://cdn/250?expire=1","ext":"webm","acodec":"opus","vcodec":"none","abr":70,"tbr":70,"protocol":"https","filesize":1600000,"mime_type":"audio/webm; codecs=\"opus\""},
+	    {"format_id":"140","url":"https://cdn/140?expire=1","ext":"m4a","acodec":"mp4a.40.2","vcodec":"none","abr":128,"tbr":128,"protocol":"https","filesize":2800000,"mime_type":"audio/mp4; codecs=\"mp4a.40.2\"","audio_ext":"m4a"},
+	    {"format_id":"251","url":"https://cdn/251?expire=1","ext":"webm","acodec":"opus","vcodec":"none","abr":160,"tbr":160,"protocol":"https","filesize":3600000,"mime_type":"audio/webm; codecs=\"opus\""}
+	  ]
+	}`)
+	res, err := ParseResolved(raw, "abc123topic", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.URL, "/251") {
+		t.Fatalf("expected highest audio-only stream, got %s", res.URL)
+	}
+	if res.Title != "Song" || res.Artist != "Artist" || res.Album != "Album" {
+		t.Fatalf("metadata lost: %+v", res)
+	}
+	if res.Artwork != "https://i.ytimg.com/vi/abc123topic/hqdefault.jpg" {
+		t.Fatalf("artwork lost: %+v", res.Artwork)
+	}
+}
+
+// TestParseResolvedOfficialMusicVideo exercises a modern official music video:
+// separate video-only and audio-only streams with no pre-merged format. Only
+// audio is needed, so a video-only stream must never be returned.
+func TestParseResolvedOfficialMusicVideo(t *testing.T) {
+	raw := []byte(`{
+	  "id": "xyzmusic",
+	  "title": "Hit - Official Music Video",
+	  "uploader": "ArtistVEVO",
+	  "channel": "ArtistVEVO",
+	  "duration": 245.0,
+	  "thumbnail": "https://i.ytimg.com/vi/xyzmusic/maxresdefault.jpg",
+	  "formats": [
+	    {"format_id":"137","url":"https://cdn/137?expire=1","ext":"mp4","acodec":"none","vcodec":"avc1.640028","height":1080,"tbr":3000,"protocol":"https"},
+	    {"format_id":"136","url":"https://cdn/136?expire=1","ext":"mp4","acodec":"none","vcodec":"avc1.4d401f","height":720,"tbr":2000,"protocol":"https"},
+	    {"format_id":"140","url":"https://cdn/140?expire=1","ext":"m4a","acodec":"mp4a.40.2","vcodec":"none","abr":128,"tbr":128,"protocol":"https"},
+	    {"format_id":"251","url":"https://cdn/251?expire=1","ext":"webm","acodec":"opus","vcodec":"none","abr":160,"tbr":160,"protocol":"https"}
+	  ]
+	}`)
+	res, err := ParseResolved(raw, "xyzmusic", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.URL, "/251") {
+		t.Fatalf("expected highest audio-only stream, got %s", res.URL)
+	}
+	if res.Artist != "ArtistVEVO" {
+		t.Fatalf("uploader/channel fallback for artist lost: %+v", res)
+	}
+}
+
+// TestParseResolvedLegacyProgressiveOnly exercises an older upload whose only
+// surviving formats are combined A/V progressive streams (itag 18/43).
+func TestParseResolvedLegacyProgressiveOnly(t *testing.T) {
+	raw := []byte(`{
+	  "id": "oldclip",
+	  "title": "Old upload",
+	  "uploader": "Channel",
+	  "duration": 120.0,
+	  "thumbnail": "https://i.ytimg.com/vi/oldclip/hqdefault.jpg",
+	  "formats": [
+	    {"format_id":"18","url":"https://cdn/18?expire=1","ext":"mp4","acodec":"mp4a.40.2","vcodec":"avc1.42001E","abr":96,"tbr":500,"height":360,"protocol":"https"},
+	    {"format_id":"43","url":"https://cdn/43?expire=1","ext":"webm","acodec":"vorbis","vcodec":"vp8.0","abr":128,"tbr":700,"height":360,"protocol":"https"}
+	  ]
+	}`)
+	res, err := ParseResolved(raw, "oldclip", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.URL, "/43") {
+		t.Fatalf("expected combined A/V fallback (highest audio bitrate), got %s", res.URL)
+	}
+	if res.MimeType != "audio/webm" {
+		t.Fatalf("expected audio/webm mime for combined webm fallback, got %s", res.MimeType)
 	}
 }
 

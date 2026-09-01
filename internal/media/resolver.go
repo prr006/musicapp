@@ -1,14 +1,24 @@
 // Package media turns a Track into something the webview's media element can
 // actually play. It has two halves:
 //
-//	Resolver — asks yt-dlp for the best audio-only stream for a source id and
-//	           caches the answer until the CDN URL expires.
+//	Resolver — asks yt-dlp for the full format list of a source id, picks the
+//	           most suitable stream itself, and caches the answer until the CDN
+//	           URL expires.
 //	Proxy    — a loopback HTTP server that streams that URL to the media
 //	           element with byte-range support, so seeking works and the
 //	           provider's headers/CORS never reach the renderer.
 //
 // The resolver is deliberately independent from playback: it knows about
 // YouTube, the player does not.
+//
+// Why the resolver picks formats itself: yt-dlp is invoked with
+// --dump-single-json (no -f). Even so, yt-dlp runs its own *default* format
+// selection ("best/bestvideo+bestaudio", or "bestvideo*+bestaudio/best" when
+// ffmpeg is present) before dumping the JSON, and aborts with "Requested format
+// is not available" when that selection can't match a video — which happens for
+// audio-only uploads, PO-token-gated formats, and videos that only expose
+// manifest streams. We pass --ignore-no-formats-error so yt-dlp always returns
+// the full format list, and ParseResolved below makes the playable choice.
 package media
 
 import (
@@ -126,8 +136,15 @@ func (r *Resolver) Invalidate(sourceID string) {
 }
 
 func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolved, error) {
+	// --dump-single-json implies --simulate, so yt-dlp never downloads; but it
+	// still runs its own *default* format selection and aborts with "Requested
+	// format is not available" when that selection can't match a video (audio-only
+	// uploads, PO-token-gated formats, manifest-only videos). We don't want
+	// yt-dlp choosing formats at all — ParseResolved picks from the full format
+	// list — so --ignore-no-formats-error makes it dump the list regardless.
 	out, err := r.runner.Run(ctx,
 		"--dump-single-json", "--no-playlist", "--no-warnings",
+		"--ignore-no-formats-error",
 		"--extractor-args", "youtube:player_client=web_music,web",
 		"https://www.youtube.com/watch?v="+sourceID,
 	)
@@ -137,6 +154,11 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 		case strings.Contains(msg, "private") || strings.Contains(msg, "unavailable") ||
 			strings.Contains(msg, "removed") || strings.Contains(msg, "age"):
 			return Resolved{}, fmt.Errorf("%w: %s", ErrUnavailable, firstLine(err.Error()))
+		case strings.Contains(msg, "requested format is not available") || strings.Contains(msg, "no video formats"):
+			// Defensive: --ignore-no-formats-error should prevent this, but if a
+			// different yt-dlp raises it anyway, report "no playable stream" rather
+			// than a cryptic selector error.
+			return Resolved{}, fmt.Errorf("%w: %s", ErrNoAudio, firstLine(err.Error()))
 		case strings.Contains(msg, "resolve host") || strings.Contains(msg, "network") ||
 			strings.Contains(msg, "timed out") || strings.Contains(msg, "urlopen"):
 			return Resolved{}, fmt.Errorf("couldn't reach YouTube: %s", firstLine(err.Error()))
@@ -163,7 +185,6 @@ type ytFormat struct {
 	TBR         float64           `json:"tbr"`
 	Filesize    int64             `json:"filesize"`
 	FilesizeAp  int64             `json:"filesize_approx"`
-	MimeType    string            `json:"mime_type"`
 	Protocol    string            `json:"protocol"`
 	HTTPHeaders map[string]string `json:"http_headers"`
 	AudioExt    string            `json:"audio_ext"`
@@ -183,46 +204,62 @@ type ytInfo struct {
 	IsLive    bool       `json:"is_live"`
 }
 
-// ParseResolved picks the best audio-only progressive stream for the requested
-// quality tier from yt-dlp JSON.
+// ParseResolved picks the best playable stream for the requested quality tier
+// from yt-dlp JSON.
+//
+// Selection is adaptive: it never assumes a video exposes a particular format
+// id or codec. It prefers an audio-only progressive stream (the app never needs
+// video) and, when the upload exposes no audio-only stream, falls back to a
+// combined audio/video format whose audio track HTMLAudioElement can consume
+// (e.g. the legacy progressive mp4/webm). Manifest and fragmented protocols are
+// rejected because the Range proxy streams a single progressive resource.
 func ParseResolved(raw []byte, sourceID, quality string) (Resolved, error) {
 	var info ytInfo
 	if err := json.Unmarshal(raw, &info); err != nil {
 		return Resolved{}, fmt.Errorf("%w: unreadable resolver output", ErrResolve)
 	}
-	var audio []ytFormat
+
+	// Collect everything the media element could actually play, split into
+	// audio-only and combined audio/video candidates.
+	var audioOnly, combined []ytFormat
 	for _, f := range info.Formats {
-		if f.URL == "" || f.ACodec == "none" || f.ACodec == "" {
+		if _, ok := playableAudio(f); !ok {
 			continue
 		}
-		if f.VCodec != "none" && f.VCodec != "" {
-			continue
+		if f.VCodec == "none" || f.VCodec == "" {
+			audioOnly = append(audioOnly, f)
+		} else {
+			combined = append(combined, f)
 		}
-		if strings.HasPrefix(f.Protocol, "m3u8") || strings.Contains(f.Protocol, "dash") {
-			continue // the media element handles plain HTTP ranges, not manifests
-		}
-		audio = append(audio, f)
 	}
-	if len(audio) == 0 {
+
+	// Prefer audio-only; fall back to a compatible audio/video stream only when
+	// the video exposes no audio-only format at all.
+	candidates := audioOnly
+	if len(candidates) == 0 {
+		candidates = combined
+	}
+	if len(candidates) == 0 {
 		return Resolved{}, ErrNoAudio
 	}
+
 	rate := func(f ytFormat) float64 {
 		if f.ABR > 0 {
 			return f.ABR
 		}
 		return f.TBR
 	}
-	sort.SliceStable(audio, func(i, j int) bool { return rate(audio[i]) > rate(audio[j]) })
+	sort.SliceStable(candidates, func(i, j int) bool { return rate(candidates[i]) > rate(candidates[j]) })
 
-	pick := audio[0]
+	pick := candidates[0]
 	switch quality {
 	case "low":
-		pick = audio[len(audio)-1]
+		pick = candidates[len(candidates)-1]
 	case "medium":
-		pick = audio[len(audio)/2]
+		pick = candidates[len(candidates)/2]
 	}
-	// Prefer m4a/mp4 at the same tier: WebView2 seeks these most reliably.
-	for _, f := range audio {
+	// Prefer m4a/mp4 (AAC) at the same tier: WebView2 seeks these most reliably.
+	for _, f := range candidates {
 		if rate(f) == rate(pick) && (f.Ext == "m4a" || f.Ext == "mp4") {
 			pick = f
 			break
@@ -253,16 +290,51 @@ func ParseResolved(raw []byte, sourceID, quality string) (Resolved, error) {
 	return res, nil
 }
 
+// playableAudio reports whether a format carries audio the webview's
+// HTMLAudioElement can consume through the plain-HTTP Range proxy, returning the
+// mime type to advertise when the CDN supplies none of its own.
+func playableAudio(f ytFormat) (string, bool) {
+	if f.URL == "" || f.ACodec == "" || f.ACodec == "none" {
+		return "", false
+	}
+	if !streamable(f.Protocol) {
+		return "", false
+	}
+	switch f.Ext {
+	case "m4a", "mp4":
+		return "audio/mp4", true
+	case "mp3":
+		return "audio/mpeg", true
+	case "webm":
+		return "audio/webm", true
+	case "opus", "ogg", "oga":
+		return "audio/ogg", true
+	}
+	return "", false
+}
+
+// streamable reports whether the proxy can serve this format as one progressive
+// resource over plain HTTP(S). Manifest and fragmented protocols (m3u8, dash,
+// segmented DASH) are playlists or fragments, not a single media stream, so the
+// media element can't consume them directly.
+func streamable(protocol string) bool {
+	switch protocol {
+	case "", "http", "https":
+		return true
+	}
+	return false
+}
+
 func mimeFor(f ytFormat) string {
-	if f.MimeType != "" {
-		return f.MimeType
+	if mime, ok := playableAudio(f); ok {
+		return mime
 	}
 	switch f.Ext {
 	case "m4a", "mp4":
 		return "audio/mp4"
 	case "webm":
 		return "audio/webm"
-	case "opus":
+	case "opus", "ogg", "oga":
 		return "audio/ogg"
 	case "mp3":
 		return "audio/mpeg"
