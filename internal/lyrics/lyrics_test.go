@@ -68,6 +68,123 @@ func TestCleanTitleAndArtist(t *testing.T) {
 	}
 }
 
+func TestCleanTitleExtendedNoise(t *testing.T) {
+	cases := map[string]string{
+		"Believer (Official Video)":       "Believer",
+		"Believer (Official Music Video)": "Believer",
+		"Believer [Lyrics]":               "Believer",
+		"Believer (Lyric Video)":          "Believer",
+		"Believer (Official Audio)":       "Believer",
+		"Believer (Visualizer)":           "Believer",
+		"Believer (Live)":                 "Believer",
+		"Believer (Live Performance)":     "Believer",
+		"Believer (Remastered)":           "Believer",
+		"Believer (Remaster)":             "Believer",
+		"Believer (Remastered 2017)":      "Believer",
+		"Believer (HD)":                   "Believer",
+		"Believer (4K)":                   "Believer",
+		"Believer (Cover)":                "Believer",
+		"Believer (Acoustic)":             "Believer",
+		"Believer (Slowed)":               "Believer",
+		"Believer (Slowed + Reverb)":      "Believer",
+		"Believer (Reverb)":               "Believer",
+		"Believer (Sped Up)":              "Believer",
+		"Believer (Nightcore)":            "Believer",
+		"Believer - Official Video":       "Believer",
+		"Believer - Lyrics":               "Believer",
+		"Believer (Explicit)":             "Believer",
+	}
+	for in, want := range cases {
+		if got := CleanTitle(in); got != want {
+			t.Errorf("CleanTitle(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCleanTitleKeepsMeaningfulWords(t *testing.T) {
+	cases := []string{
+		"Live Forever",
+		"Cover Me",
+		"Acoustic",
+		"Nightcore",
+		"Reverb",
+		"Sped Up",
+		"Under the Cover of Darkness",
+	}
+	for _, in := range cases {
+		if got := CleanTitle(in); got != in {
+			t.Errorf("CleanTitle(%q) = %q, want unchanged %q", in, got, in)
+		}
+	}
+}
+
+func TestCleanArtistExtended(t *testing.T) {
+	cases := map[string]string{
+		"Halcyon featuring Other": "Halcyon",
+		"Halcyon feat Other":      "Halcyon",
+		"Halcyon ft. Other":       "Halcyon",
+		"Halcyon ft Other":        "Halcyon",
+	}
+	for in, want := range cases {
+		if got := CleanArtist(in); got != want {
+			t.Errorf("CleanArtist(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestConfidenceLadder(t *testing.T) {
+	q := Query{Title: "Believer", Artist: "Imagine Dragons"}
+	exact := apiRecord{TrackName: "Believer", ArtistName: "Imagine Dragons", SyncedLyrics: "[00:01.00]x"}
+	feat := apiRecord{TrackName: "Believer", ArtistName: "Imagine Dragons, JID", SyncedLyrics: "[00:01.00]x"}
+	otherArtist := apiRecord{TrackName: "Believer", ArtistName: "Some Cover Band", SyncedLyrics: "[00:01.00]x"}
+	wrongTitle := apiRecord{TrackName: "Believers", ArtistName: "Imagine Dragons", SyncedLyrics: "[00:01.00]x"}
+
+	if got := Confidence(exact, q); got != ConfTitleArtist {
+		t.Errorf("exact match confidence = %v, want ConfTitleArtist", got)
+	}
+	if got := Confidence(feat, q); got != ConfTitleArtist {
+		t.Errorf("primary-artist match confidence = %v, want ConfTitleArtist", got)
+	}
+	if got := Confidence(otherArtist, q); got != ConfTitleOnly {
+		t.Errorf("distinctive title-only confidence = %v, want ConfTitleOnly", got)
+	}
+	if got := Confidence(wrongTitle, q); got != ConfNone {
+		t.Errorf("partial title match confidence = %v, want ConfNone", got)
+	}
+
+	// A short one-word title is too ambiguous for a title-only match.
+	short := Query{Title: "Hello", Artist: "Adele"}
+	otherHello := apiRecord{TrackName: "Hello", ArtistName: "Lionel Richie", SyncedLyrics: "[00:01.00]x"}
+	if got := Confidence(otherHello, short); got != ConfNone {
+		t.Errorf("ambiguous title-only confidence = %v, want ConfNone", got)
+	}
+}
+
+func TestSelectPriorityAndAmbiguity(t *testing.T) {
+	q := Query{Title: "Believer", Artist: "Imagine Dragons", Duration: 204}
+	artistMatch := apiRecord{TrackName: "Believer", ArtistName: "Imagine Dragons", Duration: 206, SyncedLyrics: "[00:01.00]x"}
+	otherArtist := apiRecord{TrackName: "Believer", ArtistName: "Nightcore Army", Duration: 203, SyncedLyrics: "[00:01.00]x"}
+	otherArtist2 := apiRecord{TrackName: "Believer", ArtistName: "Cover Band", Duration: 205, SyncedLyrics: "[00:01.00]x"}
+	unrelated := apiRecord{TrackName: "Thunder", ArtistName: "Imagine Dragons", SyncedLyrics: "[00:01.00]x"}
+
+	// title + artist wins over title-only.
+	if got := Select([]apiRecord{otherArtist, artistMatch}, q); got == nil || got.ArtistName != "Imagine Dragons" {
+		t.Fatalf("expected the artist match to win, got %+v", got)
+	}
+	// a single non-matching artist is allowed when the title is distinctive.
+	if got := Select([]apiRecord{otherArtist}, q); got == nil {
+		t.Fatal("expected title-only fallback for a single distinctive title")
+	}
+	// the same title under two different artists is too ambiguous.
+	if got := Select([]apiRecord{otherArtist, otherArtist2}, q); got != nil {
+		t.Fatalf("expected ambiguity to reject the match, got %+v", got)
+	}
+	// an unrelated title never matches.
+	if got := Select([]apiRecord{unrelated}, q); got != nil {
+		t.Fatalf("expected unrelated title to be rejected, got %+v", got)
+	}
+}
+
 func TestPickBestPrefersSyncedAndCloseDuration(t *testing.T) {
 	recs := []apiRecord{
 		{TrackName: "far", Duration: 400, SyncedLyrics: "[00:01.00]x"},
@@ -204,6 +321,50 @@ func TestFetchCaches(t *testing.T) {
 	}
 	if hits != 1 {
 		t.Fatalf("expected caching, got %d requests", hits)
+	}
+}
+
+func TestFetchRejectsUnrelatedGetMatch(t *testing.T) {
+	var searched bool
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/get" {
+			// LRCLIB's get endpoint fuzzy-matched a different song entirely.
+			_ = json.NewEncoder(w).Encode(apiRecord{
+				TrackName: "Some Other Song", ArtistName: "Halcyon", Duration: 210,
+				SyncedLyrics: "[00:10.00]wrong",
+			})
+			return
+		}
+		searched = true
+		_ = json.NewEncoder(w).Encode([]apiRecord{
+			{TrackName: "Nightfall", ArtistName: "Halcyon", Duration: 211, SyncedLyrics: "[00:10.00]right"},
+		})
+	})
+	res, err := c.Fetch(context.Background(), Query{
+		TrackID: "yt:9", Title: "Nightfall", Artist: "Halcyon", Duration: 210,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !searched {
+		t.Fatal("expected search fallback after rejecting an unrelated get match")
+	}
+	if res.MatchedTitle != "Nightfall" || len(res.Lines) == 0 || res.Lines[0].Text != "right" {
+		t.Fatalf("expected the correct track's lyrics, got %+v", res)
+	}
+}
+
+func TestFetchNoMatchForUnrelatedSong(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/get" {
+			_ = json.NewEncoder(w).Encode(apiRecord{TrackName: "Other", ArtistName: "X", SyncedLyrics: "[00:01.00]x"})
+			return
+		}
+		_, _ = w.Write([]byte(`[{"trackName":"Other","artistName":"X","syncedLyrics":"[00:01.00]x"}]`))
+	})
+	_, err := c.Fetch(context.Background(), Query{TrackID: "yt:10", Title: "Nightfall", Artist: "Halcyon"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an unrelated song, got %v", err)
 	}
 }
 

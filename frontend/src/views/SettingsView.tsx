@@ -106,10 +106,14 @@ export function SettingsView() {
       <div className="settings-group">
         <h3>Playback</h3>
         <Row name="Autoplay" desc="Keep playing related songs after your queue ends.">
-          <Toggle checked={settings.autoplay} onChange={(v) => {
-            update('autoplay', v)
-            if (!v) playback.clearAutoplay()
-          }} label="Autoplay" />
+          <Toggle
+            checked={settings.autoplay}
+            onChange={(v) => {
+              update('autoplay', v)
+              playback.setAutoplay(v)
+            }}
+            label="Autoplay"
+          />
         </Row>
         <Row name="Default speed" desc="Applied to every new track.">
           <select

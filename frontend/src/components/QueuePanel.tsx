@@ -5,6 +5,7 @@ import { playback, usePlayer } from '../state/playback'
 import { ui } from '../state/uiStore'
 import { Artwork } from './Artwork'
 import { CloseIcon, DownIcon, PlusIcon, TrashIcon, UpIcon } from './Icons'
+import { RepeatButton, ShuffleButton } from './MiniPlayer'
 import { EmptyState } from './States'
 
 export function QueuePanel() {
@@ -26,9 +27,13 @@ export function QueuePanel() {
           <h2>Queue</h2>
           {contextLabel && <div className="muted" style={{ fontSize: 12 }}>{contextLabel}</div>}
         </div>
-        <button className="icon-btn" onClick={() => ui.toggleQueue(false)} aria-label="Close queue" type="button">
-          <CloseIcon size={17} />
-        </button>
+        <div className="row" style={{ gap: 2 }}>
+          <ShuffleButton />
+          <RepeatButton />
+          <button className="icon-btn" onClick={() => ui.toggleQueue(false)} aria-label="Close queue" type="button">
+            <CloseIcon size={17} />
+          </button>
+        </div>
       </div>
 
       <div className="panel-body">

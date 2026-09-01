@@ -123,14 +123,16 @@ func (c *Client) fetchUncached(ctx context.Context, q Query) (Result, error) {
 		params.Set("duration", strconv.Itoa(int(math.Round(q.Duration))))
 	}
 	rec, err := c.getOne(ctx, "/api/get?"+params.Encode())
-	if err == nil {
+	if err == nil && Confidence(*rec, q) > ConfNone {
 		return toResult(*rec), nil
 	}
-	if !errors.Is(err, ErrNotFound) {
+	// The get endpoint fuzzy-matched something unrelated (or missed): fall back
+	// to search, which lets the conservative ladder pick a confident match.
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return Result{}, err
 	}
 
-	// 2) search and pick the closest duration match
+	// 2) search and pick via the conservative matching ladder
 	sp := url.Values{}
 	sp.Set("track_name", title)
 	if artist != "" {
@@ -140,7 +142,7 @@ func (c *Client) fetchUncached(ctx context.Context, q Query) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	best := PickBest(recs, q.Duration)
+	best := Select(recs, q)
 	if best == nil {
 		// 3) last try: free-text query
 		fp := url.Values{}
@@ -149,7 +151,7 @@ func (c *Client) fetchUncached(ctx context.Context, q Query) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		best = PickBest(recs, q.Duration)
+		best = Select(recs, q)
 	}
 	if best == nil {
 		return Result{}, ErrNotFound
@@ -221,7 +223,7 @@ func PickBest(recs []apiRecord, want float64) *apiRecord {
 	bestScore := math.MaxFloat64
 	for i := range recs {
 		r := recs[i]
-		if r.SyncedLyrics == "" && r.PlainLyrics == "" && !r.Instrumental {
+		if !hasLyrics(r) {
 			continue
 		}
 		score := 0.0
@@ -312,12 +314,19 @@ func ParseLRC(raw string) ([]Line, float64) {
 }
 
 var (
-	bracketRe = regexp.MustCompile(`(?i)\s*[\(\[](official|lyrics?|audio|video|music video|hd|hq|4k|visualizer|mv|live|remaster(ed)?( \d{4})?|explicit|clean)[^\)\]]*[\)\]]`)
+	bracketRe = regexp.MustCompile(`(?i)\s*[\(\[](official|lyrics?|lyric video|music video|audio|video|visualizer|mv|live|performance|remaster(ed)?( \d{4})?|hd|hq|4k|cover|acoustic|slowed|reverb|sped up|nightcore|explicit|clean)[^\)\]]*[\)\]]`)
 	featRe    = regexp.MustCompile(`(?i)\s*[\(\[]?(feat\.?|ft\.?|featuring)\s+[^\)\]]*[\)\]]?$`)
-	suffixRe  = regexp.MustCompile(`(?i)\s*[-–|]\s*(official.*|lyrics?.*|audio|topic)$`)
+	suffixRe  = regexp.MustCompile(`(?i)\s*[-–|]\s*(official.*|lyrics?.*|lyric video|music video|audio|visualizer|live|performance|remaster.*|hd|hq|4k|cover|acoustic|slowed|reverb|sped up|nightcore|topic)$`)
+	topicRe   = regexp.MustCompile(`(?i)\s*-\s*topic$`)
+	vevoRe    = regexp.MustCompile(`(?i)\s*vevo$`)
+	nonAlnum  = regexp.MustCompile(`[^a-z0-9]+`)
 )
 
-// CleanTitle strips the noise YouTube titles carry so LRCLIB can match.
+// CleanTitle strips the upload noise YouTube titles carry (official video,
+// music/lyric video, audio, visualizer, live, performance, remasters, cover,
+// acoustic, slowed, reverb, sped up, nightcore, …) so LRCLIB can match. Noise is
+// only removed when it appears as a bracketed/parenthesised tag or after a
+// dash separator, so meaningful song words are never stripped.
 func CleanTitle(t string) string {
 	out := strings.TrimSpace(t)
 	out = bracketRe.ReplaceAllString(out, "")
@@ -326,16 +335,110 @@ func CleanTitle(t string) string {
 	return strings.TrimSpace(strings.Trim(out, "-–|· "))
 }
 
-// CleanArtist removes the "- Topic" suffix and collapses multi-artist strings
-// to the primary artist, which matches LRCLIB's indexing much better.
+// CleanArtist removes the "- Topic"/"VEVO" suffixes and collapses multi-artist
+// strings to the primary artist, which matches LRCLIB's indexing much better.
 func CleanArtist(a string) string {
 	out := strings.TrimSpace(a)
-	out = regexp.MustCompile(`(?i)\s*-\s*topic$`).ReplaceAllString(out, "")
-	out = regexp.MustCompile(`(?i)\s*vevo$`).ReplaceAllString(out, "")
-	for _, sep := range []string{" & ", ", ", " x ", " X ", " feat. ", " ft. "} {
+	out = topicRe.ReplaceAllString(out, "")
+	out = vevoRe.ReplaceAllString(out, "")
+	for _, sep := range []string{" & ", ", ", " x ", " X ", " feat. ", " feat ", " ft. ", " ft ", " featuring "} {
 		if i := strings.Index(out, sep); i > 0 {
 			out = out[:i]
 		}
 	}
-	return strings.TrimSpace(out)
+	return strings.TrimSpace(strings.Trim(out, ",&· "))
+}
+
+// titleKey canonicalizes a title for comparison: it removes upload noise, then
+// lowercases and drops everything that isn't a letter or digit.
+func titleKey(s string) string {
+	return nonAlnum.ReplaceAllString(strings.ToLower(CleanTitle(s)), "")
+}
+
+// artistKey canonicalizes an artist for comparison, reducing to the primary
+// artist so "X feat. Y", "X - Topic" and "XVEVO" all compare equal to "X".
+func artistKey(s string) string {
+	return nonAlnum.ReplaceAllString(strings.ToLower(CleanArtist(s)), "")
+}
+
+// distinctiveTitle reports whether a cleaned title carries enough signal to
+// stand on its own without an artist match. Short one-word titles are far too
+// ambiguous to match by title alone.
+func distinctiveTitle(clean string) bool {
+	words := strings.Fields(clean)
+	if len(words) >= 2 {
+		return true
+	}
+	return len(words) == 1 && len(words[0]) >= 8
+}
+
+func hasLyrics(r apiRecord) bool {
+	return r.SyncedLyrics != "" || r.PlainLyrics != "" || r.Instrumental
+}
+
+// MatchConfidence is the result of the conservative matching ladder: a record
+// either matches the query by title and artist, by title only, or not at all.
+type MatchConfidence int
+
+const (
+	ConfNone MatchConfidence = iota
+	ConfTitleOnly
+	ConfTitleArtist
+)
+
+// Confidence scores a single record against a query. Titles must match exactly
+// after normalization — a partial title match is never treated as a match, so
+// lyrics for an unrelated song can never leak in.
+func Confidence(rec apiRecord, q Query) MatchConfidence {
+	if titleKey(rec.TrackName) != titleKey(q.Title) {
+		return ConfNone
+	}
+	qa, ra := artistKey(q.Artist), artistKey(rec.ArtistName)
+	if qa != "" && ra != "" && qa == ra {
+		return ConfTitleArtist
+	}
+	if distinctiveTitle(CleanTitle(q.Title)) {
+		return ConfTitleOnly
+	}
+	return ConfNone
+}
+
+// Select applies the matching priority over a candidate list:
+//
+//  1. exact normalized title + artist (canonical/primary forms included),
+//  2. exact normalized title alone — only when the title is distinctive and not
+//     shared by several different artists in the result set,
+//  3. otherwise nothing.
+//
+// The winner is then chosen by duration proximity (PickBest).
+func Select(recs []apiRecord, q Query) *apiRecord {
+	qt := titleKey(q.Title)
+	qa := artistKey(q.Artist)
+	var titleArtist, titleOnly []apiRecord
+	titleArtists := map[string]struct{}{}
+	for i := range recs {
+		r := recs[i]
+		if !hasLyrics(r) || titleKey(r.TrackName) != qt {
+			continue
+		}
+		ra := artistKey(r.ArtistName)
+		if qa != "" && ra != "" && qa == ra {
+			titleArtist = append(titleArtist, r)
+			continue
+		}
+		titleOnly = append(titleOnly, r)
+		if ra != "" {
+			titleArtists[ra] = struct{}{}
+		}
+	}
+	if best := PickBest(titleArtist, q.Duration); best != nil {
+		return best
+	}
+	if !distinctiveTitle(CleanTitle(q.Title)) {
+		return nil
+	}
+	if len(titleArtists) > 1 {
+		return nil // same title under several artists: too ambiguous
+	}
+	return PickBest(titleOnly, q.Duration)
 }

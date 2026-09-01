@@ -398,9 +398,13 @@ p {
   gap: 4px;
 }
 
-.search-field {
+.search-box {
+  position: relative;
   flex: 1;
   max-width: 460px;
+}
+
+.search-field {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -438,6 +442,74 @@ p {
   border-radius: 5px;
   padding: 1px 5px;
   background: var(--surface);
+}
+
+/* ---------------- search suggestions ---------------- */
+
+.suggest-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-3);
+  z-index: 90;
+  overflow: hidden;
+  animation: menu-in 140ms var(--ease);
+}
+
+.suggest-head {
+  font-size: 10.5px;
+  font-weight: 660;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: 10px 14px 6px;
+}
+
+.suggest-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: background var(--fast);
+}
+
+.suggest-item:hover,
+.suggest-item.active {
+  background: var(--hover);
+}
+
+.suggest-item .artwork {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+}
+
+.suggest-main {
+  min-width: 0;
+}
+
+.suggest-label {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.suggest-sub {
+  font-size: 12px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------------- buttons ---------------- */
@@ -543,7 +615,8 @@ p {
   aspect-ratio: 1;
 }
 
-.artwork img {
+.artwork .artwork-img {
+  position: relative; /* paints above the absolutely-positioned blur fill */
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -552,8 +625,25 @@ p {
   transition: opacity 260ms var(--ease);
 }
 
-.artwork img.loaded {
+.artwork .artwork-img.contain {
+  object-fit: contain;
+}
+
+.artwork .artwork-img.loaded {
   opacity: 1;
+}
+
+/* Blurred, zoomed copy of the artwork that fills the square frame behind a
+   contained (letterboxed) rectangular thumbnail, so the full image is visible
+   without empty gutters. */
+.artwork .artwork-fill {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(26px) saturate(1.35) brightness(0.5);
+  transform: scale(1.25);
 }
 
 .artwork .fallback {
@@ -986,7 +1076,9 @@ p {
   box-shadow: var(--shadow-3);
   display: flex;
   flex-direction: column;
-  z-index: 60;
+  /* Above the Now Playing overlay (70) so the global queue stays reachable
+     from every screen, including Now Playing. */
+  z-index: 80;
   animation: panel-in 240ms var(--ease);
   overflow: hidden;
 }

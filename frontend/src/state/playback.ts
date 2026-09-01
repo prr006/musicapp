@@ -30,11 +30,18 @@ export interface PlayContext {
 const SESSION_SAVE_DEBOUNCE = 1500
 const PREVIOUS_RESTART_THRESHOLD = 3
 
+/** Discovery (autoplay) keeps at least this many upcoming tracks ready. */
+const DISCOVERY_TARGET = 8
+/** Recent-history window used to avoid replaying songs the user just heard. */
+const DISCOVERY_RECENT_HISTORY = 50
+
 export class PlaybackController {
   readonly engine: PlaybackEngine
   private sessionTimer: ReturnType<typeof setTimeout> | null = null
   private recordedForToken = new Set<number>()
-  private autoplayRequestFor: string | null = null
+  private discoveryGen = 0
+  private discoveryPromise: Promise<void> | null = null
+  private discoveryWarned = false
 
   constructor(engine = new PlaybackEngine()) {
     this.engine = engine
@@ -52,7 +59,7 @@ export class PlaybackController {
         setPlayerState({ status, error, volume, muted, speed: rate })
         if (status === 'playing') {
           this.markPlayed()
-          void this.ensureAutoplayContinuation()
+          void this.refillDiscovery()
         }
         this.queueSessionSave()
         break
@@ -105,6 +112,9 @@ export class PlaybackController {
 
   /** Play a track, optionally replacing the explicit queue with a context. */
   async play(track: Track, context: PlayContext = {}): Promise<void> {
+    // Any explicit choice supersedes discovery: stale continuations are dropped
+    // and rebuilt from the new listening context as needed.
+    this.resetDiscovery()
     const tracks = context.tracks ? dedupeTracks(context.tracks) : null
     let queue = tracks ?? playerState().queue
     let index = -1
@@ -213,17 +223,20 @@ export class PlaybackController {
   }
 
   /** The single implementation of "move by one track". */
-  private async advance(step: number, opts: { auto: boolean }): Promise<void> {
+  private async advance(step: number, _opts: { auto: boolean }): Promise<void> {
     const state = playerState()
     const { queue, index, repeat } = state
 
     if (state.playingFrom === 'autoplay') {
-      const pos = state.autoQueue.findIndex((t) => t.id === state.current?.id)
-      const nextAuto = state.autoQueue[pos + step]
-      if (nextAuto) {
-        await this.start(nextAuto)
+      // Tracks the user queued manually while autoplaying take priority over
+      // discovery, so automatic continuation can never reorder their choices.
+      if (step > 0 && index + 1 < queue.length) {
+        setPlayerState({ index: index + 1, playingFrom: 'queue' })
+        await this.start(queue[index + 1])
         return
       }
+      const started = await this.startNextDiscovery()
+      if (started) return
       this.finish()
       return
     }
@@ -241,18 +254,22 @@ export class PlaybackController {
       return
     }
     // Explicit queue exhausted: autoplay continues only if the user enabled it.
-    const autoplay = useLibraryStore.getState().settings.autoplay
-    if (step > 0 && autoplay && state.autoQueue.length > 0) {
-      const next = state.autoQueue[0]
-      setPlayerState({ playingFrom: 'autoplay' })
-      await this.start(next)
-      return
-    }
-    if (opts.auto) {
-      this.finish()
-      return
+    if (step > 0 && useLibraryStore.getState().settings.autoplay) {
+      const started = await this.startNextDiscovery()
+      if (started) return
     }
     this.finish()
+  }
+
+  /** Shifts the next discovery track and starts it; false when none is left. */
+  private async startNextDiscovery(): Promise<boolean> {
+    await this.refillDiscovery()
+    const state = playerState()
+    if (state.autoQueue.length === 0) return false
+    const [next, ...rest] = state.autoQueue
+    setPlayerState({ autoQueue: rest, playingFrom: 'autoplay' })
+    await this.start(next)
+    return true
   }
 
   /** Reached the end of everything: stop cleanly without clearing the queue. */
@@ -397,39 +414,82 @@ export class PlaybackController {
     await this.play(list[0], { tracks: list, index: 0, label })
   }
 
-  // ---------- autoplay ----------
+  // ---------- autoplay / discovery ----------
 
   /**
-   * Autoplay is a separate list built from real provider data for the current
-   * artist. It is only consulted after the explicit queue is exhausted.
+   * Keeps several upcoming discovery tracks ahead of the listener. It is the
+   * background continuation that makes playback endless: when the upcoming
+   * discovery count drops below DISCOVERY_TARGET it fetches more, seeded from
+   * the tail of the discovery list so the selection drifts instead of looping.
+   *
+   * Concurrency and staleness are guarded: only one fetch runs at a time
+   * (discoveryPromise) and every response is validated against discoveryGen, so
+   * a slow response (or one superseded by toggling autoplay off/on) can never
+   * corrupt the queue.
    */
-  private async ensureAutoplayContinuation(): Promise<void> {
+  private refillDiscovery(): Promise<void> {
+    if (!useLibraryStore.getState().settings.autoplay) return Promise.resolve()
     const state = playerState()
-    const settings = useLibraryStore.getState().settings
-    if (!settings.autoplay || !state.current) return
-    const remaining = state.queue.length - 1 - state.index
-    if (remaining > 1 || state.autoQueue.length > 0) return
-    const seed = state.current
-    if (this.autoplayRequestFor === seed.id) return
-    this.autoplayRequestFor = seed.id
+    if (!state.current) return Promise.resolve()
+    if (state.autoQueue.length >= DISCOVERY_TARGET) return Promise.resolve()
+    if (this.discoveryPromise) return this.discoveryPromise
+    this.discoveryPromise = this.doDiscoveryFetch().finally(() => {
+      this.discoveryPromise = null
+    })
+    return this.discoveryPromise
+  }
+
+  private async doDiscoveryFetch(): Promise<void> {
+    const gen = ++this.discoveryGen
+    const state = playerState()
+    const seedTrack = state.autoQueue[state.autoQueue.length - 1] ?? state.current
+    const seed = (seedTrack?.artist || seedTrack?.title || '').trim()
+    if (!seed) return
     try {
-      const query = seed.artist || seed.title
-      const res = await backend().search(query, 'songs')
-      const known = new Set([...state.queue.map((t) => t.id), seed.id])
-      const candidates = dedupeTracks([...(res.songs ?? []), ...(res.videos ?? [])])
-        .filter((t) => !known.has(t.id))
-        .slice(0, 20)
-      if (candidates.length === 0) return
-      setPlayerState({ autoQueue: candidates })
+      const res = await backend().search(seed, 'songs')
+      if (gen !== this.discoveryGen) return // superseded by a newer request
+      const known = new Set<string>()
+      for (const id of [
+        playerState().current?.id,
+        ...playerState().queue.map((t) => t.id),
+        ...playerState().autoQueue.map((t) => t.id),
+        ...useLibraryStore.getState().history.slice(0, DISCOVERY_RECENT_HISTORY).map((h) => h.track.id),
+      ]) {
+        if (id) known.add(id)
+      }
+      const candidates = dedupeTracks([...(res.songs ?? []), ...(res.videos ?? [])]).filter((t) => !known.has(t.id))
+      if (candidates.length > 0) {
+        setPlayerState({ autoQueue: dedupeTracks([...playerState().autoQueue, ...candidates]) })
+        this.discoveryWarned = false
+      }
     } catch {
-      // Autoplay is optional: a provider failure must not disturb playback.
-      setPlayerState({ autoQueue: [] })
+      if (gen !== this.discoveryGen) return
+      // Non-destructive: keep what we have and warn once; the next refill will retry.
+      if (!this.discoveryWarned) {
+        this.discoveryWarned = true
+        ui.toast("Couldn't load more suggestions — will retry", 'error')
+      }
     }
   }
 
+  /** Empties the discovery list without touching the autoplay setting. */
   clearAutoplay(): void {
-    this.autoplayRequestFor = null
+    this.resetDiscovery()
+  }
+
+  private resetDiscovery(): void {
+    this.discoveryGen += 1
+    this.discoveryWarned = false
     setPlayerState({ autoQueue: [] })
+  }
+
+  /** Called when the autoplay setting changes. */
+  setAutoplay(enabled: boolean): void {
+    if (enabled) {
+      void this.refillDiscovery()
+    } else {
+      this.clearAutoplay()
+    }
   }
 
   // ---------- session ----------

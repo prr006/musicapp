@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setBackend, type Backend } from '../bridge/backend'
+import type { SearchResponse, Track } from '../bridge/types'
 import { activeLineIndex, lyrics, useLyricsStore } from './lyricsStore'
 import { search, useSearchStore } from './searchStore'
-import type { Track } from '../bridge/types'
+import { suggest, useSuggestStore } from './suggestStore'
 
 const line = (time: number, text: string) => ({ time, text })
 
@@ -142,5 +143,67 @@ describe('searchStore', () => {
     await first
     expect(useSearchStore.getState().submitted).toBe('fast')
     expect(useSearchStore.getState().results?.songs[0].id).toBe('fast')
+  })
+})
+
+describe('suggestStore', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    suggest.clear()
+    useSuggestStore.setState({ items: [], status: 'idle' })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('debounces keystrokes into a single provider request', async () => {
+    const be = stubBackend({
+      search: vi.fn(async () => ({ query: 'bel', songs: [track('bel')], videos: [], albums: [], artists: [], provider: 'ytmusic' })),
+    })
+    suggest.request('b')
+    suggest.request('be')
+    suggest.request('bel')
+    await vi.advanceTimersByTimeAsync(250)
+    expect(be.search).toHaveBeenCalledTimes(1)
+    expect(be.search).toHaveBeenCalledWith('bel', '')
+    expect(useSuggestStore.getState().items.map((i) => i.track?.id)).toEqual(['bel'])
+  })
+
+  it('never lets a stale response overwrite a newer query', async () => {
+    const bel: SearchResponse = { query: 'bel', songs: [track('bel')], videos: [], albums: [], artists: [], provider: 'ytmusic' }
+    const believer: SearchResponse = { query: 'believer', songs: [track('believer')], videos: [], albums: [], artists: [], provider: 'ytmusic' }
+    let resolveBel!: (r: SearchResponse) => void
+    stubBackend({
+      search: vi.fn((q: string) => {
+        if (q === 'bel') return new Promise<SearchResponse>((resolve) => (resolveBel = resolve))
+        return Promise.resolve(believer)
+      }),
+    })
+
+    suggest.request('bel')
+    await vi.advanceTimersByTimeAsync(250) // the "bel" request is now in-flight
+    suggest.request('believer')
+    await vi.advanceTimersByTimeAsync(250) // the "believer" request resolves first
+
+    resolveBel(bel) // "bel" resolves late and must be ignored
+    await vi.advanceTimersByTimeAsync(0)
+    expect(useSuggestStore.getState().items.map((i) => i.track?.id)).toEqual(['believer'])
+  })
+
+  it('closing the dropdown invalidates an in-flight request', async () => {
+    let resolveBel!: (r: SearchResponse) => void
+    stubBackend({
+      search: vi.fn(
+        () =>
+          new Promise<SearchResponse>((resolve) => (resolveBel = resolve)),
+      ),
+    })
+    suggest.request('bel')
+    await vi.advanceTimersByTimeAsync(250)
+    suggest.clear()
+    resolveBel({ query: 'bel', songs: [track('bel')], videos: [], albums: [], artists: [], provider: 'ytmusic' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(useSuggestStore.getState().items).toEqual([])
   })
 })

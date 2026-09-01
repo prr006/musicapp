@@ -8,6 +8,7 @@ import { library, useLibraryStore } from './libraryStore'
 import { useLyricsStore } from './lyricsStore'
 import { usePlayerStore } from './playerStore'
 import { positionChannel } from './positionChannel'
+import { useUIStore } from './uiStore'
 import { FakeMedia } from '../test/fakeMedia'
 
 function track(id: string, extra: Partial<Track> = {}): Track {
@@ -377,6 +378,117 @@ describe('autoplay', () => {
 
     h.media.endNaturally()
     await vi.waitFor(() => expect(state().status).toBe('idle'))
+  })
+})
+
+describe('discovery (endless queue)', () => {
+  it('fills the background queue and keeps it separate from the explicit queue', async () => {
+    const h = harness()
+    const a = track('a')
+    const pool = Array.from({ length: 10 }, (_, i) => track(`d${i}`))
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: '', songs: pool, videos: [], albums: [], artists: [], provider: 'test',
+    })
+
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThanOrEqual(8))
+    expect(state().queue.map((t) => t.id)).toEqual([a.id])
+  })
+
+  it('never queues songs already in the queue, upcoming, current, or recent history', async () => {
+    const h = harness()
+    const a = track('a')
+    const b = track('b')
+    const dup = track('dup')
+    const fresh = track('fresh')
+    // The backend reports `dup` as recently played, so discovery must skip it.
+    ;(h.backend.recordPlay as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { track: dup, playedAt: Date.now() },
+    ])
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: '', songs: [a, b, dup, fresh], videos: [], albums: [], artists: [], provider: 'test',
+    })
+
+    await h.controller.play(a, { tracks: [a, b], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
+    expect(state().autoQueue.map((t) => t.id)).toEqual([fresh.id])
+  })
+
+  it('gives manual queue entries priority over discovery', async () => {
+    const h = harness()
+    const a = track('a')
+    const extra = track('z')
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: '', songs: [extra], videos: [], albums: [], artists: [], provider: 'test',
+    })
+
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(1))
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe(extra.id))
+    expect(state().playingFrom).toBe('autoplay')
+
+    const manual = track('manual')
+    h.controller.addToQueue([manual])
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe(manual.id))
+    expect(state().playingFrom).toBe('queue')
+  })
+
+  it('keeps existing upcoming tracks, warns once and retries on provider failure', async () => {
+    useUIStore.setState({ toasts: [] })
+    const h = harness()
+    const a = track('a')
+    const one = track('one')
+    const two = track('two')
+    const three = track('three')
+
+    let calls = 0
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      calls += 1
+      if (calls === 1) {
+        return { query: '', songs: [one, two], videos: [], albums: [], artists: [], provider: 'test' }
+      }
+      if (calls === 2) {
+        throw new Error('network down')
+      }
+      return { query: '', songs: calls === 4 ? [three] : [], videos: [], albums: [], artists: [], provider: 'test' }
+    })
+
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual([one.id, two.id]))
+
+    // Consume `one`; the refill for the next slot fails but must not disturb playback.
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe(one.id))
+    expect(state().status).toBe('playing')
+    expect(state().autoQueue.map((t) => t.id)).toEqual([two.id]) // kept intact
+    await vi.waitFor(() => expect(useUIStore.getState().toasts).toHaveLength(1))
+    expect(useUIStore.getState().toasts[0].message).toMatch(/retry/)
+
+    // Consume `two`; the warning is not repeated, and a later refill recovers.
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe(two.id))
+    expect(useUIStore.getState().toasts).toHaveLength(1)
+
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe(three.id))
+    expect(state().status).toBe('playing')
+  })
+
+  it('stopping autoplay empties discovery without touching the explicit queue', async () => {
+    const h = harness()
+    const a = track('a')
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: '', songs: [track('z')], videos: [], albums: [], artists: [], provider: 'test',
+    })
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
+
+    h.controller.setAutoplay(false)
+    expect(state().autoQueue).toHaveLength(0)
+    expect(state().queue.map((t) => t.id)).toEqual([a.id])
+    expect(state().status).toBe('playing')
   })
 })
 

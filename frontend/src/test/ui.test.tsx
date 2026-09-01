@@ -1,6 +1,7 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Artwork } from '../components/Artwork'
 import { TrackRow } from '../components/TrackRow'
 import { SearchView } from '../views/SearchView'
 import { setBackend, type Backend } from '../bridge/backend'
@@ -138,5 +139,37 @@ describe('SearchView states', () => {
     await act(async () => { await search.run('night') })
     const img = await screen.findByAltText('Nightfall')
     expect(img).toHaveAttribute('src', 'http://img/a.jpg')
+  })
+})
+
+describe('Artwork fit strategy', () => {
+  const size = (img: HTMLElement, w: number, h: number) => {
+    Object.defineProperty(img, 'naturalWidth', { value: w, configurable: true })
+    Object.defineProperty(img, 'naturalHeight', { value: h, configurable: true })
+  }
+
+  it('letterboxes a 16:9 video thumbnail instead of cropping it', () => {
+    render(<Artwork src="http://img/v.jpg" alt="Video" />)
+    const img = screen.getByAltText('Video')
+    size(img, 1280, 720)
+    act(() => fireEvent.load(img))
+    expect(img.className).toContain('contain')
+    expect(img.closest('.artwork')?.querySelector('.artwork-fill')).toBeInTheDocument()
+  })
+
+  it('keeps square album art clean with a cover fit and no blur layer', () => {
+    render(<Artwork src="http://img/sq.jpg" alt="Square" />)
+    const img = screen.getByAltText('Square')
+    size(img, 600, 600)
+    act(() => fireEvent.load(img))
+    expect(img.className).not.toContain('contain')
+    expect(img.closest('.artwork')?.querySelector('.artwork-fill')).not.toBeInTheDocument()
+  })
+
+  it('degrades to initials when there is no artwork', () => {
+    render(<Artwork alt="Nightfall" />)
+    const fallback = document.querySelector('.artwork .fallback')
+    expect(fallback).toBeInTheDocument()
+    expect(fallback).toHaveTextContent('NI')
   })
 })
