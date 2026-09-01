@@ -190,7 +190,9 @@ pub fn start(
     initial_volume: f64,
     initial_muted: bool,
 ) -> Result<RunningEngine, String> {
-    let mut child = spawn_process(endpoint)?;
+    // Only moved into `RunningEngine` below; kill/wait go through its
+    // Arc<Mutex<Option<Child>>> in shutdown.
+    let child = spawn_process(endpoint)?;
     let stream = connect_with_retry(endpoint, Duration::from_secs(10))?;
     let writer_stream = stream.try_clone().map_err(|e| format!("clone IPC stream: {e}"))?;
 
@@ -204,8 +206,7 @@ pub fn start(
         std::thread::Builder::new()
             .name("melo-mpv-writer".into())
             .spawn(move || {
-                let next_req =
-                    move || counter.fetch_add(1, Ordering::Relaxed);
+                let mut next_req = move || counter.fetch_add(1, Ordering::Relaxed);
                 // Initial observes + audio settings.
                 let mut boot = ipc::encode_observe_all(next_req());
                 boot.push(ipc::encode_command(&MpvCommand::SetVolume(initial_volume), next_req()));

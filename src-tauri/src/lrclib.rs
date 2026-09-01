@@ -85,7 +85,7 @@ impl LrclibClient {
             req = req.query("duration", &format!("{}", d.round() as u64));
         }
         match req.call() {
-            Ok(resp) => Ok(Some(resp.into_json::<LrclibEntry>().map_err(json_err)?)),
+            Ok(resp) => Ok(Some(resp.into_json::<LrclibEntry>().map_err(json_io_err)?)),
             Err(ureq::Error::Status(404, _)) => Ok(None),
             Err(ureq::Error::Status(429, _)) => Err(ProviderError::RateLimited),
             Err(ureq::Error::Status(code, _)) => {
@@ -110,7 +110,7 @@ impl LrclibClient {
             req = req.query("artist_name", artist);
         }
         let entries: Vec<LrclibEntry> = match req.call() {
-            Ok(resp) => resp.into_json().map_err(json_err)?,
+            Ok(resp) => resp.into_json().map_err(json_io_err)?,
             Err(ureq::Error::Status(404, _)) => Vec::new(),
             Err(ureq::Error::Status(429, _)) => return Err(ProviderError::RateLimited),
             Err(ureq::Error::Status(code, _)) => {
@@ -155,18 +155,42 @@ impl LrclibClient {
     }
 }
 
-fn json_err(e: ureq::Error) -> ProviderError {
-    match e {
-        ureq::Error::Status(404, _) => ProviderError::NotFound,
-        other => ProviderError::Detail(format!("bad lrclib payload: {other}")),
+/// `Response::into_json` in ureq 2.x returns `std::io::Error` (body read or
+/// JSON parse failures). Classify those honestly.
+fn json_io_err(e: std::io::Error) -> ProviderError {
+    use std::io::ErrorKind as Io;
+    match e.kind() {
+        Io::TimedOut | Io::WouldBlock => ProviderError::Timeout,
+        _ => ProviderError::Detail(format!("bad lrclib payload: {e}")),
     }
 }
 
+/// Classify a ureq transport failure against `ProviderError`.
+///
+/// ureq 2.x has **no** dedicated timeout `ErrorKind`: the agent-level
+/// `.timeout(...)` fires inside the socket read/connect and surfaces as an
+/// `ErrorKind::Io` transport whose inner `std::io::Error` is
+/// `TimedOut`/`WouldBlock`. Inspect that source first, then fall back to the
+/// transport kind.
 fn map_transport(t: ureq::Transport) -> ProviderError {
+    use std::error::Error as _;
     use ureq::ErrorKind;
+
+    let io_timeout = t
+        .source()
+        .and_then(|s| s.downcast_ref::<std::io::Error>())
+        .map(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            )
+        })
+        .unwrap_or(false);
+    if io_timeout {
+        return ProviderError::Timeout;
+    }
     match t.kind() {
         ErrorKind::Dns | ErrorKind::ConnectionFailed => ProviderError::Offline,
-        ErrorKind::Timeout => ProviderError::Timeout,
         other => ProviderError::Detail(format!("lrclib transport: {other}")),
     }
 }

@@ -278,7 +278,11 @@ fn strip_word_timestamps(text: &str) -> String {
 ///
 /// <https://lrclib.net/docs> — fields: `syncedLyrics`, `plainLyrics`,
 /// `trackName`, `artistName`, `duration`, `id`.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `Serialize` is required by the app shell's on-disk lyrics cache, so the
+/// derive lives here with the type it belongs to (round-trips losslessly).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LrclibEntry {
     #[serde(default)]
     pub id: Option<u64>,
@@ -566,6 +570,59 @@ mod tests {
         assert!(l.instrumental);
         assert!(l.lines.is_empty());
         assert!(!l.synced);
+    }
+
+    #[test]
+    fn lrclib_entry_parses_real_camel_case_payload() {
+        // Shape straight from https://lrclib.net/docs — the API speaks
+        // camelCase; a snake_case-only mapping would silently produce an
+        // all-None entry (no lyrics, no error).
+        let payload = serde_json::json!({
+            "id": 1234,
+            "trackName": "Neon River",
+            "artistName": "Aster Vale",
+            "albumName": "Northline",
+            "duration": 222.4,
+            "instrumental": false,
+            "syncedLyrics": "[00:12.00]First line\n[00:18.00]Second line",
+            "plainLyrics": "First line\nSecond line"
+        });
+        let entry: LrclibEntry = serde_json::from_value(payload).unwrap();
+        assert_eq!(entry.track_name.as_deref(), Some("Neon River"));
+        assert_eq!(entry.artist_name.as_deref(), Some("Aster Vale"));
+        assert_eq!(entry.album_name.as_deref(), Some("Northline"));
+        assert_eq!(entry.duration, Some(222.4));
+        assert_eq!(entry.id, Some(1234));
+        assert!(entry.synced_lyrics.is_some());
+        assert!(entry.plain_lyrics.is_some());
+
+        // The converted lyrics carry the synced LRC content.
+        let lyrics = entry.clone().into_lyrics();
+        assert!(lyrics.synced);
+        assert_eq!(lyrics.lines.len(), 2);
+    }
+
+    #[test]
+    fn lrclib_entry_tolerates_sparse_search_entries_and_round_trips() {
+        // /api/search rows routinely lack album/plain lyrics.
+        let payload = serde_json::json!({
+            "id": 55,
+            "trackName": "Tidefall",
+            "artistName": "Edien",
+            "duration": 300.0,
+            "instrumental": false,
+            "syncedLyrics": "[00:01.00]x"
+        });
+        let entry: LrclibEntry = serde_json::from_value(payload).unwrap();
+        assert_eq!(entry.album_name, None);
+        assert_eq!(entry.plain_lyrics, None);
+
+        // The app shell persists entries in its on-disk lyrics cache, so a
+        // serialize → deserialize round-trip must be lossless.
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(json.get("trackName").is_some(), "cache must stay camelCase");
+        let back: LrclibEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, entry);
     }
 
     #[test]

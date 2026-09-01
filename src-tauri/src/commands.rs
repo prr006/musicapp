@@ -271,7 +271,10 @@ pub async fn search(
     }
     let limit = limit.unwrap_or(25).clamp(1, 40);
     let resolver = resolver.inner().clone();
-    let found = tauri::async_runtime::spawn_blocking(move || resolver.search(&query, limit))
+    // The worker thread gets its own copy; `query` stays owned here for the
+    // search-history push and the echoed result below.
+    let search_query = query.clone();
+    let found = tauri::async_runtime::spawn_blocking(move || resolver.search(&search_query, limit))
         .await
         .map_err(|e| ProviderError::Detail(format!("search task failed: {e}")))??;
 

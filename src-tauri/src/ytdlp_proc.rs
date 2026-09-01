@@ -35,7 +35,11 @@ pub fn discover() -> Option<PathBuf> {
     let mut probe = Command::new("yt-dlp");
     probe.arg("--version");
     hide_window(&mut probe);
-    if let Ok(child) = probe.stdout(Stdio::null()).stderr(Stdio::null()).stdin(Stdio::null()).spawn()
+    if let Ok(mut child) = probe
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .spawn()
     {
         if let Ok(status) = child.wait() {
             if status.success() {
@@ -68,7 +72,7 @@ fn base_command(binary: &PathBuf) -> Command {
 /// Run a command, capture stdout, kill on timeout.
 fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<String, ProviderError> {
     use std::io::Read;
-    let child = cmd
+    let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .stdin(Stdio::null())
@@ -86,9 +90,8 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<String, Provi
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if Instant::now() > deadline {
-                    let mut to_kill = child;
-                    let _ = to_kill.kill();
-                    let _ = to_kill.wait();
+                    let _ = child.kill();
+                    let _ = child.wait();
                     return Err(ProviderError::Timeout);
                 }
                 std::thread::sleep(Duration::from_millis(25));

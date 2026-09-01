@@ -355,7 +355,7 @@ pub fn spawn(
                     } => {
                         if gen != generation {
                             log::note(&format!(
-                                "dropping stale resolve for {track_title} (gen {gen} != {generation})"
+                                "dropping stale resolve for {track_title} ({track_id}, gen {gen} != {generation})"
                             ));
                             continue;
                         }
@@ -477,17 +477,20 @@ fn dispatch(
                 } else {
                     // Remote resolution takes seconds — never block the loop.
                     let resolver = resolver.clone();
-                    let tx = tx.clone();
+                    let thread_tx = tx.clone();
+                    // The worker gets its own title; the original stays here
+                    // for the spawn-failure error path below.
                     let track_title = track.title.clone();
+                    let worker_title = track_title.clone();
                     let track_id = track.id.clone();
                     let spawn_result = std::thread::Builder::new()
                         .name("melo-resolve".into())
                         .spawn(move || {
                             let result = resolver.resolve(&track);
-                            let _ = tx.send(ToService::Resolved {
+                            let _ = thread_tx.send(ToService::Resolved {
                                 generation: gen,
                                 track_id,
-                                track_title,
+                                track_title: worker_title,
                                 start_paused,
                                 start_at,
                                 result,

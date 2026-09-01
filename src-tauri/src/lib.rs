@@ -14,7 +14,6 @@
 
 mod commands;
 mod events;
-mod library;
 mod lrclib;
 mod mpv;
 mod playback_service;
@@ -27,8 +26,8 @@ use std::time::Duration;
 
 use tauri::Manager;
 
-use library::LibraryStore;
 use lrclib::LrclibClient;
+use melo_core::library::LibraryStore;
 use melo_core::persistence::Settings;
 use playback_service::PlaybackHandle;
 use resolver::ResolverService;
