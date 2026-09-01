@@ -315,7 +315,7 @@ fn latest_mpv_asset_url() -> Result<String, String> {
                 && !name.contains("dev")
         });
     pick.map(|(_, url)| url.to_string())
-        .ok_or("no suitable mpv x86_64 build in the latest release")
+        .ok_or_else(|| "no suitable mpv x86_64 build in the latest release".to_string())
 }
 
 fn hide_window(cmd: &mut Command) {
@@ -412,10 +412,13 @@ fn install_mpv(bin: &Path, progress: &dyn Fn(&str)) -> Result<(), String> {
 
     let out = tmp.join("x");
     fs::create_dir_all(&out).map_err(|e| format!("create {}: {e}", out.display()))?;
-    run_quiet(
-        Command::new(&sevenzr).args(["x", "-y", &format!("-o{}", out.display())]).arg(&archive),
-        "7zr extraction",
-    )?;
+    let mut extract = Command::new(&sevenzr);
+    extract
+        .arg("x")
+        .arg("-y")
+        .arg(format!("-o{}", out.display()))
+        .arg(&archive);
+    run_quiet(extract, "7zr extraction")?;
 
     // The archive contains a versioned folder with mpv.exe (+ dlls) inside.
     let mpv_exe =
@@ -433,8 +436,10 @@ fn install_mpv(bin: &Path, progress: &dyn Fn(&str)) -> Result<(), String> {
         if dest.exists() {
             let _ = fs::remove_file(&dest);
         }
-        fs::rename(entry.path(), &dest)
-            .or_else(|_| fs::copy(entry.path(), &dest).map(|_| ()))?;
+        let src = entry.path();
+        fs::rename(&src, &dest)
+            .or_else(|_| fs::copy(&src, &dest).map(|_| ()))
+            .map_err(|e| format!("move {} -> {}: {e}", src.display(), dest.display()))?;
     }
     let _ = fs::remove_dir_all(&tmp);
 

@@ -5,7 +5,7 @@
 //! flashes on every search/resolve. Timeouts are enforced by polling
 //! `try_wait` so a hung yt-dlp can never wedge playback.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -73,7 +73,11 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<String, Provi
 }
 
 /// Search YouTube via `ytsearch{limit}:` and map to domain tracks.
-pub fn search(binary: &PathBuf, query: &str, limit: u32) -> Result<Vec<melo_core::domain::Track>, ProviderError> {
+pub fn search(
+    binary: &PathBuf,
+    query: &str,
+    limit: u32,
+) -> Result<Vec<melo_core::domain::Track>, ProviderError> {
     let limit = limit.clamp(1, 40);
     let mut cmd = base_command(binary);
     cmd.arg("-J")
