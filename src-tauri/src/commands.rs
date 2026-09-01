@@ -1,11 +1,10 @@
-//! Tauri commands (the full IPC surface — see docs/IPC.md).
+//! Tauri commands — the complete IPC surface (see docs/IPC.md).
 //!
-//! Rules:
-//! * Commands are thin: validate, translate to typed domain calls, return.
-//!   Playback intent becomes `UserCommand` for the service loop.
-//! * The UI receives updates via events; `get_*` commands exist for boot.
-//! * Anything touching a process or the network runs on a worker thread
-//!   (`spawn_blocking`) so IPC never blocks.
+//! Playback commands are one-line wrappers over `crate::libmpv::Player`
+//! (libmpv is authoritative; MELO keeps no parallel playback state machine).
+//! The queue lives in the frontend; this layer never touches it.
+//! Anything touching a process or the network runs on a worker thread
+//! (`spawn_blocking`) so IPC never blocks.
 
 use std::sync::Arc;
 
@@ -13,21 +12,14 @@ use melo_core::domain::Track;
 use melo_core::library::{LibraryData, LibraryStore};
 use melo_core::lyrics::Lyrics;
 use melo_core::persistence::Settings;
-use melo_core::playback::{PlaybackSnapshot, UserCommand};
 use melo_core::providers::ProviderError;
-use melo_core::queue::{QueueView, RepeatMode};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::events;
+use crate::libmpv::{self, Player};
 use crate::lrclib::LrclibClient;
-use crate::resolver::ResolverService;
+use crate::runtime::RuntimeHandle;
 use crate::settings_store::SettingsStore;
 use crate::MeloState;
-
-fn ok(state: &State<MeloState>, cmd: UserCommand) -> Result<(), String> {
-    state.playback.send(cmd);
-    Ok(())
-}
 
 fn require_title(title: &str) -> Result<String, String> {
     let t = title.trim();
@@ -39,100 +31,6 @@ fn require_title(title: &str) -> Result<String, String> {
     }
     Ok(t.to_string())
 }
-
-// ----------------------------------------------------------------------
-// State reads (boot / re-sync)
-// ----------------------------------------------------------------------
-
-#[tauri::command]
-pub fn get_playback_state(state: State<'_, MeloState>) -> PlaybackSnapshot {
-    (*state.playback.snapshot()).clone()
-}
-
-#[tauri::command]
-pub fn get_queue(state: State<'_, MeloState>) -> QueueView {
-    (*state.playback.queue_view()).clone()
-}
-
-#[tauri::command]
-pub fn get_library(library: State<'_, Arc<LibraryStore>>) -> LibraryData {
-    library.snapshot()
-}
-
-// ----------------------------------------------------------------------
-// Transport
-// ----------------------------------------------------------------------
-
-#[tauri::command]
-pub fn player_toggle_play(state: State<'_, MeloState>) -> Result<(), String> {
-    ok(&state, UserCommand::TogglePlay)
-}
-
-#[tauri::command]
-pub fn player_play(state: State<'_, MeloState>) -> Result<(), String> {
-    ok(&state, UserCommand::Play)
-}
-
-#[tauri::command]
-pub fn player_pause(state: State<'_, MeloState>) -> Result<(), String> {
-    ok(&state, UserCommand::Pause)
-}
-
-#[tauri::command]
-pub fn player_stop(state: State<'_, MeloState>) -> Result<(), String> {
-    ok(&state, UserCommand::Stop)
-}
-
-#[tauri::command]
-pub fn player_next(state: State<'_, MeloState>) -> Result<(), String> {
-    ok(&state, UserCommand::Next)
-}
-
-#[tauri::command]
-pub fn player_previous(state: State<'_, MeloState>) -> Result<(), String> {
-    ok(&state, UserCommand::Previous)
-}
-
-#[tauri::command]
-pub fn player_seek_to(position: f64, state: State<'_, MeloState>) -> Result<(), String> {
-    if !position.is_finite() || position < 0.0 {
-        return Err("position must be a positive number".into());
-    }
-    ok(&state, UserCommand::SeekTo { position })
-}
-
-#[tauri::command]
-pub fn player_seek_by(delta: f64, state: State<'_, MeloState>) -> Result<(), String> {
-    if !delta.is_finite() {
-        return Err("delta must be a finite number".into());
-    }
-    ok(&state, UserCommand::SeekBy { delta })
-}
-
-#[tauri::command]
-pub fn player_set_volume(volume: f64, state: State<'_, MeloState>) -> Result<(), String> {
-    if !volume.is_finite() || !(0.0..=100.0).contains(&volume) {
-        return Err("volume must be between 0 and 100".into());
-    }
-    ok(&state, UserCommand::SetVolume { volume })
-}
-
-#[tauri::command]
-pub fn player_toggle_mute(state: State<'_, MeloState>) -> Result<(), String> {
-    ok(&state, UserCommand::ToggleMute)
-}
-
-#[tauri::command]
-pub fn player_set_speed(speed: f64, state: State<'_, MeloState>) -> Result<(), String> {
-    if !speed.is_finite() || !(0.25..=4.0).contains(&speed) {
-        return Err("speed must be between 0.25 and 4.0".into());
-    }
-    ok(&state, UserCommand::SetSpeed { speed })
-}
-
-// ----------------------------------------------------------------------
-// Queue
-// ----------------------------------------------------------------------
 
 fn require_tracks(tracks: &[Track]) -> Result<(), String> {
     if tracks.is_empty() {
@@ -149,109 +47,162 @@ fn require_tracks(tracks: &[Track]) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn queue_play_now(track: Track, state: State<'_, MeloState>) -> Result<(), String> {
-    require_tracks(std::slice::from_ref(&track))?;
-    ok(&state, UserCommand::PlayTrack { track })
+// ----------------------------------------------------------------------
+// Player (libmpv) — load/transport/audio. Errors are actionable strings.
+// ----------------------------------------------------------------------
+
+fn player(state: &State<MeloState>) -> Result<Arc<Player>, String> {
+    state
+        .player
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .ok_or_else(|| {
+            "Playback engine is not running (libmpv not installed or failed to start). \
+             Use Settings → Diagnostics → Repair runtime."
+                .into()
+        })
 }
 
 #[tauri::command]
-pub fn queue_add(tracks: Vec<Track>, state: State<'_, MeloState>) -> Result<(), String> {
-    require_tracks(&tracks)?;
-    ok(&state, UserCommand::AddToQueue { tracks })
-}
-
-#[tauri::command]
-pub fn queue_play_next(tracks: Vec<Track>, state: State<'_, MeloState>) -> Result<(), String> {
-    require_tracks(&tracks)?;
-    ok(&state, UserCommand::PlayNext { tracks })
-}
-
-#[tauri::command]
-pub fn queue_remove(item_id: String, state: State<'_, MeloState>) -> Result<(), String> {
-    if item_id.is_empty() {
-        return Err("item_id must not be empty".into());
+pub fn player_get_state(state: State<'_, MeloState>) -> libmpv::EngineState {
+    match player(&state) {
+        Ok(p) => p.state(),
+        Err(_) => libmpv::EngineState {
+            status: "dead",
+            ..libmpv::EngineState::default()
+        },
     }
-    ok(&state, UserCommand::RemoveQueueItem { item_id })
 }
 
+/// Load a media URL, replacing whatever plays. Returns the load epoch so the
+/// app can drop stale end-of-file notifications after rapid switching.
 #[tauri::command]
-pub fn queue_jump_to(item_id: String, state: State<'_, MeloState>) -> Result<(), String> {
-    if item_id.is_empty() {
-        return Err("item_id must not be empty".into());
-    }
-    ok(&state, UserCommand::JumpToQueueItem { item_id })
-}
-
-#[tauri::command]
-pub fn queue_move(item_id: String, up: bool, state: State<'_, MeloState>) -> Result<(), String> {
-    if item_id.is_empty() {
-        return Err("item_id must not be empty".into());
-    }
-    ok(&state, UserCommand::MoveQueueItem { item_id, up })
-}
-
-#[tauri::command]
-pub fn queue_reorder(from: usize, to: usize, state: State<'_, MeloState>) -> Result<(), String> {
-    ok(&state, UserCommand::ReorderQueue { from, to })
-}
-
-#[tauri::command]
-pub fn queue_clear_upcoming(state: State<'_, MeloState>) -> Result<(), String> {
-    ok(&state, UserCommand::ClearUpcoming)
-}
-
-#[tauri::command]
-pub fn queue_clear_all(state: State<'_, MeloState>) -> Result<(), String> {
-    ok(&state, UserCommand::ClearQueue)
-}
-
-#[tauri::command]
-pub fn queue_set_shuffle(enabled: bool, state: State<'_, MeloState>) -> Result<(), String> {
-    ok(&state, UserCommand::SetShuffle { enabled })
-}
-
-#[tauri::command]
-pub fn queue_set_repeat(mode: RepeatMode, state: State<'_, MeloState>) -> Result<(), String> {
-    ok(&state, UserCommand::SetRepeat { mode })
-}
-
-#[tauri::command]
-pub fn queue_start(
-    tracks: Vec<Track>,
-    shuffle: bool,
+pub fn player_load(
+    url: String,
+    start_paused: Option<bool>,
+    start_at: Option<f64>,
     state: State<'_, MeloState>,
-) -> Result<(), String> {
-    require_tracks(&tracks)?;
-    ok(&state, UserCommand::StartSequence { tracks, shuffle })
+) -> Result<u64, String> {
+    if url.trim().is_empty() {
+        return Err("media URL must not be empty".into());
+    }
+    player(&state)?.load(&url, start_paused.unwrap_or(false), start_at)
 }
 
-/// Save the current queue (current + upcoming) as a new playlist.
 #[tauri::command]
-pub fn queue_save_as_playlist(
-    title: String,
-    state: State<'_, MeloState>,
+pub fn player_play(state: State<'_, MeloState>) -> Result<(), String> {
+    player(&state)?.play()
+}
+
+#[tauri::command]
+pub fn player_pause(state: State<'_, MeloState>) -> Result<(), String> {
+    player(&state)?.pause()
+}
+
+#[tauri::command]
+pub fn player_toggle_play(state: State<'_, MeloState>) -> Result<(), String> {
+    player(&state)?.toggle_pause()
+}
+
+/// Manual stop. mpv reports reason "stop" — the queue must NOT auto-advance.
+#[tauri::command]
+pub fn player_stop(state: State<'_, MeloState>) -> Result<(), String> {
+    player(&state)?.stop()
+}
+
+#[tauri::command]
+pub fn player_seek(position: f64, state: State<'_, MeloState>) -> Result<(), String> {
+    if !position.is_finite() || position < 0.0 {
+        return Err("position must be a non-negative number".into());
+    }
+    player(&state)?.seek_to(position)
+}
+
+#[tauri::command]
+pub fn player_set_volume(volume: f64, state: State<'_, MeloState>) -> Result<(), String> {
+    if !(0.0..=100.0).contains(&volume) {
+        return Err("volume must be between 0 and 100".into());
+    }
+    player(&state)?.set_volume(volume)
+}
+
+#[tauri::command]
+pub fn player_set_mute(muted: bool, state: State<'_, MeloState>) -> Result<(), String> {
+    player(&state)?.set_mute(muted)
+}
+
+#[tauri::command]
+pub fn player_set_speed(speed: f64, state: State<'_, MeloState>) -> Result<(), String> {
+    if !(0.25..=4.0).contains(&speed) {
+        return Err("speed must be between 0.25 and 4".into());
+    }
+    player(&state)?.set_speed(speed)
+}
+
+// ----------------------------------------------------------------------
+// Resolve (yt-dlp) — independent of the player
+// ----------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn resolve_track(
+    source_id: String,
+    quality: Option<melo_core::persistence::AudioQuality>,
+    runtime: State<'_, RuntimeHandle>,
+) -> Result<melo_core::providers::ResolvedMedia, ProviderError> {
+    let id = source_id.trim().to_string();
+    if id.is_empty() {
+        return Err(ProviderError::InvalidInput);
+    }
+    let binary = runtime.ytdlp_path().ok_or_else(|| {
+        ProviderError::Detail(
+            "yt-dlp runtime missing — Settings → Diagnostics → Repair runtime".into(),
+        )
+    })?;
+    let quality = quality.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || crate::ytdlp::resolve(&binary, &id, quality))
+        .await
+        .map_err(|e| ProviderError::Detail(format!("resolve task failed: {e}")))?
+}
+
+// ----------------------------------------------------------------------
+// Session persistence (queue/position live in the frontend)
+// ----------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_session(state: State<'_, MeloState>) -> Option<serde_json::Value> {
+    let path = state.config_dir.join("session.json");
+    melo_core::persistence::load_json(&path)
+        .ok()
+        .flatten()
+}
+
+#[tauri::command]
+pub fn set_session(session: serde_json::Value, state: State<'_, MeloState>) -> Result<(), String> {
+    let path = state.config_dir.join("session.json");
+    melo_core::persistence::save_json_atomic(&path, &session)
+        .map_err(|e| format!("save session: {e}"))
+}
+
+/// Record that a track actually started playing (listening history). Called
+/// by the frontend controller right after a successful load.
+#[tauri::command]
+pub fn record_play(
+    track: Track,
     library: State<'_, Arc<LibraryStore>>,
     app: AppHandle,
-) -> Result<melo_core::domain::Playlist, String> {
-    let title = require_title(&title)?;
-    let view = state.playback.queue_view();
-    let mut tracks: Vec<Track> = Vec::with_capacity(view.upcoming.len() + 1);
-    if let Some(current) = &view.current {
-        tracks.push(current.track.clone());
-    }
-    for item in &view.upcoming {
-        tracks.push(item.track.clone());
-    }
-    let playlist = library.with_mut(|l| {
-        let pl = l.create_playlist(&title, None);
-        if !tracks.is_empty() {
-            l.playlist_add_tracks(&pl.id, &tracks);
-        }
-        pl
-    });
+) -> Result<(), String> {
+    require_tracks(std::slice::from_ref(&track))?;
+    library.with_mut(|l| l.record_play(&track, melo_core::ids::now_ms()));
     let _ = app.emit(events::LIBRARY_UPDATED, library.snapshot());
-    Ok(playlist)
+    Ok(())
+}
+
+/// Full library snapshot for the initial UI load (updates afterwards arrive
+/// as `library://updated` events).
+#[tauri::command]
+pub fn get_library(library: State<'_, Arc<LibraryStore>>) -> LibraryData {
+    library.snapshot()
 }
 
 // ----------------------------------------------------------------------
@@ -262,31 +213,32 @@ pub fn queue_save_as_playlist(
 pub async fn search(
     query: String,
     limit: Option<u32>,
-    resolver: State<'_, Arc<ResolverService>>,
+    runtime: State<'_, RuntimeHandle>,
     library: State<'_, Arc<LibraryStore>>,
     app: AppHandle,
 ) -> Result<melo_core::providers::SearchResults, ProviderError> {
     let query = query.trim().to_string();
-    if query.is_empty() {
-        return Err(ProviderError::InvalidInput);
-    }
-    if query.chars().count() > 200 {
+    if query.is_empty() || query.chars().count() > 200 {
         return Err(ProviderError::InvalidInput);
     }
     let limit = limit.unwrap_or(25).clamp(1, 40);
-    let resolver = resolver.inner().clone();
-    // The worker thread gets its own copy; `query` stays owned here for the
-    // search-history push and the echoed result below.
+    let binary = runtime.ytdlp_path().ok_or_else(|| {
+        ProviderError::Detail(
+            "yt-dlp runtime missing — Settings → Diagnostics → Repair runtime".into(),
+        )
+    })?;
     let search_query = query.clone();
-    let found = tauri::async_runtime::spawn_blocking(move || resolver.search(&search_query, limit))
-        .await
-        .map_err(|e| ProviderError::Detail(format!("search task failed: {e}")))??;
+    let found = tauri::async_runtime::spawn_blocking(move || {
+        crate::ytdlp::search(&binary, &search_query, limit)
+    })
+    .await
+    .map_err(|e| ProviderError::Detail(format!("search task failed: {e}")))??;
 
     library.with_mut(|l| l.push_search(&query));
     let _ = app.emit(events::LIBRARY_UPDATED, library.snapshot());
 
-    // Group: flat search has no album data, so results are songs only —
-    // the UI degrades honestly rather than showing fake albums.
+    // Flat search returns songs only — the UI degrades honestly rather than
+    // inventing albums/artists the data does not contain.
     Ok(melo_core::providers::SearchResults {
         tracks: found,
         artists: Vec::new(),
@@ -297,7 +249,10 @@ pub async fn search(
 }
 
 #[tauri::command]
-pub fn search_history_clear(library: State<'_, Arc<LibraryStore>>, app: AppHandle) -> Result<(), String> {
+pub fn search_history_clear(
+    library: State<'_, Arc<LibraryStore>>,
+    app: AppHandle,
+) -> Result<(), String> {
     library.with_mut(|l| l.clear_search_history());
     let _ = app.emit(events::LIBRARY_UPDATED, library.snapshot());
     Ok(())
@@ -329,10 +284,6 @@ pub fn favorites_toggle(
     let _ = app.emit(events::LIBRARY_UPDATED, library.snapshot());
     Ok(liked)
 }
-
-// ----------------------------------------------------------------------
-// Playlists
-// ----------------------------------------------------------------------
 
 #[tauri::command]
 pub fn playlist_create(
@@ -503,7 +454,7 @@ pub fn history_remove(
 }
 
 // ----------------------------------------------------------------------
-// Lyrics (LRCLIB)
+// Lyrics (LRCLIB) — matched in the UI against the real player position
 // ----------------------------------------------------------------------
 
 #[tauri::command]
@@ -529,57 +480,74 @@ pub fn get_settings(settings: State<'_, Arc<SettingsStore>>) -> Settings {
 #[tauri::command]
 pub fn set_settings(
     settings: Settings,
-    settings_store: State<'_, Arc<SettingsStore>>,
-    state: State<'_, MeloState>,
+    store: State<'_, Arc<SettingsStore>>,
 ) -> Result<(), String> {
-    let previous = settings_store.get();
-    settings_store.set(settings)?;
-    if previous.history_enabled != settings_store.get().history_enabled {
-        state.playback.set_history_enabled(settings_store.get().history_enabled);
-    }
-    Ok(())
+    store.set(settings).map_err(|e| format!("save settings: {e}"))
 }
 
-/// Engine/provider diagnostics for the settings page.
+// ----------------------------------------------------------------------
+// Diagnostics + runtime repair
+// ----------------------------------------------------------------------
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Diagnostics {
     pub runtime_dir: Option<String>,
-    pub mpv_path: Option<String>,
-    pub mpv_found: bool,
+    pub libmpv_path: Option<String>,
+    pub libmpv_found: bool,
+    pub engine_running: bool,
+    pub mpv_version: Option<String>,
     pub ytdlp_found: bool,
     pub ytdlp_path: Option<String>,
-    pub quality_label: &'static str,
+    pub quality_label: String,
 }
 
 #[tauri::command]
 pub fn get_diagnostics(
     state: State<'_, MeloState>,
-    resolver: State<'_, Arc<ResolverService>>,
+    settings: State<'_, Arc<SettingsStore>>,
 ) -> Diagnostics {
-    let rt = state.runtime.with_clone();
+    let engine = state
+        .player
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let (engine_running, mpv_version) = match &engine {
+        Some(p) => (p.is_alive(), p.state().mpv_version),
+        None => (false, None),
+    };
     Diagnostics {
-        runtime_dir: rt.install_bin.to_str().map(|s| s.to_owned()),
-        mpv_path: rt.mpv.to_str().map(|s| s.to_owned()),
-        mpv_found: rt.mpv_found,
-        ytdlp_found: resolver.ytdlp_found(),
-        ytdlp_path: resolver.ytdlp_path(),
-        quality_label: resolver.quality_label(),
+        runtime_dir: state.runtime.install_bin().to_str().map(|s| s.to_owned()),
+        libmpv_path: state.runtime.libmpv_path().to_str().map(|s| s.to_owned()),
+        libmpv_found: state.runtime.libmpv_found(),
+        engine_running,
+        mpv_version,
+        ytdlp_found: state.runtime.ytdlp_found(),
+        ytdlp_path: state
+            .runtime
+            .ytdlp_path()
+            .and_then(|p| p.to_str().map(|s| s.to_owned())),
+        quality_label: melo_core::ytdlp::quality_label(settings.get().audio_quality).into(),
     }
 }
 
-/// Re-download mpv + yt-dlp into the managed runtime dir. Runs in the
-/// background (same code path as first-run bootstrap); progress arrives via
-/// `ENGINE_STATUS` events and completion re-attempts the engine start.
+/// Remove the managed binaries and re-download them (pinned + verified).
+/// Progress arrives via `runtime://status`; MELO restarts the engine when
+/// the install finishes.
 #[tauri::command]
-pub fn repair_runtime(app: tauri::AppHandle, state: State<'_, MeloState>) {
+pub fn repair_runtime(app: AppHandle, state: State<'_, MeloState>) -> Result<(), String> {
     let runtime = state.runtime.clone();
-    let playback = state.playback.clone();
-    // Remove managed binaries (cheap) then re-download in the background;
-    // progress arrives via engine-status events and the engine restarts on
-    // completion through the on_ready callback below.
     crate::runtime::reset_for_repair(&runtime);
-    crate::runtime::bootstrap_and_report(app, runtime, move || {
-        playback.start_engine();
+    let config_dir = state.config_dir.clone();
+    let mut guard = state
+        .player
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    *guard = None; // stop the old engine before replacing its DLL
+    drop(guard);
+    let app_for_ready = app.clone();
+    crate::runtime::ensure_and_report(app, runtime, move || {
+        crate::start_engine(&app_for_ready, &config_dir);
     });
+    Ok(())
 }

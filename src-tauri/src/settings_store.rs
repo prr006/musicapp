@@ -1,6 +1,6 @@
 //! Settings persistence (JSON in the app config dir, atomic writes).
-//! Shared (Arc) between the IPC layer and the playback service so audio
-//! quality changes apply to the next resolved track without a restart.
+//! The IPC layer owns it; `resolve_track` reads the audio quality so changes
+//! apply to the next resolved track without a restart.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

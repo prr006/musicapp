@@ -1,53 +1,38 @@
 /**
- * The IPC contract (mirrors src-tauri/src/commands.rs + events.rs).
- * Full documentation: docs/IPC.md.
+ * IPC contract: the exact command/event surface of the Rust layer.
+ *
+ * The native side is intentionally tiny (docs/IPC.md): the player is
+ * libmpv, the queue lives in the frontend, and every event below carries
+ * engine-authoritative data.
  */
 
 import type {
-  Diagnostics,
   LibraryData,
   Lyrics,
-  PlaybackSnapshot,
-  PlaylistLite,
-  PositionUpdate,
-  QueueView,
   SearchResults,
   Settings,
   Track,
 } from "@/types/domain";
 
 export const Commands = {
-  get_playback_state: null,
-  get_queue: null,
-  get_library: null,
-  player_toggle_play: null,
+  player_get_state: null,
+  player_load: null,
   player_play: null,
   player_pause: null,
+  player_toggle_play: null,
   player_stop: null,
-  player_next: null,
-  player_previous: null,
-  player_seek_to: null,
-  player_seek_by: null,
+  player_seek: null,
   player_set_volume: null,
-  player_toggle_mute: null,
+  player_set_mute: null,
   player_set_speed: null,
-  queue_play_now: null,
-  queue_add: null,
-  queue_play_next: null,
-  queue_remove: null,
-  queue_jump_to: null,
-  queue_move: null,
-  queue_reorder: null,
-  queue_clear_upcoming: null,
-  queue_clear_all: null,
-  queue_set_shuffle: null,
-  queue_set_repeat: null,
-  queue_start: null,
-  queue_save_as_playlist: null,
+  resolve_track: null,
+  get_session: null,
+  set_session: null,
   search: null,
   search_history_clear: null,
   search_history_remove: null,
   favorites_toggle: null,
+  record_play: null,
   playlist_create: null,
   playlist_rename: null,
   playlist_set_description: null,
@@ -64,26 +49,19 @@ export const Commands = {
   set_settings: null,
   get_diagnostics: null,
   repair_runtime: null,
+  get_library: null,
 } as const;
 
 export type CommandName = keyof typeof Commands;
 
 export interface CommandArgs {
-  player_seek_to: { position: number };
-  player_seek_by: { delta: number };
+  player_load: { url: string; startPaused?: boolean; startAt?: number | null };
+  player_seek: { position: number };
   player_set_volume: { volume: number };
+  player_set_mute: { muted: boolean };
   player_set_speed: { speed: number };
-  queue_play_now: { track: Track };
-  queue_add: { tracks: Track[] };
-  queue_play_next: { tracks: Track[] };
-  queue_remove: { itemId: string };
-  queue_jump_to: { itemId: string };
-  queue_move: { itemId: string; up: boolean };
-  queue_reorder: { from: number; to: number };
-  queue_set_shuffle: { enabled: boolean };
-  queue_set_repeat: { mode: "off" | "all" | "one" };
-  queue_start: { tracks: Track[]; shuffle: boolean };
-  queue_save_as_playlist: { title: string };
+  resolve_track: { sourceId: string; quality?: string };
+  set_session: { session: unknown };
   search: { query: string; limit?: number };
   search_history_remove: { query: string };
   favorites_toggle: { track: Track };
@@ -101,38 +79,105 @@ export interface CommandArgs {
   set_settings: { settings: Settings };
 }
 
+export interface ResolvedMedia {
+  url: string;
+  isLocal: boolean;
+  container: string | null;
+  bitrateKbps: number | null;
+}
+
 export interface CommandResult {
-  get_playback_state: PlaybackSnapshot;
-  get_queue: QueueView;
-  get_library: LibraryData;
-  get_settings: Settings;
-  get_diagnostics: Diagnostics;
-  get_lyrics: Lyrics | null;
+  player_get_state: EngineStateIpc;
+  player_load: number;
+  player_play: void;
+  player_pause: void;
+  player_toggle_play: void;
+  player_stop: void;
+  player_seek: void;
+  player_set_volume: void;
+  player_set_mute: void;
+  player_set_speed: void;
+  resolve_track: ResolvedMedia;
+  get_session: unknown;
+  set_session: void;
   search: SearchResults;
-  playlist_create: PlaylistLite;
-  playlist_duplicate: PlaylistLite;
-  queue_save_as_playlist: PlaylistLite;
-  playlist_tracks: Track[];
+  search_history_clear: void;
+  search_history_remove: void;
   favorites_toggle: boolean;
+  record_play: void;
+  playlist_create: unknown;
+  playlist_rename: void;
+  playlist_set_description: void;
+  playlist_delete: void;
+  playlist_duplicate: unknown;
+  playlist_add_tracks: void;
+  playlist_remove_track: void;
+  playlist_reorder_track: void;
+  playlist_tracks: Track[];
+  history_clear: void;
+  history_remove: void;
+  get_lyrics: Lyrics | null;
+  get_settings: Settings;
+  set_settings: void;
+  get_diagnostics: DiagnosticsIpc;
+  repair_runtime: void;
+  get_library: LibraryDataIpc;
   [key: string]: unknown;
 }
 
+// ---- event payloads ---------------------------------------------------------
+
+export interface EngineStateIpc {
+  status: string;
+  positionSecs: number;
+  durationSecs: number | null;
+  paused: boolean;
+  buffering: boolean;
+  seeking: boolean;
+  speed: number;
+  volume: number;
+  muted: boolean;
+  epoch: number;
+  mpvVersion: string | null;
+}
+
+export interface DiagnosticsIpc {
+  runtimeDir: string | null;
+  libmpvPath: string | null;
+  libmpvFound: boolean;
+  engineRunning: boolean;
+  mpvVersion: string | null;
+  ytdlpFound: boolean;
+  ytdlpPath: string | null;
+  qualityLabel: string;
+}
+
+export type LibraryDataIpc = LibraryData;
+
 export const Events = {
-  playbackState: "playback://state",
-  playbackPosition: "playback://position",
-  queueView: "queue://view",
-  engineStatus: "engine://status",
+  playerState: "player://state",
+  playerPosition: "player://position",
+  playerEnd: "player://end",
+  runtimeStatus: "runtime://status",
   libraryUpdated: "library://updated",
 } as const;
 
 export type EventName = (typeof Events)[keyof typeof Events];
 
 export interface EventPayloads {
-  [Events.playbackState]: PlaybackSnapshot;
-  [Events.playbackPosition]: PositionUpdate;
-  [Events.queueView]: QueueView;
-  [Events.engineStatus]: { health: "starting" | "running" | "restarting" | "dead"; message: string };
-  [Events.libraryUpdated]: LibraryData;
+  [Events.playerState]: EngineStateIpc;
+  [Events.playerPosition]: {
+    positionSecs: number;
+    durationSecs: number | null;
+    epoch: number;
+  };
+  [Events.playerEnd]: {
+    reason: "eof" | "stop" | "quit" | "error" | "redirect";
+    error: string | null;
+    epoch: number;
+  };
+  [Events.runtimeStatus]: { phase: "installing" | "ready" | "error"; message: string };
+  [Events.libraryUpdated]: LibraryDataIpc;
 }
 
 /** Adapter-neutral IPC surface. */

@@ -29,7 +29,6 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
-    "resources": ["runtime/bin/*"],
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"

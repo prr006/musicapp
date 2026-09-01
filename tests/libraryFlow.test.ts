@@ -78,18 +78,22 @@ describe("library via IPC bridge", () => {
     await expect(bridge.invoke("playlist_delete", { playlistId: "nope" })).rejects.toThrow();
   });
 
-  it("saves the current queue as a playlist (current + upcoming)", async () => {
-    await bridge.invoke("queue_start", { tracks: SAMPLE_TRACKS.slice(0, 3), shuffle: false });
-    const saved = (await bridge.invoke("queue_save_as_playlist", { title: "Saved queue" })) as PlaylistLite;
+  it("saves a queue's tracks as a playlist (composed from library commands)", async () => {
+    // The queue lives in the frontend now; saving it composes two commands.
+    const saved = (await bridge.invoke("playlist_create", { title: "Saved queue", description: null })) as PlaylistLite;
+    await bridge.invoke("playlist_add_tracks", {
+      playlistId: saved.id,
+      tracks: SAMPLE_TRACKS.slice(0, 3),
+    });
     expect(saved.title).toBe("Saved queue");
     const tracks = await bridge.invoke("playlist_tracks", { playlistId: saved.id });
     expect(tracks).toHaveLength(3);
   });
 
   it("records listening history on playback and supports removal/clear", async () => {
-    await bridge.invoke("queue_play_now", { track: SAMPLE_TRACKS[0]! });
+    await bridge.invoke("record_play", { track: SAMPLE_TRACKS[0]! });
     const before = (await library()).history.length;
-    await bridge.invoke("queue_play_now", { track: SAMPLE_TRACKS[1]! });
+    await bridge.invoke("record_play", { track: SAMPLE_TRACKS[1]! });
     const after = await library();
     // At least one entry was finalized for the first track.
     expect(after.history.length).toBeGreaterThanOrEqual(before + 1);

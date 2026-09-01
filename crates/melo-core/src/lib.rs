@@ -7,13 +7,6 @@
 //!
 //! * [`domain`] — source-independent data model (`Track`, `Artist`, `Album`,
 //!   `Playlist`, ...). Nothing here may be YouTube-specific.
-//! * [`player`] — the *player abstraction*: `PlayerCommand` and `EngineEvent`
-//!   form a data protocol between the playback state machine and any backend
-//!   (mpv today, something else tomorrow).
-//! * [`queue`] — the queue state machine (order, history, shuffle, repeat).
-//! * [`playback`] — the playback state machine. Single owner of truth: it
-//!   consumes `EngineEvent`s and `UserCommand`s and emits `PlayerCommand`s
-//!   plus dirty flags for the host application to publish.
 //! * [`lyrics`] — LRC parsing and position-indexed lyric lookup.
 //! * [`persistence`] — serializable session/settings snapshots.
 //! * [`providers`] — traits for external content sources (YouTube, local).
@@ -22,10 +15,7 @@ pub mod domain;
 pub mod library;
 pub mod lyrics;
 pub mod persistence;
-pub mod playback;
-pub mod player;
 pub mod providers;
-pub mod queue;
 pub mod ytdlp;
 
 pub mod ids {

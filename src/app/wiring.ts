@@ -1,14 +1,15 @@
 /**
- * Event wiring: subscribes to every backend event exactly once and routes
- * payloads into stores. Owned by useAppBridge; returns a teardown for tests.
+ * Event wiring: subscribes to engine + runtime + library events exactly once
+ * and routes them into stores. Engine events flow through the controller
+ * (queue decisions) and the clock (position interpolation with resync).
  */
 
 import { getBridge } from "@/app/ipc";
-import { onPlaybackState, onPosition, playbackStore } from "@/app/stores/playback";
-import { onQueueView } from "@/app/stores/playback";
+import { Events } from "@/app/ipc/contract";
 import { onLibraryUpdated } from "@/app/stores/library";
 import { onPositionEvent } from "@/app/stores/clock";
 import { pushToast } from "@/app/stores/ui";
+import { positionStore, playbackStore } from "@/app/stores/playback";
 
 export interface Wiring {
   dispose(): void;
@@ -18,30 +19,42 @@ export function wireEvents(): Wiring {
   const bridge = getBridge();
   const offs: Array<() => void> = [];
 
-  offs.push(bridge.on("playback://state", onPlaybackState));
-
+  // Engine state: authoritative snapshot. Every state change re-anchors the
+  // interpolated clock (pause/resume/seek/buffering/track change all arrive
+  // here), so the UI can never drift from the engine.
   offs.push(
-    bridge.on("playback://position", (p) => {
-      onPosition(p);
+    bridge.on(Events.playerState, (s) => {
       onPositionEvent({
-        positionSecs: p.positionSecs,
-        durationSecs: p.durationSecs,
-        speed: p.speed,
-        playing: playbackStore.get().status === "playing",
+        positionSecs: s.positionSecs,
+        durationSecs: s.durationSecs,
+        speed: s.speed,
+        playing: s.status === "playing",
       });
+      positionStore.set({ positionSecs: s.positionSecs, durationSecs: s.durationSecs });
     }),
   );
 
-  offs.push(bridge.on("queue://view", onQueueView));
-  offs.push(bridge.on("library://updated", onLibraryUpdated));
+  // Position samples (the truth between state changes). Interpolation uses
+  // the engine's own speed + playing state, never a frontend guess.
+  offs.push(
+    bridge.on(Events.playerPosition, (p) => {
+      const snap = playbackStore.get();
+      onPositionEvent({
+        positionSecs: p.positionSecs,
+        durationSecs: p.durationSecs,
+        speed: snap.speed,
+        playing: snap.status === "playing",
+      });
+      positionStore.set({ positionSecs: p.positionSecs, durationSecs: p.durationSecs });
+    }),
+  );
+
+  offs.push(bridge.on(Events.libraryUpdated, onLibraryUpdated));
 
   offs.push(
-    bridge.on("engine://status", (status) => {
-      if (status.health === "dead") {
-        pushToast(status.message || "Playback engine stopped", "error");
-      } else if (status.health === "restarting") {
-        pushToast(status.message || "Restarting playback engine…", "info");
-      }
+    bridge.on(Events.runtimeStatus, (s) => {
+      if (s.phase === "error") pushToast(s.message, "error");
+      else if (s.phase === "installing") pushToast(s.message, "info");
     }),
   );
 

@@ -1,3 +1,0 @@
-Dev-mode runtime cache: mpv.exe / yt-dlp.exe are downloaded here on
-first `npm run tauri dev` (survives cargo clean). Ignored by git except this
-placeholder; installed builds use <config>/runtime/bin instead.

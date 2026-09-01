@@ -1,175 +1,135 @@
 # MELO Architecture
 
-MELO is a lightweight, local-first desktop music player. This document is the
-map a developer needs before touching code — no knowledge of any older MELO
-codebase is assumed (this is a clean-room build).
+A deliberately small desktop music app: **libmpv is the media engine, MELO is
+the application around it.** No custom media framework, no process
+supervisor, no duplicate playback state machine.
 
-## 1. Stack
-
-| Layer      | Technology                                  |
-|------------|---------------------------------------------|
-| Shell      | Tauri 2 (Windows-first, macOS/Linux-ready)  |
-| State      | Rust (pure core crate + app service)        |
-| Engine     | mpv (supervised child process, JSON IPC)    |
-| Streaming  | yt-dlp (discovery + stream URL resolution)  |
-| Lyrics     | LRCLIB (HTTP client in Rust)                |
-| UI         | React 18 + TypeScript + Vite (no UI framework) |
-| Storage    | JSON documents with atomic tmp+rename writes |
-
-## 2. The one rule: Rust owns playback state
-
-React renders backend state and sends user commands. It never invents or
-simulates playback state. There is exactly **one authoritative playback
-clock** (mpv's `time-pos`), delivered as `playback://position` events.
-
-```text
-┌────────────┐  invoke(commands)   ┌──────────────┐  UserCommand   ┌─────────────┐
-│   React    │ ──────────────────► │ Tauri        │ ─────────────► │ Playback    │
-│  (renders) │                     │ commands.rs  │                │ service     │
-│            │ ◄────────────────── │ events.rs    │ ◄───────────── │ (1 thread)  │
-└────────────┘  emit(events)       └──────────────┘  snapshots     └──────┬──────┘
-                                                                            │
-                                                     PlayerCommand / EngineEvent
-                                                                            │
-                                                                     ┌──────▼──────┐
-                                                                     │ mpv process │
-                                                                     │ (JSON IPC)  │
-                                                                     └─────────────┘
+```
+┌──────────────────────────── Tauri webview ────────────────────────────┐
+│  React UI (views/components)                                          │
+│    ▲ stores: playback / queue / position / library / ui               │
+│    │ useClock — interpolation ONLY, re-anchored by every engine event │
+│  PlaybackController (src/player/controller.ts)                        │
+│    ├─ QueueMachine (src/player/queue.ts) — app-level queue            │
+│    ├─ Autoplay service (src/player/autoplay.ts, off by default)       │
+│    └─ resolve cache → `resolve_track` IPC                             │
+│  ▲ events                          │ commands                          │
+└───│────────────────────────────────│──────────────────────────────────┘
+    │ player://state | position | end│ player_load/play/pause/seek/…
+┌───│────────────────────────────────▼──────────────────────────────────┐
+│  Rust native layer (src-tauri, ~1400 lines total)                    │
+│   libmpv.rs — runtime-loaded libmpv-2.dll: commands in, events out   │
+│   runtime.rs — pinned + SHA-256-verified libmpv/yt-dlp management    │
+│   ytdlp.rs   — search/resolve subprocess (absolute path)             │
+│   lrclib.rs  — lyrics provider (LRCLIB)                              │
+│   library/settings/persistence — local-first JSON stores             │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
-Everything funnels through a single service thread that owns `PlaybackCore`
-(`crates/melo-core/src/playback.rs`). All state transitions — play, pause,
-seek, EOF, queue mutations, mpv restarts — happen there, under one owner.
-The frontend is a projection.
+## 1. Playback engine: libmpv, in-process
 
-### The mandated flow, end to end
+`src-tauri/src/libmpv.rs` is the ONLY media code in the project (~450 lines).
 
-1. **React** calls a typed facade function (`src/app/api.ts`) →
-2. **IPC bridge** (`src/app/ipc/`) invokes a Tauri command,
-3. **commands.rs** validates input and forwards a `UserCommand`,
-4. **PlaybackService** (single thread, `src-tauri/src/playback_service.rs`)
-   applies it to **PlaybackCore** and emits **PlayerCommands** to mpv,
-5. **mpv** answers **EngineEvents** (FileLoaded, EndFile, Seek, errors…),
-6. the service folds them back into PlaybackCore and publishes
-   **snapshots/queue views** via `events.rs`,
-7. React stores receive them and the UI re-renders.
+* **Loading**: `libmpv-2.dll` is loaded at runtime with `libloading` from an
+  absolute path provided by `runtime.rs`. No import library, no build-time
+  mpv requirement, no PATH lookup, and no subprocess to supervise.
+* **API surface**: the string-based subset of the mpv client API
+  (`mpv_command`, `mpv_set_property_string`, `mpv_observe_property`,
+  `mpv_wait_event`, …). Constants/struct layouts follow
+  `include/mpv/client.h` (a unit test pins them).
+* **Configuration**: `idle=yes` (the engine outlives tracks), `vid=no`
+  (audio-only), `cache=yes`, `load-scripts=no` — mpv's own ytdl hook is never
+  used because MELO resolves URLs itself.
+* **Events, not polling**: one thread blocks in `mpv_wait_event` and forwards
+  `PROPERTY_CHANGE` (time-pos, duration, pause, paused-for-cache, seeking,
+  speed, volume, mute), `FILE_LOADED`, `SEEK`, `PLAYBACK_RESTART`,
+  `END_FILE` (with its reason) and `SHUTDOWN` to the app as Tauri events.
+  **There is no watchdog** — the load-abort case of the old design does not
+  exist: a failed load arrives as `END_FILE(reason=error)`.
+* **Epoch guard**: every `player_load` returns a new epoch; end-of-file
+  events carry it. The controller drops stale notifications when tracks are
+  switched rapidly.
 
-No step is skipped and there is no side channel: the frontend cannot touch
-mpv, yt-dlp, or the filesystem.
+Why not the old mpv-subprocess + named-pipe + JSON-IPC design? It needed a
+process supervisor, restart policy, load watchdog and a parallel playback
+state machine — exactly the complexity that made playback fragile. libmpv
+removes all of it: the engine is a function call away and events arrive on a
+thread we own.
 
-## 3. Process supervision & reliability
+## 2. Authoritative state & the clock
 
-* **mpv spawn** (`src-tauri/src/mpv/process.rs`): `--idle=yes --input-ipc-server`
-  (or named pipe on Windows), `--ytdl=yes` with `--ytdl-path=<managed yt-dlp>`
-  when available, `CREATE_NO_WINDOW` on Windows so no console flashes. The
-  program itself is always an **absolute path** from the managed runtime
-  (`src-tauri/src/runtime.rs`) — never a bare `mpv` from `PATH`.
-* **Managed runtime** (`src-tauri/src/runtime.rs`): deterministic lookup
-  (env overrides → dev checkout → bundled → managed config dir; no PATH), a
-  first-run background download (mpv `.7z` via `7zr.exe`, stable `yt-dlp.exe`)
-  reporting progress through `engine://status`, and a repair path used by
-  Settings → Diagnostics. The bootstrap reloads the shared `RuntimeHandle` so
-  the resolver and engine see the new binaries without an app restart.
-* **Loading policy** (`mpv/ipc.rs`): every load normalizes pause state first
-  (`set_property pause <p>`) and then `loadfile <url> replace` — two request
-  ids, version-safe (no loadfile options map). Start positions are applied as
-  an absolute seek *after* `file-loaded`, then unpaused if it should be
-  sounding. This avoids the audio blip of loadfile-then-pause.
-* **Watchdog**: a load that produces no `file-loaded` within 30 s is failed
-  with a synthetic `EndFile{error}` and the user sees a toast.
-* **Restart recovery**: mpv exits/crashes → up to 3 restarts (400 ms
-  backoff). Recovery parks the track paused at its last position, then
-  auto-resumes only if it was actually sounding. Otherwise the engine parks
-  paused — no surprise audio. After 3 failures: engine `dead` + "restart
-  MELO" message.
-* **Single EOF path**: EOF is `EndFile{reason: Eof}` from mpv, nothing else.
-  No timers, no frontend polling, no second guess.
-* **Shutdown**: window-close requests flush the queue session (≤150 ms wait)
-  so the next launch restores accurately.
+libmpv is the single source of truth for status/position/duration/paused/
+buffering. The Rust layer caches observed values only to answer
+`player_get_state`; it never invents values.
 
-## 4. The queue state machine
+The UI interpolates position between authoritative samples for a smooth
+progress bar (`src/lib/clock.ts` + `stores/clock.ts`): it derives from the
+latest sample + engine speed and **re-anchors on every engine state event**
+(seek, pause, resume, buffering, track change, speed change). If samples go
+stale the clock freezes rather than drift. There is no independent
+frontend timer driving playback.
 
-`crates/melo-core/src/queue.rs` — `QueueMachine` owns current/upcoming/
-history with these invariants (unit-tested):
+## 3. Queue — an application concept
 
-* current is unique; upcoming has no duplicates of the current item id,
-* history is capped (500) and most-recent-first,
-* `advance()` = load next / repeat-one replay / wrap (repeat all) / stop,
-* shuffle is a deterministic seeded permutation (`fnv1a` of the upcoming
-  order + generation) — re-shuffling mid-play never moves the current track,
-* `previous()` seeks to 0 when >3 s into the track, else walks history.
+The queue lives entirely in the frontend (`src/player/queue.ts`, pure and
+unit-tested). The engine knows nothing about it.
 
-The TS port in `src/app/ipc/mockQueue.ts` exists **only** for the browser
-preview and is covered by mirrored test cases.
+* Automatic advance is triggered ONLY by a natural engine EOF
+  (`END_FILE reason=eof`). Manual stop (`reason=stop`) never advances.
+* Duplicate EOF notifications cannot double-advance: each load gets a fresh
+  token and only the current file's token may advance the queue.
+* Manual Next advances exactly once; Previous walks history.
+* Shuffle is seeded/deterministic; repeat supports off/one/all.
+* Autoplay (continue with related music after the queue is exhausted) is a
+  SEPARATE service (`src/player/autoplay.ts`), disabled by default.
 
-## 5. Library & persistence
+## 4. YouTube / yt-dlp — independent of the player
 
-`crates/melo-core/src/library.rs` — one JSON document (`library.json`,
-format v3): liked tracks, playlists (+rows), listening history (capped 2000),
-search history (capped 20), and a **track metadata index** so playlist rows
-resolve even for tracks that were never played or liked. Older format
-versions default-fill and backfill the index on load. Writes are atomic
-(tmp + rename) and serialized behind one mutex.
+`search` (flat results) and `resolve_track` (direct media URL) run the
+managed `yt-dlp.exe` with an absolute path, hidden window and hard timeouts.
+The player only ever receives a playable URL — it has no yt-dlp knowledge.
+The controller caches resolved URLs (30 min TTL, media URLs expire).
 
-Sessions (`session.json`): queue order + current item + per-track position +
-volume/repeat/shuffle — saved debounced (3 s), on flush, and on exit. On
-startup the session restores **paused**; nothing autoplays unless the user
-had `resumeLastSession` on and presses play (spec §8).
+## 5. Managed runtime (pinned + verified)
 
-Settings (`settings.json`) — same store pattern (`settings_store.rs`).
+Two files: `libmpv-2.dll` and `yt-dlp.exe`.
 
-## 6. Search, streaming, lyrics
+* Lookup order (first hit wins, **no PATH ever**): `MELO_RUNTIME_DIR/bin` →
+  `<exe_dir>/runtime/bin` (installed builds, bundle.resources) →
+  `<repo>/.melo-runtime/bin` (dev cache — outside every dev-watcher path so
+  `tauri dev` never restarts mid-download) → `<config>/runtime/bin`.
+* Downloads are **pinned to exact release tags** and verified against the
+  SHA-256 digest GitHub publishes for that asset:
+  * libmpv: zhongfly/mpv-winbuild `2026-08-31-02a595ddc1`
+    (`mpv-dev-x86_64-*.7z`, unpacked once with pinned `7zr.exe` from
+    ip7z/7zip `26.02`)
+  * yt-dlp: yt-dlp `2026.08.19` (`yt-dlp.exe`)
+* A failed check discards the download and reports an actionable error
+  (Settings → Diagnostics → Repair runtime re-downloads from scratch).
+* Progress/status is reported via `runtime://status` events.
 
-* **yt-dlp** (`src-tauri/src/ytdlp_proc.rs`, `crates/melo-core/src/ytdlp.rs`):
-  `yt-dlp --flat-playlist --dump-single-json ytsearch10:<query>` for search;
-  result mapping is defensive — missing artist/album/artwork/duration never
-  panics, it degrades to "Unknown artist"/`—`. Streaming URLs resolve through
-  the same resolver (quality setting → yt-dlp format selector), while local
-  tracks resolve inline via filesystem.
-* **LRCLIB** (`src-tauri/src/lrclib.rs`): HTTP via `ureq` with timeouts,
-  404 → no lyrics (honest), 429 → rate-limited error, timeout/offline →
-  retriable error. Best-match requires ≥25 % duration agreement;
-  provider-marked instrumentals are surfaced as such.
+## 6. Local-first persistence
 
-## 7. Frontend
+`<config>/` holds `settings.json`, `library.json` (likes, playlists,
+history, search history), `session.json` (queue + position, owned by the
+frontend controller) and `lyrics-cache/`. Writes are atomic (tmp + rename).
+Track ids are source-namespaced (`yt:…`, `local:…`) so the model is not
+permanently tied to YouTube.
 
-* Stores: tiny `createStore` (useSyncExternalStore). `playback`/`queue`/
-  `library` stores are written **only** by backend events. `ui` store holds
-  renderer-only concerns (route, overlays, toasts, draft settings).
-* Clock (`src/app/stores/clock.ts` + `src/lib/clock.ts`): the only layer
-  allowed to extrapolate between position samples — `pos + elapsed × speed`,
-  quantized to 250 ms, frozen after 1.5 s without a sample. Progress bars,
-  Now Playing and lyric highlighting all consume this one clock.
-* Lyrics (`src/lib/lyrics.ts`): pure `position → active line` mapping
-  (binary search), LRC parse with offsets and multi-stamp lines. Mirrors
-  `crates/melo-core/src/lyrics.rs`.
-* Views: Home (jump-back-in, recommendations from history, recents),
-  Search (states + recent searches), Library (playlists CRUD, favorites,
-  recently played with completion, songs, albums, artists), queue drawer,
-  full-screen Now Playing, settings modal, toasts, skeletons/empty/error
-  states throughout.
-* Mock backend (`src/app/ipc/mock*.ts`) simulates the engine for browser
-  development only; it is selected automatically when Tauri internals are
-  absent and is never used in the packaged app.
+## 7. Lyrics
 
-## 8. Testing strategy
+LRCLIB via `lrclib.rs` (exact match, then search; cached). Synced/plain/
+missing/malformed all handled by `melo-core::lyrics`. The active line is
+derived FROM THE PLAYER POSITION on every render — there is no second lyric
+timer; seeking changes the line instantly, pausing freezes it.
 
-* **Rust** (`cargo test`): queue invariants, playback state machine
-  (loading≠playing, EOF, restart), library CRUD + migration, lyrics parsing/
-  matching, yt-dlp JSON parsing, persistence round-trips, IPC command
-  behavior in `src-tauri`.
-* **Frontend** (`npm test`): mirrored queue-machine cases, clock freeze/
-  extrapolation, lyric mapping, library flows through the IPC surface,
-  renderer smoke tests. TS mocks are used **only** for mpv and network
-  behavior; domain logic is tested against the real Rust core (mirrored
-  suites keep the TS mock honest).
-* **Manual** (`docs/MANUAL_TEST.md`): the human checklist for real audio,
-  real YouTube, real restarts on Windows.
+## 8. What was removed (2026-09 redesign)
 
-## 9. Security
-
-* Capability file grants `core:default` only — no fs/shell/http to the
-  webview. CSP restricts to self (+https images for artwork).
-* All command inputs validated in Rust (non-empty titles, id formats,
-  numeric clamps: volume 0–100, speed 0.25–4, seek clamped to duration).
-* No `innerHTML`, no remote code, no secrets in the frontend.
+* mpv subprocess + named-pipe/JSON IPC + supervisor + restart policy +
+  load watchdog (`src-tauri/src/mpv/`, `playback_service.rs`)
+* Rust playback/queue state machines (`melo-core::{playback,player,queue}`)
+  — replaced by the frontend queue machine tested against its real
+  implementation
+* The Rust resolver service (resolution is a command now) and the
+  TypeScript mirror of the old Rust queue (the "fake" the old tests ran
+  against)

@@ -12,14 +12,16 @@ Built from scratch on **Tauri 2 + Rust + mpv + React**, Windows-first.
 
 ## What's implemented
 
-* **Playback** — play/pause/seek/volume/mute/speed through a supervised mpv
-  child process. End-of-file auto-advances in Rust; loading is distinct from
-  playing; failures surface as errors, never silent stalls (30 s watchdog).
-  If mpv crashes, MELO restarts it (≤ 3 attempts) and resumes paused at the
-  last position — it never unexpectedly blares audio after a crash.
-* **Queue** — full CRUD (play now / next / add / remove / jump / move /
-  drag-reorder / clear), deterministic seeded shuffle, repeat off/all/one,
-  queue history, all invariant-checked in `crates/melo-core/src/queue.rs`.
+* **Playback** — play/pause/seek/volume/mute/speed through libmpv, loaded
+  in-process from a managed, digest-verified `libmpv-2.dll`. The engine is
+  the single source of truth: UI position derives from real engine events
+  (interpolated between samples and re-anchored on seek/pause/speed
+  changes). Failed loads surface as engine errors — there is no watchdog.
+* **Queue** — an application-level concept living in the frontend
+  (`src/player/queue.ts`): play now / next / add / remove / jump / move /
+  drag-reorder / clear, deterministic seeded shuffle, repeat off/all/one,
+  history. A natural engine EOF advances exactly once; duplicates cannot
+  double-advance; manual stop never advances.
 * **Search** — YouTube search via yt-dlp (flat results: title / artist /
   duration / artwork), with loading, empty, error and retry states. Recent
   searches are remembered and removable.
@@ -55,7 +57,7 @@ frozen (never drifted) when samples stop.
 
 ```text
 crates/melo-core/     Pure domain core (queue, playback, library, lyrics, yt-dlp parsing, tests)
-src-tauri/            Tauri shell (mpv supervision + IPC, resolver, LRCLIB client, persistence)
+src-tauri/            Tauri shell (libmpv engine, runtime management, yt-dlp, LRCLIB, persistence)
 src/                  React UI (event-fed stores, no state framework)
 docs/                 ARCHITECTURE.md · IPC.md · DATA_MODEL.md · ROADMAP.md
 tests/                Frontend test suites (mirror the Rust cases; mock only mpv + network)
@@ -68,37 +70,23 @@ docs/MANUAL_TEST.md   Human test checklist (Windows-first)
 * [Rust](https://rustup.rs) (stable)
 * Windows: WebView2 (installed by the Tauri bootstrapper)
 
-### Playback runtime (mpv + yt-dlp) — managed, no PATH needed
+### Playback runtime — managed, pinned, verified, no PATH
 
-MELO is a standalone app and **manages its own playback runtime**; nothing has
-to be installed or added to `PATH`. On first run (and via **Settings →
-Diagnostics → Repair runtime**) it downloads:
+MELO manages its own runtime (nothing to install by hand):
 
-* **mpv** — x86_64 build from the
-  [`zhongfly/mpv-winbuild`](https://github.com/zhongfly/mpv-winbuild) GitHub
-  release (a `.7z`, extracted with the standalone `7zr.exe` fetched from
-  7-zip.org)
-* **yt-dlp** — stable `yt-dlp.exe` from
-  [yt-dlp releases](https://github.com/yt-dlp/yt-dlp/releases/latest)
+* **libmpv** (`libmpv-2.dll`) is the media engine, loaded **in-process** —
+  no mpv subprocess, no IPC pipe, no supervisor (see docs/ARCHITECTURE.md).
+* **yt-dlp** (`yt-dlp.exe`) provides search + media resolution; the player
+  only ever receives direct URLs.
 
-Binaries are located deterministically, in this order (first hit wins; there is
-**no PATH fallback**):
-
-1. `MELO_MPV_PATH` / `MELO_YTDLP_PATH` — explicit per-binary override, used
-   verbatim
-2. `MELO_RUNTIME_DIR` — explicit runtime root (`<dir>/bin`)
-3. Dev checkout: `<repo>/src-tauri/runtime/bin` (this is where
-   `npm run tauri dev` downloads and caches them — survives `cargo clean`)
-4. Bundled install: `<install_dir>/runtime/bin` (shipped via
-   `tauri.conf.json → bundle.resources` when present at build time)
-5. Managed download dir: `<config>/runtime/bin` (default for installed apps)
-
-Both binaries are always spawned by **absolute path** (mpv additionally gets
-`--ytdl-path=<abs yt-dlp>`), so playback never silently picks up whatever
-happens to be on `PATH`. If the runtime is missing and can't be downloaded,
-playback fails with a clear message pointing at
-**Settings → Diagnostics → Repair runtime**. Non-Windows platforms don't
-auto-download: set `MELO_MPV_PATH` / `MELO_YTDLP_PATH` instead.
+On first run MELO downloads both, **pinned to exact release tags and
+verified against the SHA-256 digests GitHub publishes** (libmpv from the
+zhongfly/mpv-winbuild dev archive, extracted with pinned 7zr.exe; yt-dlp
+from its releases). Lookup order: `MELO_RUNTIME_DIR/bin` →
+`<exe>/runtime/bin` (installed builds) → `<repo>/.melo-runtime/bin` (dev
+cache — outside watched paths, so downloads never restart `tauri dev`) →
+`<config>/runtime/bin`. There is **no PATH fallback**; failures produce an
+actionable message (Settings → Diagnostics → Repair runtime).
 
 ## Development
 

@@ -1,49 +1,81 @@
-//! MELO application shell (Tauri 2).
+//! MELO desktop app — Tauri 2 shell.
 //!
-//! Layering (see docs/ARCHITECTURE.md):
-//!
-//! ```text
-//! React (src/)  ──invoke──►  commands.rs  ──UserCommand──►  playback_service
-//!                                                │ PlaybackCore (owns truth)
-//!                                                ▼
-//! React (src/)  ◄──event──  events.rs    ◄──EngineEvent──  mpv (child process)
-//! ```
-//!
-//! Rust owns ALL playback state. The webview renders backend state and sends
-//! intent — nothing else.
+//! The native layer is intentionally tiny (docs/ARCHITECTURE.md):
+//! * `libmpv` — in-process media engine (runtime-loaded DLL, event-driven)
+//! * `runtime` — pinned, digest-verified libmpv/yt-dlp management
+//! * `ytdlp` — search/resolve subprocess (absolute path, never PATH)
+//! * `lrclib` — lyrics provider
+//! * `library`/`settings_store` — local-first JSON persistence
+//! The queue and all app logic live in the frontend.
 
 mod commands;
 mod events;
+mod libmpv;
 mod lrclib;
-mod mpv;
-mod playback_service;
-mod resolver;
 mod runtime;
 mod settings_store;
-mod ytdlp_proc;
+mod ytdlp;
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
-use tauri::Manager;
-
-use lrclib::LrclibClient;
 use melo_core::library::LibraryStore;
-use melo_core::persistence::Settings;
-use playback_service::PlaybackHandle;
-use resolver::ResolverService;
 use runtime::RuntimeHandle;
 use settings_store::SettingsStore;
+use tauri::Manager;
+
+use crate::libmpv::Player;
 
 pub struct MeloState {
-    pub playback: PlaybackHandle,
+    /// The libmpv engine. `None` while the runtime is being installed or
+    /// after a failure — commands then return an actionable error.
+    pub player: Mutex<Option<Arc<Player>>>,
     pub runtime: RuntimeHandle,
+    pub config_dir: PathBuf,
+}
+
+/// Bring the engine up (idempotent). Called at startup when the DLL exists
+/// and again after a successful runtime install/repair.
+pub fn start_engine(app: &tauri::AppHandle, config_dir: &std::path::Path) {
+    let state = match app.try_state::<MeloState>() {
+        Some(s) => s,
+        None => return,
+    };
+    if !state.runtime.libmpv_found() {
+        return;
+    }
+    // Volume/mute/speed live in the frontend session; engine starts at
+    // neutral defaults and the app applies its persisted values on boot.
+    let dll = state.runtime.libmpv_path();
+    match Player::start(&dll, app.clone(), 80.0, false, 1.0) {
+        Ok(player) => {
+            let mut guard = state.player.lock().unwrap_or_else(|p| p.into_inner());
+            // Replace (and implicitly stop) any previous engine.
+            if let Some(old) = guard.replace(Arc::new(player)) {
+                old.shutdown();
+            }
+        }
+        Err(e) => {
+            eprintln!("[melo] engine start failed: {e}");
+            let _ = tauri::Emitter::emit(
+                app,
+                events::RUNTIME_STATUS,
+                events::RuntimeStatus {
+                    phase: "error",
+                    message: format!(
+                        "Couldn't start the playback engine ({e}). \
+                         Use Settings → Diagnostics → Repair runtime."
+                    ),
+                },
+            );
+        }
+    }
 }
 
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let config_dir = app
+            let config_dir: PathBuf = app
                 .path()
                 .app_config_dir()
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
@@ -52,44 +84,28 @@ pub fn run() {
 
             let settings = Arc::new(SettingsStore::load(&config_dir));
             let library = Arc::new(LibraryStore::open(&config_dir.join("library.json")));
-            let current: Settings = settings.get();
-
-            // Managed runtime (standalone app — no PATH dependency).
-            // Deterministic lookup (env override → dev checkout → bundled →
-            // config-managed) with a first-run download when missing.
-            let runtime = RuntimeHandle::resolve(&config_dir);
-
-            let resolver = Arc::new(ResolverService::new(settings.clone(), runtime.clone()));
+            let runtime = RuntimeHandle::new(&config_dir);
             let lyrics_cache = config_dir.join("lyrics-cache");
-            let lrclib = Arc::new(LrclibClient::new(Some(lyrics_cache)));
-
-            let playback = playback_service::spawn(
-                app.handle().clone(),
-                config_dir,
-                runtime.clone(),
-                current.resume_last_session,
-                resolver.clone(),
-                library.clone(),
-            );
-            let playback_for_bootstrap = playback.clone();
+            let lrclib = Arc::new(lrclib::LrclibClient::new(Some(lyrics_cache)));
 
             app.manage(MeloState {
-                playback,
+                player: Mutex::new(None),
                 runtime: runtime.clone(),
+                config_dir: config_dir.clone(),
             });
-            app.manage(settings);
+            app.manage(settings.clone());
             app.manage(library);
-            app.manage(resolver);
+            app.manage(runtime.clone());
             app.manage(lrclib);
 
-            // First-run bootstrap: download missing runtime pieces in the
-            // background, then bring the engine up. Playback commands sent
-            // in the meantime fail with a clear repair message instead of
-            // silently hunting the PATH.
-            if !runtime.mpv_found() || !runtime.ytdlp_found() {
+            // Engine now, or after a one-time verified runtime install.
+            if runtime.libmpv_found() {
+                start_engine(app.handle(), &config_dir);
+            } else {
                 let app_handle = app.handle().clone();
-                runtime::bootstrap_and_report(app_handle, runtime.clone(), move || {
-                    playback_for_bootstrap.start_engine();
+                let cfg = config_dir.clone();
+                runtime::ensure_and_report(app_handle, runtime.clone(), move || {
+                    start_engine(&app_handle, &cfg);
                 });
             }
 
@@ -97,46 +113,38 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                // Give the playback service a beat to flush the session and
-                // kill mpv so the next launch restores cleanly (spec §31).
-                if let Some(state) = window.try_state::<MeloState>() {
-                    state.playback.flush();
-                    std::thread::sleep(Duration::from_millis(150));
+                if let Some(state) = window.app_handle().try_state::<MeloState>() {
+                    if let Some(player) = state
+                        .player
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .take()
+                    {
+                        player.shutdown(); // clean stop, mpv is torn down
+                    }
                 }
             }
         })
         .invoke_handler(tauri::generate_handler![
-            commands::get_playback_state,
-            commands::get_queue,
-            commands::get_library,
-            commands::player_toggle_play,
+            commands::player_get_state,
+            commands::player_load,
             commands::player_play,
             commands::player_pause,
+            commands::player_toggle_play,
             commands::player_stop,
-            commands::player_next,
-            commands::player_previous,
-            commands::player_seek_to,
-            commands::player_seek_by,
+            commands::player_seek,
             commands::player_set_volume,
-            commands::player_toggle_mute,
+            commands::player_set_mute,
             commands::player_set_speed,
-            commands::queue_play_now,
-            commands::queue_add,
-            commands::queue_play_next,
-            commands::queue_remove,
-            commands::queue_jump_to,
-            commands::queue_move,
-            commands::queue_reorder,
-            commands::queue_clear_upcoming,
-            commands::queue_clear_all,
-            commands::queue_set_shuffle,
-            commands::queue_set_repeat,
-            commands::queue_start,
-            commands::queue_save_as_playlist,
+            commands::resolve_track,
+            commands::get_session,
+            commands::set_session,
             commands::search,
             commands::search_history_clear,
             commands::search_history_remove,
             commands::favorites_toggle,
+            commands::record_play,
+            commands::get_library,
             commands::playlist_create,
             commands::playlist_rename,
             commands::playlist_set_description,

@@ -1,6 +1,6 @@
 [package]
 name = "melo-app"
-description = "MELO desktop application (Tauri 2 shell: mpv engine, IPC, persistence)"
+description = "MELO desktop application (Tauri 2 shell: libmpv engine, runtime management, IPC, persistence)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,6 +19,10 @@ tauri = { version = "2", features = [] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ureq = { version = "2.9", features = ["json"] }
+# Runtime-loaded libmpv (no import library, no build-time mpv requirement).
+libloading = "0.8"
+# SHA-256 verification of pinned runtime downloads.
+sha2 = "0.10"
 
 [features]
 # Keep the default surface minimal (spec §33).

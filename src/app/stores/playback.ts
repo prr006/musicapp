@@ -1,14 +1,17 @@
 /**
- * Playback/queue stores — populated ONLY from backend events (spec §2).
- * React never writes playback state here; it sends commands and the backend
- * answers with events.
+ * Playback/queue stores.
  *
- * `positionStore` is deliberately separate: it updates at ~4–5 Hz and only
- * progress-dependent components subscribe to it (spec §34).
+ * Populated ONLY by the playback controller from ENGINE events — libmpv is
+ * the single source of truth for playback (status/position/duration); the
+ * queue store mirrors the app-level queue machine. React never writes here;
+ * it calls the controller/api and events flow back.
+ *
+ * `positionStore` is deliberately separate: it updates at the engine's
+ * position cadence and only progress-dependent components subscribe.
  */
 
 import { createStore, useStore } from "@/app/store";
-import type { PlaybackSnapshot, PositionUpdate, QueueView } from "@/types/domain";
+import type { PlaybackSnapshot, QueueView } from "@/types/domain";
 
 const IDLE_SNAPSHOT: PlaybackSnapshot = {
   status: "idle",
@@ -41,27 +44,6 @@ export const positionStore = createStore<{ positionSecs: number; durationSecs: n
   positionSecs: 0,
   durationSecs: null,
 });
-
-export function onPlaybackState(snapshot: PlaybackSnapshot): void {
-  playbackStore.set(snapshot);
-  // State events always carry a current-enough position (seeks/pauses force
-  // one); the throttled position stream keeps it fresh between them.
-  positionStore.set({
-    positionSecs: snapshot.positionSecs,
-    durationSecs: snapshot.durationSecs,
-  });
-}
-
-export function onQueueView(view: QueueView): void {
-  queueStore.set(view);
-}
-
-export function onPosition(update: PositionUpdate): void {
-  positionStore.set({
-    positionSecs: update.positionSecs,
-    durationSecs: update.durationSecs,
-  });
-}
 
 // ---- ergonomic selectors -------------------------------------------------
 

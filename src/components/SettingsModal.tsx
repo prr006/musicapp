@@ -178,13 +178,20 @@ export function SettingsModal() {
           {diagnostics ? (
             <div className="diag-box">
               <div>
-                mpv:{" "}
-                {diagnostics.mpvFound ? (
-                  <code>{diagnostics.mpvPath}</code>
+                Engine (libmpv):{" "}
+                {diagnostics.engineRunning ? (
+                  <code>{diagnostics.mpvVersion ?? diagnostics.libmpvPath}</code>
                 ) : (
                   <span style={{ color: "var(--danger)" }}>
-                    not installed at <code>{diagnostics.mpvPath ?? "?"}</code> — playback
-                    unavailable until the runtime is repaired
+                    not running —{" "}
+                    {diagnostics.libmpvFound
+                      ? "loaded but failed"
+                      : (
+                          <>
+                            libmpv-2.dll missing at <code>{diagnostics.libmpvPath ?? "?"}</code>
+                          </>
+                        )}{" "}
+                    · use Repair runtime
                   </span>
                 )}
               </div>
@@ -194,7 +201,7 @@ export function SettingsModal() {
                   <code>{diagnostics.ytdlpPath}</code>
                 ) : (
                   <span style={{ color: "var(--danger)" }}>
-                    not found — YouTube search/streaming unavailable, local files still play
+                    not found — YouTube search/streaming unavailable
                   </span>
                 )}
               </div>
@@ -213,12 +220,9 @@ export function SettingsModal() {
                     setRepairing(true);
                     try {
                       await api.repairRuntime();
-                      pushToast("Downloading playback runtime…", "info");
+                      pushToast("Reinstalling playback runtime…", "info");
                     } catch (e) {
-                      pushToast(
-                        e instanceof Error ? e.message : "Repair failed to start",
-                        "error",
-                      );
+                      pushToast(e instanceof Error ? e.message : "Repair failed to start", "error");
                     } finally {
                       setRepairing(false);
                     }

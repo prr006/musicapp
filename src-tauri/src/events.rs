@@ -1,15 +1,20 @@
-//! Tauri event names + payload types (the other half of the IPC contract,
-//! see docs/IPC.md).
+//! Tauri event names + shared payload structs.
+//!
+//! The engine events are emitted by `crate::libmpv` directly (libmpv is
+//! authoritative); `runtime://status` comes from `crate::runtime`.
 
-pub const PLAYBACK_STATE: &str = "playback://state";
-pub const PLAYBACK_POSITION: &str = "playback://position";
-pub const QUEUE_VIEW: &str = "queue://view";
-pub const ENGINE_STATUS: &str = "engine://status";
+use serde::Serialize;
+
+pub const PLAYER_STATE: &str = "player://state";
+pub const PLAYER_POSITION: &str = "player://position";
+pub const PLAYER_END: &str = "player://end";
+pub const RUNTIME_STATUS: &str = "runtime://status";
 pub const LIBRARY_UPDATED: &str = "library://updated";
 
-#[derive(serde::Serialize, Clone)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EngineStatus {
-    pub health: melo_core::player::EngineHealth,
+pub struct RuntimeStatus {
+    /// installing | ready | error
+    pub phase: &'static str,
     pub message: String,
 }

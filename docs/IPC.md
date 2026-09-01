@@ -1,104 +1,52 @@
-# MELO IPC Contract
+# MELO IPC surface
 
-The complete Tauri command/event surface. TypeScript mirrors live in
-`src/app/ipc/contract.ts`; Rust implementations in `src-tauri/src/commands.rs`.
-
-## Conventions
-
-* Commands are `snake_case`; JS call sites use the same names (arguments are
-  camelCase keys, converted automatically by Tauri).
-* Commands **send intent and return immediately** (`Promise<void>` for most).
-  State arrives via events. `get_*` commands exist for boot/re-sync.
-* Errors are human-readable strings; providers map to friendly copy via
-  `ProviderError::user_message()`.
-* Inputs are validated in Rust (titles non-empty, ids present, numbers
-  clamped). The webview holds no capabilities beyond `core:default`.
+Commands (webview → Rust) and events (Rust → webview). The native layer is a
+thin shell around libmpv; the queue and app logic live in the frontend.
 
 ## Commands
 
-### State reads
+### Player (libmpv)
 
-| Command              | Returns                  | Notes                          |
-|----------------------|--------------------------|--------------------------------|
-| `get_playback_state` | `PlaybackSnapshot`       | boot / reconnect               |
-| `get_queue`          | `QueueView`              | boot / reconnect               |
-| `get_library`        | `LibraryData`            | boot + after `library://updated` |
-| `get_settings`       | `Settings`               |                                |
-| `get_diagnostics`    | `Diagnostics`            | runtime dir, mpv/yt-dlp presence + paths, quality label |
-| `repair_runtime`     | —                        | re-download the managed runtime (async; progress via `engine://status`) |
-| `get_lyrics`         | `Lyrics \| null`         | `{ track }` — LRCLIB lookup     |
-| `search`             | `SearchResults`          | `{ query, limit? }` — yt-dlp   |
+| Command            | Args                                  | Result | Notes |
+|--------------------|---------------------------------------|--------|-------|
+| `player_get_state` | —                                     | `EngineState` | last observed engine state |
+| `player_load`      | `url`, `startPaused?`, `startAt?`     | epoch  | replaces current file; epoch drops stale EOFs |
+| `player_play`      | —                                     | —      | |
+| `player_pause`     | —                                     | —      | |
+| `player_toggle_play` | —                                  | —      | |
+| `player_stop`      | —                                     | —      | manual stop; engine reports `stop`, queue must NOT advance |
+| `player_seek`      | `position` (secs)                     | —      | absolute |
+| `player_set_volume`| `volume` 0–100                        | —      | |
+| `player_set_mute`  | `muted`                               | —      | |
+| `player_set_speed` | `speed` 0.25–4                        | —      | |
 
-### Transport
+### Resolve / search
 
-| Command              | Args                          |
-|----------------------|-------------------------------|
-| `player_toggle_play` | —                             |
-| `player_play`        | —                             |
-| `player_pause`       | —                             |
-| `player_stop`        | —                             |
-| `player_next`        | — (skips even in repeat-one)  |
-| `player_previous`    | — (>3 s in → restart track)   |
-| `player_seek_to`     | `{ position: number }` (clamped to duration) |
-| `player_seek_by`     | `{ delta: number }`           |
-| `player_set_volume`  | `{ volume: 0..100 }`          |
-| `player_toggle_mute` | —                             |
-| `player_set_speed`   | `{ speed: 0.25..4 }`          |
+| Command          | Args                    | Result | Notes |
+|------------------|-------------------------|--------|-------|
+| `resolve_track`  | `sourceId`, `quality?`  | `ResolvedMedia` | direct media URL via managed yt-dlp |
+| `search`         | `query`, `limit?`       | `SearchResults` | flat YouTube results (songs only, honest) |
+| `search_history_clear` / `search_history_remove` | — / `query` | — | |
 
-### Queue
+### Library / history / session / settings / runtime
 
-| Command             | Args                            |
-|---------------------|---------------------------------|
-| `queue_play_now`    | `{ track }`                     |
-| `queue_add`         | `{ tracks: Track[] }`           |
-| `queue_play_next`   | `{ tracks: Track[] }`           |
-| `queue_remove`      | `{ itemId }`                    |
-| `queue_jump_to`     | `{ itemId }` (upcoming only)    |
-| `queue_move`        | `{ itemId, up }`                |
-| `queue_reorder`     | `{ from, to }` (drag-drop)      |
-| `queue_clear_upcoming` | —                           |
-| `queue_clear_all`   | —                               |
-| `queue_set_shuffle` | `{ enabled }` (deterministic re-seed) |
-| `queue_set_repeat`  | `{ mode: "off"\|"all"\|"one" }` |
-| `queue_start`       | `{ tracks, shuffle }` (replaces queue) |
-| `queue_save_as_playlist` | `{ title }` → `Playlist` (current + upcoming) |
+`favorites_toggle`, `record_play` (listening history), `playlist_create`,
+`playlist_rename`, `playlist_set_description`, `playlist_delete`,
+`playlist_duplicate`, `playlist_add_tracks`, `playlist_remove_track`,
+`playlist_reorder_track`, `playlist_tracks`, `history_clear`,
+`history_remove`, `get_lyrics` (LRCLIB), `get_library`, `get_session`,
+`set_session`, `get_settings`, `set_settings`, `get_diagnostics`,
+`repair_runtime`.
 
-### Library — favorites, playlists, history, search history
-
-| Command                    | Args / Returns                        |
-|----------------------------|---------------------------------------|
-| `favorites_toggle`         | `{ track }` → `boolean` (new state)   |
-| `playlist_create`          | `{ title, description? }` → `Playlist` |
-| `playlist_rename`          | `{ playlistId, title }`               |
-| `playlist_set_description` | `{ playlistId, description }`         |
-| `playlist_delete`          | `{ playlistId }`                      |
-| `playlist_duplicate`       | `{ playlistId, title }` → `Playlist`  |
-| `playlist_add_tracks`      | `{ playlistId, tracks }`              |
-| `playlist_remove_track`    | `{ playlistId, trackId }`             |
-| `playlist_reorder_track`   | `{ playlistId, from, to }`            |
-| `playlist_tracks`          | `{ playlistId }` → `Track[]`          |
-| `history_clear`            | —                                     |
-| `history_remove`           | `{ entryId }`                         |
-| `search_history_clear`     | —                                     |
-| `search_history_remove`    | `{ query }`                           |
-
-### Settings
-
-| Command        | Args                             |
-|----------------|----------------------------------|
-| `get_settings` | — → `Settings`                   |
-| `set_settings` | `{ settings }` (full document)   |
+Queue commands are intentionally ABSENT: the queue is an application concept
+living in the frontend (`src/player/queue.ts`).
 
 ## Events
 
-| Event                  | Payload            | Cadence                        |
-|------------------------|--------------------|--------------------------------|
-| `playback://state`     | `PlaybackSnapshot` | on every state change          |
-| `playback://position`  | `PositionUpdate`   | ~4 Hz while sounding           |
-| `queue://view`         | `QueueView`        | on every queue mutation        |
-| `library://updated`    | `LibraryData`      | on every library mutation      |
-| `engine://status`      | `{ health, message }` | starting/running/restarting/dead |
-
-The frontend derives everything else (active lyric line, progress bar
-smoothness between samples, "busy" state) from these payloads — it never
-owns playback truth.
+| Event                | Payload | Meaning |
+|----------------------|---------|---------|
+| `player://state`     | `{status, positionSecs, durationSecs, paused, buffering, seeking, speed, volume, muted, epoch, mpvVersion}` | authoritative engine snapshot; also re-anchors the interpolated clock |
+| `player://position`  | `{positionSecs, durationSecs, epoch}` | position sample |
+| `player://end`       | `{reason: eof\|stop\|quit\|error\|redirect, error, epoch}` | file ended; only `eof` may auto-advance the queue |
+| `runtime://status`   | `{phase: installing\|ready\|error, message}` | runtime install progress / repair result |
+| `library://updated`  | `LibraryData` | likes/playlists/history/search changed |

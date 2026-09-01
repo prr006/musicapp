@@ -1,694 +1,304 @@
 /**
- * ⚠️ DEV-ONLY mock backend for the browser preview. ⚠️
+ * Mock bridge for the BROWSER preview and frontend tests.
  *
- * Simulates the Rust playback service (state machine + engine) so the UI can
- * be developed without Tauri/mpv/yt-dlp. Semantics mirror `PlaybackCore` in
- * melo-core: same status transitions, same EOF auto-next, same previous/
- * seek/volume policies. In the packaged desktop app the tauri bridge is used
- * and Rust is authoritative — this file never ships into product behavior.
- * It is kept honest against the Rust core by mirrored test suites.
+ * It mocks ONLY the native boundary (libmpv engine + yt-dlp + persistence),
+ * which is explicitly allowed: domain behavior (queue, EOF semantics,
+ * playback flow) lives in the frontend and is tested against its REAL
+ * implementation with this bridge as the scripted native edge.
  *
- * Simulated: play/pause/seek/speed/volume/mute, EOF auto-next, repeat
- * off/all/one, shuffle, history/previous, loading latency, buffering blips,
- * search failure trigger (query containing "err"), session persistence,
- * library (favorites/playlists/history/search-history) via MockLibrary.
+ * The fake engine is deliberately dumb and honest: it ticks position
+ * forward while "playing", emits real end-of-file at the duration, and
+ * reports stop as stop. No queue logic here — that's the controller's job.
  */
 
-import { parseLrc } from "@/lib/lyrics";
 import type {
-  LibraryData,
-  Lyrics,
-  PlaybackSnapshot,
-  PlaybackStatus,
-  PlaylistLite,
-  PositionUpdate,
-  QueueItem,
-  RepeatMode,
-  SearchResults,
-  Settings,
-  Track,
-} from "@/types/domain";
-import { DEFAULT_SETTINGS } from "@/types/domain";
-
-import type { CommandName, IpcBridge } from "./contract";
+  CommandArgs,
+  CommandName,
+  EngineStateIpc,
+  EventPayloads,
+  EventName,
+  IpcBridge,
+} from "./contract";
+import type { Track } from "@/types/domain";
 import { MockLibrary } from "./mockLibrary";
-import { QueueMachine, type QueueStep } from "./mockQueue";
-import { SAMPLE_ALBUMS, SAMPLE_ARTISTS, SAMPLE_LYRICS, SAMPLE_TRACKS } from "./sampleData";
+import { SAMPLE_TRACKS as sampleTracks, SAMPLE_LYRICS } from "./sampleData";
 
-const TICK_MS = 250;
-const LOAD_LATENCY_MS = 320;
-const PREVIOUS_RESTART_SECS = 3.0;
+type Handler<E extends EventName> = (payload: EventPayloads[E]) => void;
 
-interface MockState {
-  status: PlaybackStatus;
-  positionSecs: number;
-  durationSecs: number | null;
-  volume: number;
-  muted: boolean;
-  speed: number;
-  error: string | null;
-  bufferingPct: number | null;
+interface FakeEngine {
+  timer: ReturnType<typeof setInterval> | null;
+  state: EngineStateIpc;
 }
 
-type UserCmd =
-  | { t: "toggle-play" }
-  | { t: "play" }
-  | { t: "pause" }
-  | { t: "stop" }
-  | { t: "next" }
-  | { t: "previous" }
-  | { t: "seek-to"; position: number }
-  | { t: "seek-by"; delta: number }
-  | { t: "set-volume"; volume: number }
-  | { t: "toggle-mute" }
-  | { t: "set-speed"; speed: number }
-  | { t: "set-shuffle"; enabled: boolean }
-  | { t: "set-repeat"; mode: RepeatMode }
-  | { t: "play-track"; track: Track }
-  | { t: "add"; tracks: Track[] }
-  | { t: "play-next"; tracks: Track[] }
-  | { t: "remove"; itemId: string }
-  | { t: "jump-to"; itemId: string }
-  | { t: "move"; itemId: string; up: boolean }
-  | { t: "reorder"; from: number; to: number }
-  | { t: "clear-upcoming" }
-  | { t: "clear-all" }
-  | { t: "start"; tracks: Track[]; shuffle: boolean };
-
 export function createMockBridge(): IpcBridge {
-  const listeners = new Map<string, Set<(payload: unknown) => void>>();
-
-  function emit(event: string, payload: unknown): void {
-    const set = listeners.get(event);
-    if (set) for (const fn of set) fn(payload);
-  }
-
-  // ---- state ---------------------------------------------------------
-
-  const queue = restoreQueue();
   const library = new MockLibrary();
-  library.subscribe(() => emit("library://updated", library.snapshot()));
+  const listeners = new Map<EventName, Set<Handler<never>>>();
+  library.subscribe(() => {
+    emit("library://updated", library.snapshot());
+  });
+  let sessionStore: unknown = null;
+  let mockSettings = { volume: 80 };
 
-  const state: MockState = {
-    status: "idle",
-    positionSecs: restored()?.positionSecs ?? 0,
-    durationSecs: queue.current()?.track.durationSecs ?? null,
-    volume: restored()?.volume ?? 80,
-    muted: restored()?.muted ?? false,
-    speed: restored()?.speed ?? 1,
-    error: null,
-    bufferingPct: null,
-  };
-  let resumeAt: number | null = state.positionSecs > 0 ? state.positionSecs : null;
-  let eofHandled = false;
-  let loadTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Pause intent requested while still loading (honored at load end). */
-  let pauseIntent = false;
-  let historyEnabled = true;
-
-  function snapshot(): PlaybackSnapshot {
-    const current = queue.current();
-    return {
-      status: state.status,
-      currentItemId: current?.id ?? null,
-      currentTrack: current?.track ?? null,
-      positionSecs: state.positionSecs,
-      durationSecs: state.durationSecs,
-      volume: state.volume,
-      muted: state.muted,
-      speed: state.speed,
-      shuffle: queue.shuffleEnabled,
-      repeat: queue.repeatMode,
-      bufferingPct: state.bufferingPct,
-      error: state.error,
-      queueRev: queue.rev,
-    };
-  }
-
-  function publishPlayback() {
-    emit("playback://state", snapshot());
-    persistSession();
-  }
-
-  function publishQueue() {
-    emit("queue://view", queue.view());
-    persistSession();
-  }
-
-  function publishPosition() {
-    const update: PositionUpdate = {
-      positionSecs: state.positionSecs,
-      durationSecs: state.durationSecs,
-      speed: state.speed,
-    };
-    emit("playback://position", update);
-  }
-
-  // ---- engine simulation ----------------------------------------------
-
-  let ticker: ReturnType<typeof setInterval> | null = null;
-
-  function ensureTicker(): void {
-    if (ticker != null) return;
-    ticker = setInterval(() => {
-      if (state.status === "playing" || state.status === "buffering") {
-        state.positionSecs = Math.min(
-          state.durationSecs ?? Infinity,
-          state.positionSecs + (TICK_MS / 1000) * state.speed,
-        );
-        publishPosition();
-        if (
-          state.durationSecs != null &&
-          state.positionSecs >= state.durationSecs - 0.05 &&
-          state.status === "playing"
-        ) {
-          onEngineEnd("eof");
-        }
-      }
-    }, TICK_MS);
-  }
-  ensureTicker();
-
-  /** Finalize history when the current track is left (mirrors the service). */
-  function finalizeHistory(): void {
-    const track = queue.current()?.track;
-    if (track) library.finishRecentFor(track.id, state.positionSecs, completion());
-  }
-
-  function completion(): number {
-    const d = state.durationSecs;
-    if (!d || d <= 0) return 0;
-    if (state.positionSecs >= d - 1.0) return 1;
-    return Math.min(1, Math.max(0, state.positionSecs / d));
-  }
-
-  function onEngineEnd(reason: "eof" | "error"): void {
-    if (reason === "eof") {
-      if (!eofHandled) {
-        eofHandled = true;
-        finalizeHistory();
-        applyStep(queue.advance(false));
-      }
-    } else {
-      finalizeHistory();
-      state.status = "error";
-      state.error = "Couldn't play this track.";
-      publishPlayback();
-    }
-  }
-
-  /** Mirrors PlaybackCore::apply_step + load_track. */
-  function applyStep(step: QueueStep): void {
-    switch (step.kind) {
-      case "none":
-        break;
-      case "load": {
-        const item = queue.byId(step.id);
-        if (item) loadTrack(item);
-        break;
-      }
-      case "replay-current": {
-        const item = queue.current();
-        if (item) loadTrack(item, 0);
-        break;
-      }
-      case "seek-start":
-        seekAbsolute(0);
-        break;
-      case "end-of-queue":
-        finalizeHistory();
-        state.status = "idle";
-        state.positionSecs = 0;
-        state.bufferingPct = null;
-        publishPlayback();
-        publishPosition();
-        break;
-    }
-  }
-
-  function loadTrack(item: QueueItem, startAt?: number, startPaused = false): void {
-    if (loadTimer) clearTimeout(loadTimer);
-    finalizeHistory();
-    const start = startAt ?? resumeAt ?? 0;
-    resumeAt = null;
-    state.durationSecs = item.track.durationSecs ?? null;
-    state.positionSecs = start;
-    state.error = null;
-    state.bufferingPct = null;
-    state.status = "loading";
-    // Like the service's pause-normalization before every loadfile: each
-    // load carries its own intended pause state; a pause the user requests
-    // during the loading window below overrides it.
-    pauseIntent = startPaused;
-    if (historyEnabled) library.recordPlay(item.track);
-    publishPlayback();
-    publishQueue();
-    publishPosition();
-    loadTimer = setTimeout(() => {
-      loadTimer = null;
-      eofHandled = false;
-      // A pause requested while loading is honored now that the track is
-      // ready (loading ≠ playing; the intent was remembered, not lost).
-      state.status = pauseIntent ? "paused" : "playing";
-      publishPlayback();
-    }, LOAD_LATENCY_MS);
-  }
-
-  function seekAbsolute(position: number): void {
-    if (state.status === "idle" || !queue.current()) return;
-    const clamped =
-      state.durationSecs && state.durationSecs > 0.5
-        ? Math.min(Math.max(position, 0), state.durationSecs - 0.25)
-        : Math.max(position, 0);
-    state.positionSecs = clamped;
-    publishPosition();
-    publishPlayback();
-  }
-
-  // ---- user commands (mirrors PlaybackCore::handle_user) ----------------
-
-  function setPaused(wantPaused: boolean): void {
-    if (state.status === "idle" || state.status === "error") {
-      const current = queue.current();
-      if (current || !queue.isEmpty) {
-        if (current) {
-          loadTrack(current, resumeAt ?? 0, wantPaused);
-        } else {
-          applyStep(queue.advance(true));
-        }
-      }
-      return;
-    }
-    // Loading ≠ playing: remember the intent; the status settles when the
-    // load completes (loadTrack's timer), exactly like the Rust core.
-    pauseIntent = wantPaused;
-    if (state.status === "loading") {
-      return;
-    }
-    state.status = wantPaused ? "paused" : "playing";
-    publishPlayback();
-    publishPosition();
-  }
-
-  function handleUser(cmd: UserCmd): void {
-    switch (cmd.t) {
-      case "toggle-play":
-        // Toggle while loading is a no-op (mirrors the Rust core): there is
-        // nothing sounding yet to toggle — pause intent comes via "pause".
-        if (state.status === "loading") break;
-        setPaused(!(state.status === "playing" || state.status === "buffering"));
-        break;
-      case "play":
-        setPaused(false);
-        break;
-      case "pause":
-        setPaused(true);
-        break;
-      case "stop":
-        finalizeHistory();
-        state.status = "idle";
-        state.positionSecs = 0;
-        state.error = null;
-        publishPlayback();
-        break;
-      case "next":
-        applyStep(queue.advance(true));
-        break;
-      case "previous":
-        if (state.positionSecs > PREVIOUS_RESTART_SECS && state.status !== "idle") {
-          seekAbsolute(0);
-        } else {
-          applyStep(queue.previous());
-        }
-        break;
-      case "seek-to":
-        seekAbsolute(Math.max(0, cmd.position));
-        break;
-      case "seek-by":
-        seekAbsolute(state.positionSecs + cmd.delta);
-        break;
-      case "set-volume":
-        state.volume = Math.min(100, Math.max(0, cmd.volume));
-        publishPlayback();
-        break;
-      case "toggle-mute":
-        state.muted = !state.muted;
-        publishPlayback();
-        break;
-      case "set-speed":
-        state.speed = Math.min(4, Math.max(0.25, cmd.speed));
-        publishPlayback();
-        break;
-      case "set-shuffle":
-        queue.setShuffle(cmd.enabled);
-        publishQueue();
-        publishPlayback();
-        break;
-      case "set-repeat":
-        queue.setRepeat(cmd.mode);
-        publishQueue();
-        publishPlayback();
-        break;
-      case "play-track":
-        applyStep(queue.playNow(cmd.track));
-        break;
-      case "add":
-        queue.addTracks(cmd.tracks, "end");
-        publishQueue();
-        break;
-      case "play-next":
-        queue.addTracks(cmd.tracks, "after-current");
-        publishQueue();
-        break;
-      case "remove":
-        applyStep(queue.remove(cmd.itemId));
-        publishQueue();
-        publishPlayback();
-        break;
-      case "jump-to":
-        applyStep(queue.jumpTo(cmd.itemId));
-        publishQueue();
-        break;
-      case "move":
-        if (cmd.up) queue.moveUp(cmd.itemId);
-        else queue.moveDown(cmd.itemId);
-        publishQueue();
-        break;
-      case "reorder":
-        queue.reorderUpcoming(cmd.from, cmd.to);
-        publishQueue();
-        break;
-      case "clear-upcoming":
-        queue.clearUpcoming();
-        publishQueue();
-        break;
-      case "clear-all":
-        finalizeHistory();
-        applyStep(queue.clearAll());
-        publishQueue();
-        publishPlayback();
-        break;
-      case "start":
-        applyStep(queue.startSequence(cmd.tracks, cmd.shuffle));
-        publishQueue();
-        publishPlayback();
-        break;
-    }
-  }
-
-  // ---- session persistence (localStorage) -----------------------------
-
-  function restored(): { volume: number; muted: boolean; speed: number; positionSecs: number } | null {
-    try {
-      const raw = localStorage.getItem("melo:session");
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  }
-
-  function restoreQueue(): QueueMachine {
-    try {
-      const raw = localStorage.getItem("melo:queue");
-      if (raw) return QueueMachine.deserialize(raw);
-    } catch {
-      /* fall through */
-    }
-    return new QueueMachine(Date.now());
-  }
-
-  let persistTimer: ReturnType<typeof setTimeout> | null = null;
-  function persistSession(): void {
-    if (persistTimer) return;
-    persistTimer = setTimeout(() => {
-      persistTimer = null;
-      try {
-        localStorage.setItem("melo:queue", queue.serialize());
-        localStorage.setItem(
-          "melo:session",
-          JSON.stringify({
-            volume: state.volume,
-            muted: state.muted,
-            speed: state.speed,
-            positionSecs: state.positionSecs,
-          }),
-        );
-      } catch {
-        /* storage unavailable — ignore */
-      }
-    }, 400);
-  }
-
-  // ---- settings ---------------------------------------------------------
-
-  const settings = loadSettings();
-
-  function loadSettings(): Settings {
-    try {
-      const raw = localStorage.getItem("melo:settings");
-      return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : { ...DEFAULT_SETTINGS };
-    } catch {
-      return { ...DEFAULT_SETTINGS };
-    }
-  }
-
-  function saveSettings(next: Settings): void {
-    Object.assign(settings, next);
-    historyEnabled = next.historyEnabled;
-    try {
-      localStorage.setItem("melo:settings", JSON.stringify(settings));
-    } catch {
-      /* ignore */
-    }
-  }
-
-  async function nowait<T>(value: T): Promise<T> {
-    return value;
-  }
-
-  const bridge: IpcBridge = {
-    kind: "mock",
-    invoke: (async (cmd: CommandName, ...args: unknown[]) => {
-      const a = (args[0] ?? {}) as Record<string, unknown>;
-      switch (cmd) {
-        // ---- state reads ----
-        case "get_playback_state":
-          return nowait(snapshot());
-        case "get_queue":
-          return nowait(queue.view());
-        case "get_library":
-          return nowait(library.snapshot());
-        case "get_diagnostics":
-          return nowait({
-            runtimeDir: "mock://runtime/bin",
-            mpvPath: "mock://runtime/bin/mpv.exe",
-            mpvFound: true,
-            ytdlpFound: true,
-            ytdlpPath: "mock://yt-dlp",
-            qualityLabel: "Mock quality · ≤128 kbps",
-          });
-        case "repair_runtime":
-          return nowait(undefined);
-
-        // ---- transport ----
-        case "player_toggle_play":
-          return nowait(handleUser({ t: "toggle-play" }));
-        case "player_play":
-          return nowait(handleUser({ t: "play" }));
-        case "player_pause":
-          return nowait(handleUser({ t: "pause" }));
-        case "player_stop":
-          return nowait(handleUser({ t: "stop" }));
-        case "player_next":
-          return nowait(handleUser({ t: "next" }));
-        case "player_previous":
-          return nowait(handleUser({ t: "previous" }));
-        case "player_seek_to":
-          return nowait(handleUser({ t: "seek-to", position: a.position as number }));
-        case "player_seek_by":
-          return nowait(handleUser({ t: "seek-by", delta: a.delta as number }));
-        case "player_set_volume":
-          return nowait(handleUser({ t: "set-volume", volume: a.volume as number }));
-        case "player_toggle_mute":
-          return nowait(handleUser({ t: "toggle-mute" }));
-        case "player_set_speed":
-          return nowait(handleUser({ t: "set-speed", speed: a.speed as number }));
-
-        // ---- queue ----
-        case "queue_play_now":
-          return nowait(handleUser({ t: "play-track", track: a.track as Track }));
-        case "queue_add":
-          return nowait(handleUser({ t: "add", tracks: a.tracks as Track[] }));
-        case "queue_play_next":
-          return nowait(handleUser({ t: "play-next", tracks: a.tracks as Track[] }));
-        case "queue_remove":
-          return nowait(handleUser({ t: "remove", itemId: a.itemId as string }));
-        case "queue_jump_to":
-          return nowait(handleUser({ t: "jump-to", itemId: a.itemId as string }));
-        case "queue_move":
-          return nowait(handleUser({ t: "move", itemId: a.itemId as string, up: a.up as boolean }));
-        case "queue_reorder":
-          return nowait(handleUser({ t: "reorder", from: a.from as number, to: a.to as number }));
-        case "queue_clear_upcoming":
-          return nowait(handleUser({ t: "clear-upcoming" }));
-        case "queue_clear_all":
-          return nowait(handleUser({ t: "clear-all" }));
-        case "queue_set_shuffle":
-          return nowait(handleUser({ t: "set-shuffle", enabled: a.enabled as boolean }));
-        case "queue_set_repeat":
-          return nowait(handleUser({ t: "set-repeat", mode: a.mode as RepeatMode }));
-        case "queue_start":
-          return nowait(
-            handleUser({ t: "start", tracks: a.tracks as Track[], shuffle: a.shuffle as boolean }),
-          );
-        case "queue_save_as_playlist": {
-          const title = String(a.title ?? "").trim();
-          if (!title) throw new Error("title must not be empty");
-          const view = queue.view();
-          const tracks = [view.current?.track, ...view.upcoming.map((u) => u.track)].filter(
-            (t): t is Track => !!t,
-          );
-          const pl = library.createPlaylist(title, null);
-          if (tracks.length) library.addTracks(pl.id, tracks);
-          return nowait(library.snapshot().playlists.find((p) => p.id === pl.id) ?? pl);
-        }
-
-        // ---- search + search history ----
-        case "search": {
-          const query = String(a.query ?? "").trim();
-          if (query.toLowerCase().includes("err")) {
-            throw new Error("Simulated network failure — search is offline.");
-          }
-          const q = query.toLowerCase();
-          const results: SearchResults = {
-            query,
-            tracks: SAMPLE_TRACKS.filter(
-              (t) =>
-                t.title.toLowerCase().includes(q) ||
-                t.artists.some((ar) => ar.name.toLowerCase().includes(q)),
-            ),
-            artists: SAMPLE_ARTISTS.filter((ar) => ar.name.toLowerCase().includes(q)),
-            albums: SAMPLE_ALBUMS.filter(
-              (al) =>
-                al.title.toLowerCase().includes(q) ||
-                al.artists.some((ar) => ar.name.toLowerCase().includes(q)),
-            ),
-            playlists: [],
-          };
-          library.pushSearch(query);
-          return nowait(results);
-        }
-        case "search_history_clear":
-          return nowait(library.clearSearchHistory());
-        case "search_history_remove":
-          return nowait(library.removeSearch(String(a.query ?? "")));
-
-        // ---- favorites ----
-        case "favorites_toggle":
-          return nowait(library.toggleLike(a.track as Track));
-
-        // ---- playlists ----
-        case "playlist_create": {
-          const title = String(a.title ?? "").trim();
-          if (!title) throw new Error("title must not be empty");
-          const pl = library.createPlaylist(title, (a.description as string | null) ?? null);
-          return nowait(library.snapshot().playlists.find((p) => p.id === pl.id) ?? pl);
-        }
-        case "playlist_rename": {
-          const okRenamed = library.renamePlaylist(a.playlistId as string, String(a.title ?? ""));
-          if (!okRenamed) throw new Error("playlist not found");
-          return nowait(undefined);
-        }
-        case "playlist_set_description":
-          return nowait(undefined);
-        case "playlist_delete": {
-          if (!library.deletePlaylist(a.playlistId as string)) throw new Error("playlist not found");
-          return nowait(undefined);
-        }
-        case "playlist_duplicate": {
-          const copy = library.duplicatePlaylist(a.playlistId as string, String(a.title ?? ""));
-          if (!copy) throw new Error("playlist not found");
-          return nowait(copy);
-        }
-        case "playlist_add_tracks": {
-          const okAdded = library.addTracks(a.playlistId as string, a.tracks as Track[]);
-          if (!okAdded) throw new Error("playlist not found");
-          return nowait(undefined);
-        }
-        case "playlist_remove_track": {
-          const okRemoved = library.removeTrack(a.playlistId as string, a.trackId as string);
-          if (!okRemoved) throw new Error("track not in playlist");
-          return nowait(undefined);
-        }
-        case "playlist_reorder_track": {
-          const okMoved = library.reorderTrack(
-            a.playlistId as string,
-            a.from as number,
-            a.to as number,
-          );
-          if (!okMoved) throw new Error("invalid reorder");
-          return nowait(undefined);
-        }
-        case "playlist_tracks":
-          return nowait(library.playlistTracksOf(a.playlistId as string));
-
-        // ---- history ----
-        case "history_clear":
-          return nowait(library.clearHistory());
-        case "history_remove":
-          return nowait(library.removeHistoryEntry(a.entryId as string));
-
-        // ---- lyrics ----
-        case "get_lyrics": {
-          const track = a.track as Track;
-          if (track.id === "sample:3") {
-            return nowait({
-              synced: false,
-              provider: "lrclib",
-              lines: [],
-              instrumental: true,
-            } satisfies Lyrics);
-          }
-          const lrc = SAMPLE_LYRICS[track.id];
-          const parsed = lrc ? parseLrc(lrc) : null;
-          if (!parsed) return nowait(null);
-          return nowait({ ...parsed, instrumental: false });
-        }
-
-        // ---- settings ----
-        case "get_settings":
-          return nowait({ ...settings });
-        case "set_settings":
-          saveSettings(a.settings as Settings);
-          return nowait(undefined);
-
-        default:
-          throw new Error(`mock: unknown command ${String(cmd)}`);
-      }
-    }) as IpcBridge["invoke"],
-    on(event, handler) {
-      let set = listeners.get(event);
-      if (!set) {
-        set = new Set();
-        listeners.set(event, set);
-      }
-      const fn = handler as (payload: unknown) => void;
-      set.add(fn);
-      // Deliver initial state so late subscribers are consistent.
-      if (event === "playback://state") queueMicrotask(() => fn(snapshot()));
-      if (event === "queue://view") queueMicrotask(() => fn(queue.view()));
-      if (event === "library://updated") queueMicrotask(() => fn(library.snapshot()));
-      return () => set.delete(fn);
+  const engine: FakeEngine = {
+    timer: null,
+    state: {
+      status: "idle",
+      positionSecs: 0,
+      durationSecs: null,
+      paused: false,
+      buffering: false,
+      seeking: false,
+      speed: 1,
+      volume: 80,
+      muted: false,
+      epoch: 0,
+      mpvVersion: "mock libmpv",
     },
   };
 
-  // search history removal is handled above via MockLibrary.removeSearch.
+  function emit<E extends EventName>(event: E, payload: EventPayloads[E]): void {
+    for (const h of listeners.get(event) ?? []) {
+      (h as Handler<E>)(payload);
+    }
+  }
 
-  return bridge;
+  function publishState(): void {
+    emit("player://state", { ...engine.state });
+  }
+
+  function tick(): void {
+    const s = engine.state;
+    if (s.status !== "playing") return;
+    s.positionSecs = Math.min(s.positionSecs + 0.25 * s.speed, s.durationSecs ?? s.positionSecs);
+    emit("player://position", {
+      positionSecs: s.positionSecs,
+      durationSecs: s.durationSecs,
+      epoch: s.epoch,
+    });
+    if (s.durationSecs != null && s.positionSecs >= s.durationSecs) {
+      // Natural EOF — same contract as the real engine.
+      stopTimer();
+      s.status = "ended";
+      publishState();
+      emit("player://end", { reason: "eof", error: null, epoch: s.epoch });
+    }
+  }
+
+  function stopTimer(): void {
+    if (engine.timer != null) {
+      clearInterval(engine.timer);
+      engine.timer = null;
+    }
+  }
+
+  function startTimer(): void {
+    stopTimer();
+    engine.timer = setInterval(tick, 250);
+  }
+
+  function invoke<K extends CommandName>(
+    cmd: K,
+    ...args: K extends keyof CommandArgs ? [CommandArgs[K]] : []
+  ): Promise<unknown> {
+    const a = (args[0] ?? {}) as Record<string, unknown>;
+    switch (cmd) {
+      case "player_get_state":
+        return nowait({ ...engine.state });
+      case "player_load": {
+        engine.state.epoch += 1;
+        engine.state.status = "loading";
+        engine.state.positionSecs =
+          typeof a.startAt === "number" ? (a.startAt as number) : 0;
+        engine.state.durationSecs = 180;
+        engine.state.paused = a.startPaused === true;
+        engine.state.status = a.startPaused === true ? "paused" : "playing";
+        publishState();
+        emit("player://position", {
+          positionSecs: engine.state.positionSecs,
+          durationSecs: engine.state.durationSecs,
+          epoch: engine.state.epoch,
+        });
+        if (engine.state.status === "playing") startTimer();
+        return nowait(engine.state.epoch);
+      }
+      case "player_play":
+        engine.state.paused = false;
+        engine.state.status = "playing";
+        publishState();
+        startTimer();
+        return nowait(undefined);
+      case "player_pause":
+        engine.state.paused = true;
+        engine.state.status = "paused";
+        publishState();
+        stopTimer();
+        return nowait(undefined);
+      case "player_toggle_play":
+        if (engine.state.status === "playing") {
+          return invoke("player_pause");
+        }
+        return invoke("player_play");
+      case "player_stop":
+        stopTimer();
+        engine.state.status = "idle";
+        publishState();
+        emit("player://end", { reason: "stop", error: null, epoch: engine.state.epoch });
+        return nowait(undefined);
+      case "player_seek":
+        engine.state.positionSecs = Math.max(0, a.position as number);
+        publishState();
+        emit("player://position", {
+          positionSecs: engine.state.positionSecs,
+          durationSecs: engine.state.durationSecs,
+          epoch: engine.state.epoch,
+        });
+        return nowait(undefined);
+      case "player_set_volume":
+        engine.state.volume = a.volume as number;
+        publishState();
+        return nowait(undefined);
+      case "player_set_mute":
+        engine.state.muted = a.muted as boolean;
+        publishState();
+        return nowait(undefined);
+      case "player_set_speed":
+        engine.state.speed = a.speed as number;
+        publishState();
+        return nowait(undefined);
+      case "resolve_track": {
+        const id = String(a.sourceId ?? "");
+        if (!id) return Promise.reject(new Error("invalid input"));
+        return nowait({
+          url: `mock://media/${id}`,
+          isLocal: false,
+          container: "m4a",
+          bitrateKbps: 128,
+        });
+      }
+      case "get_session":
+        return nowait(sessionStore);
+      case "set_session":
+        sessionStore = a.session as unknown;
+        return nowait(undefined);
+      case "search": {
+        const q = String(a.query ?? "").toLowerCase();
+        const hits = sampleTracks
+          .filter((t) => `${t.title} ${t.artists.map((a) => a.name).join(" ")}`.toLowerCase().includes(q))
+          .slice(0, (a.limit as number) ?? 25);
+        if (hits.length === 0) hits.push(...sampleTracks.slice(0, 4));
+        return nowait({
+          tracks: hits,
+          artists: [],
+          albums: [],
+          playlists: [],
+          query: a.query ?? "",
+        });
+      }
+      case "get_library":
+        return nowait(library.snapshot());
+      case "get_diagnostics":
+        return nowait({
+          runtimeDir: "mock://runtime/bin",
+          libmpvPath: "mock://runtime/bin/libmpv-2.dll",
+          libmpvFound: true,
+          engineRunning: true,
+          mpvVersion: "mock libmpv",
+          ytdlpFound: true,
+          ytdlpPath: "mock://runtime/bin/yt-dlp.exe",
+          qualityLabel: "Mock · ≤128 kbps",
+        });
+      case "repair_runtime":
+        emit("runtime://status", {
+          phase: "ready",
+          message: "Runtime ready (mock).",
+        });
+        return nowait(undefined);
+      case "favorites_toggle":
+        return nowait(library.toggleLike(a.track as Track));
+      case "record_play":
+        library.recordPlay(a.track as Track);
+        return nowait(undefined);
+      case "playlist_create":
+        return nowait(
+          library.createPlaylist(String(a.title), (a.description as string) ?? null),
+        );
+      case "playlist_rename":
+        if (!library.renamePlaylist(String(a.playlistId), String(a.title)))
+          return Promise.reject(new Error("playlist not found"));
+        return nowait(undefined);
+      case "playlist_set_description":
+        return nowait(undefined);
+      case "playlist_delete":
+        if (!library.deletePlaylist(String(a.playlistId)))
+          return Promise.reject(new Error("playlist not found"));
+        return nowait(undefined);
+      case "playlist_duplicate": {
+        const dup = library.duplicatePlaylist(String(a.playlistId), String(a.title));
+        return dup ? nowait(dup) : Promise.reject(new Error("playlist not found"));
+      }
+      case "playlist_add_tracks":
+        library.addTracks(String(a.playlistId), a.tracks as Track[]);
+        return nowait(undefined);
+      case "playlist_remove_track":
+        library.removeTrack(String(a.playlistId), String(a.trackId));
+        return nowait(undefined);
+      case "playlist_reorder_track":
+        library.reorderTrack(String(a.playlistId), a.from as number, a.to as number);
+        return nowait(undefined);
+      case "playlist_tracks":
+        return nowait(library.playlistTracksOf(String(a.playlistId)));
+      case "history_clear":
+        library.clearHistory();
+        return nowait(undefined);
+      case "history_remove":
+        library.removeHistoryEntry(String(a.entryId));
+        return nowait(undefined);
+      case "search_history_clear":
+        library.clearSearchHistory();
+        return nowait(undefined);
+      case "search_history_remove":
+        library.removeSearch(String(a.query));
+        return nowait(undefined);
+      case "get_settings":
+        return nowait(mockSettings);
+      case "set_settings":
+        mockSettings = { ...mockSettings, ...(a.settings as object) };
+        return nowait(undefined);
+      case "get_lyrics": {
+        const track = a.track as Track;
+        const lrc = SAMPLE_LYRICS[track.id] ?? null;
+        if (!lrc) return nowait(null);
+        const lines = lrc
+          .split("\n")
+          .map((line) => {
+            const m = /^\[(\d+):(\d+(?:\.\d+)?)\](.*)$/.exec(line);
+            if (!m) return { timeMs: null, text: line };
+            return {
+              timeMs: (Number(m[1]) * 60 + Number(m[2])) * 1000,
+              text: m[3],
+            };
+          })
+          .filter((l) => l.text.length > 0);
+        return nowait({ synced: lines.some((l) => l.timeMs != null), lines, offsetMs: 0 });
+      }
+      default:
+        return Promise.reject(new Error(`mock: unsupported command ${String(cmd)}`));
+    }
+  }
+
+
+  return {
+    kind: "mock",
+    invoke: invoke as unknown as IpcBridge["invoke"],
+    on(event, handler) {
+      const set = listeners.get(event) ?? new Set();
+      set.add(handler as Handler<never>);
+      listeners.set(event, set);
+      return () => set.delete(handler as Handler<never>);
+    },
+  };
 }
 
-/** Exposed for tests: the mock library directly. */
-export { MockLibrary };
-
-/** Type re-export for the library snapshot used in tests. */
-export type { LibraryData, PlaylistLite };
+function nowait<T>(value: T): Promise<T> {
+  return Promise.resolve(value);
+}

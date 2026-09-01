@@ -130,8 +130,10 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export interface Diagnostics {
   runtimeDir: string | null;
-  mpvPath: string | null;
-  mpvFound: boolean;
+  libmpvPath: string | null;
+  libmpvFound: boolean;
+  engineRunning: boolean;
+  mpvVersion: string | null;
   ytdlpFound: boolean;
   ytdlpPath: string | null;
   qualityLabel: string;

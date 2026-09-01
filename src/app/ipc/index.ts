@@ -45,4 +45,3 @@ export type {
   EventPayloads,
   IpcBridge,
 } from "./contract";
-export { MockLibrary } from "./mock";

@@ -28,7 +28,9 @@ export default defineConfig({
     allowedHosts: true,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**", "**/crates/**"],
+      //    (`**/.melo-runtime/**` is the managed-runtime download cache:
+      //    watching it would restart the dev server mid-bootstrap)
+      ignored: ["**/src-tauri/**", "**/crates/**", "**/.melo-runtime/**"],
     },
   },
   // 4. Env variables starting with TAURI_ are exposed to the frontend

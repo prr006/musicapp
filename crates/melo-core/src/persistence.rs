@@ -3,7 +3,7 @@
 //! Phase 1 persists two JSON documents in the app config dir:
 //!
 //! * `settings.json` — user preferences (theme, quality, behavior, ...)
-//! * `session.json`  — queue + audio state for crash-safe restore
+//! * `session.json`  — queue/session blob owned by the frontend
 //!
 //! The documents are small and written atomically (tmp + rename). Structured
 //! collections that grow unboundedly (library, playlists, history, downloads)
@@ -12,8 +12,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-
-use crate::queue::QueueMachine;
 
 /// Audio quality preference (spec §12). Honest labels — we never claim
 /// lossless unless a source provides it.
@@ -104,41 +102,6 @@ impl Default for Settings {
     }
 }
 
-/// Everything needed to bring a session back after restart.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionSnapshot {
-    pub queue: QueueMachine,
-    pub volume: f64,
-    pub muted: bool,
-    pub speed: f64,
-    /// Position of the current track when the session ended.
-    pub position_secs: f64,
-    pub saved_at_ms: u64,
-}
-
-impl SessionSnapshot {
-    pub fn capture(
-        queue: &QueueMachine,
-        volume: f64,
-        muted: bool,
-        speed: f64,
-        position_secs: f64,
-    ) -> Self {
-        Self {
-            queue: queue.clone(),
-            volume,
-            muted,
-            speed,
-            position_secs,
-            saved_at_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0),
-        }
-    }
-}
-
 /// Load a JSON document; missing file → `None`, corrupt file → `Err`.
 pub fn load_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
     match std::fs::read_to_string(path) {
@@ -211,23 +174,6 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
-    }
-
-    #[test]
-    fn session_roundtrip_preserves_queue_state() {
-        let mut q = QueueMachine::with_seed(7);
-        q.add_tracks((1..=3).map(track).collect(), crate::queue::AddPosition::End);
-        q.advance(true);
-        q.advance(true);
-        let snap = SessionSnapshot::capture(&q, 64.0, false, 1.25, 42.5);
-        let json = serde_json::to_string(&snap).unwrap();
-        let back: SessionSnapshot = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.queue.order_ids(), q.order_ids());
-        assert_eq!(back.queue.cursor_index(), q.cursor_index());
-        assert_eq!(back.volume, 64.0);
-        assert_eq!(back.position_secs, 42.5);
-        assert_eq!(back.speed, 1.25);
-        back.queue.assert_invariants().unwrap();
     }
 
     #[test]
