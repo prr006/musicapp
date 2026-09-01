@@ -1,0 +1,11 @@
+# build output
+build/bin/
+frontend/dist/*
+!frontend/dist/.gitkeep
+frontend/node_modules/
+frontend/wailsjs/
+*.tsbuildinfo
+
+# local tooling
+.env.local
+.env.*.local

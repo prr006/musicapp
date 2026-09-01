@@ -1,0 +1,15 @@
+{
+  "fixed": {
+    "file_version": "3.0.0.0"
+  },
+  "info": {
+    "0000": {
+      "ProductVersion": "3.0.0",
+      "CompanyName": "MELO",
+      "FileDescription": "MELO — lightweight desktop music player",
+      "LegalCopyright": "",
+      "ProductName": "MELO",
+      "Comments": ""
+    }
+  }
+}

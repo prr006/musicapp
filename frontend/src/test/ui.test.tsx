@@ -1,0 +1,126 @@
+import { act, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { TrackRow } from '../components/TrackRow'
+import { SearchView } from '../views/SearchView'
+import { setBackend, type Backend } from '../bridge/backend'
+import type { Track } from '../bridge/types'
+import { defaultSettings } from '../lib/defaults'
+import { useLibraryStore } from '../state/libraryStore'
+import { playback } from '../state/playback'
+import { useSearchStore, search } from '../state/searchStore'
+import { usePlayerStore } from '../state/playerStore'
+
+const song: Track = {
+  id: 'yt:a', sourceId: 'a', source: 'youtube', url: '', title: 'Nightfall', artist: 'Halcyon',
+  album: 'Blue Hours', artwork: 'http://img/a.jpg', duration: 200, explicit: false,
+}
+
+function stub(overrides: Partial<Backend> = {}): Backend {
+  const be = {
+    isNative: false,
+    search: vi.fn(async () => ({ query: 'q', songs: [song], videos: [], albums: [], artists: [], provider: 'ytmusic' })),
+    setLiked: vi.fn(async () => [song]),
+    addSearchTerm: vi.fn(async () => ['q']),
+    getPlayable: vi.fn(async () => ({ trackId: song.id, url: 'http://local/a', mimeType: 'audio/mp4', duration: 200, bitrate: 128, expiresAt: 0 })),
+    getLyrics: vi.fn(async () => ({ trackId: song.id, source: 't', synced: false, lines: [], plain: '', instrumental: false, offset: 0, matchedTitle: '', matchedArtist: '' })),
+    recordPlay: vi.fn(async () => []),
+    saveSession: vi.fn(async () => {}),
+    on: vi.fn(() => () => {}),
+    ...overrides,
+  } as unknown as Backend
+  setBackend(be)
+  return be
+}
+
+beforeEach(() => {
+  useLibraryStore.setState({ ready: true, loadError: null, settings: defaultSettings(), liked: [], playlists: [], history: [], searchHistory: [] })
+  useSearchStore.setState({ query: '', submitted: '', filter: '', status: 'idle', results: null, error: null })
+  usePlayerStore.setState({ queue: [], autoQueue: [], index: -1, current: null, status: 'idle', error: null, shuffle: false, repeat: 'off', volume: 1, muted: false, speed: 1, playingFrom: 'queue', contextLabel: '' })
+})
+
+describe('TrackRow interactions', () => {
+  it('plays with a single click', async () => {
+    stub()
+    const onPlay = vi.fn()
+    render(<TrackRow track={song} index={0} onPlay={onPlay} />)
+    await userEvent.click(screen.getByRole('button', { name: /Play Nightfall/i }))
+    expect(onPlay).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the like button independent from playback', async () => {
+    const be = stub()
+    const onPlay = vi.fn()
+    render(<TrackRow track={song} index={0} onPlay={onPlay} />)
+    await userEvent.click(screen.getByRole('button', { name: /Add to Liked Songs/i }))
+    expect(onPlay).not.toHaveBeenCalled()
+    await waitFor(() => expect(be.setLiked).toHaveBeenCalledWith(song, true))
+  })
+
+  it('keeps add-to-queue independent from playback', async () => {
+    stub()
+    const onPlay = vi.fn()
+    const spy = vi.spyOn(playback, 'addToQueue')
+    render(<TrackRow track={song} index={0} onPlay={onPlay} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Add to queue' }))
+    expect(onPlay).not.toHaveBeenCalled()
+    expect(spy).toHaveBeenCalledWith([song])
+    spy.mockRestore()
+  })
+
+  it('opens the context menu without starting playback', async () => {
+    stub()
+    const onPlay = vi.fn()
+    render(<TrackRow track={song} index={0} onPlay={onPlay} />)
+    await userEvent.click(screen.getByRole('button', { name: 'More options' }))
+    expect(await screen.findByRole('menu')).toBeInTheDocument()
+    expect(onPlay).not.toHaveBeenCalled()
+    expect(screen.getByRole('menuitem', { name: /Play next/i })).toBeInTheDocument()
+  })
+
+  it('is reachable and operable from the keyboard', async () => {
+    stub()
+    const onPlay = vi.fn()
+    render(<TrackRow track={song} index={0} onPlay={onPlay} />)
+    const row = screen.getByRole('button', { name: /Play Nightfall/i })
+    row.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(onPlay).toHaveBeenCalled()
+  })
+})
+
+describe('SearchView states', () => {
+  it('shows the idle prompt, then results', async () => {
+    stub()
+    render(<SearchView />)
+    expect(screen.getByText(/Find something to play/i)).toBeInTheDocument()
+
+    await act(async () => { await search.run('night') })
+    await waitFor(() => expect(screen.getByText('Nightfall')).toBeInTheDocument())
+    expect(screen.getByRole('heading', { name: 'Songs' })).toBeInTheDocument()
+  })
+
+  it('shows a distinct empty state', async () => {
+    stub({ search: vi.fn(async () => ({ query: 'zz', songs: [], videos: [], albums: [], artists: [], provider: 'ytmusic' })) })
+    render(<SearchView />)
+    await act(async () => { await search.run('zz') })
+    await waitFor(() => expect(screen.getByText('No results')).toBeInTheDocument())
+  })
+
+  it('shows an actionable error with retry', async () => {
+    const be = stub({ search: vi.fn().mockRejectedValue(new Error('Couldn’t reach YouTube.')) })
+    render(<SearchView />)
+    await act(async () => { await search.run('boom') })
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/Couldn’t reach YouTube/))
+    await userEvent.click(screen.getByRole('button', { name: /Retry search/i }))
+    expect(be.search).toHaveBeenCalledTimes(2)
+  })
+
+  it('renders real provider artwork', async () => {
+    stub()
+    render(<SearchView />)
+    await act(async () => { await search.run('night') })
+    const img = await screen.findByAltText('Nightfall')
+    expect(img).toHaveAttribute('src', 'http://img/a.jpg')
+  })
+})
