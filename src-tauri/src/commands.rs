@@ -15,6 +15,7 @@ use melo_core::persistence::Settings;
 use melo_core::providers::ProviderError;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::events;
 use crate::libmpv::{self, Player};
 use crate::lrclib::LrclibClient;
 use crate::runtime::RuntimeHandle;

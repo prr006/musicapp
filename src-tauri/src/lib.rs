@@ -36,7 +36,10 @@ pub struct MeloState {
 
 /// Bring the engine up (idempotent). Called at startup when the DLL exists
 /// and again after a successful runtime install/repair.
-pub fn start_engine(app: &tauri::AppHandle, config_dir: &std::path::Path) {
+pub fn start_engine(app: &tauri::AppHandle, _config_dir: &std::path::Path) {
+    // `_config_dir`: the RuntimeHandle already resolved config-relative paths
+    // (its own config_dir); the engine itself only needs the DLL path below.
+    // The parameter stays so call sites keep passing the app config root.
     let state = match app.try_state::<MeloState>() {
         Some(s) => s,
         None => return,
