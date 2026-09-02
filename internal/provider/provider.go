@@ -30,6 +30,7 @@ var (
 
 const (
 	innertubeURL = "https://music.youtube.com/youtubei/v1/search?prettyPrint=false"
+	nextURL      = "https://music.youtube.com/youtubei/v1/next?prettyPrint=false"
 	clientName   = "WEB_REMIX"
 	clientVer    = "1.20240403.01.00"
 	userAgent    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -45,13 +46,16 @@ type Client struct {
 	YTDLP YTDLPRunner
 	// Endpoint is overridable for tests.
 	Endpoint string
+	// NextEndpoint (the watch-next / radio endpoint) is overridable for tests.
+	NextEndpoint string
 }
 
 func New(ytdlp YTDLPRunner) *Client {
 	return &Client{
-		HTTP:     &http.Client{Timeout: 20 * time.Second},
-		YTDLP:    ytdlp,
-		Endpoint: innertubeURL,
+		HTTP:         &http.Client{Timeout: 20 * time.Second},
+		YTDLP:        ytdlp,
+		Endpoint:     innertubeURL,
+		NextEndpoint: nextURL,
 	}
 }
 
@@ -468,6 +472,185 @@ func uniqueStrings(in []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// ---------------- related music (radio) ----------------
+
+// Related returns the provider's dedicated related-music list for one video —
+// the input to MELO's autoplay radio. It deliberately does NOT use ordinary
+// search results: the candidates come from the same "Up next" watch feed
+// YouTube Music itself plays.
+//
+// Source ladder (tagged in the response so the UI can show where the radio
+// came from):
+//  1. "ytmusic-next" — the InnerTube /next watch-next endpoint for the video
+//     (music.youtube.com's own continuation/radio panel).
+//  2. "yt-dlp-mix"   — the YouTube mix playlist RD<videoID>, dumped flat via
+//     yt-dlp. Slower, but stable and still a real related feed.
+//
+// If both fail the error from the primary source is returned; the caller is
+// expected to fall back to its own deterministic metadata queries.
+func (c *Client) Related(ctx context.Context, videoID string) (model.RadioResponse, error) {
+	videoID = strings.TrimSpace(videoID)
+	if videoID == "" {
+		return model.RadioResponse{}, nil
+	}
+	res, err := c.relatedInnerTube(ctx, videoID)
+	if err == nil && len(res.Tracks) > 0 {
+		return res, nil
+	}
+	fallback, ferr := c.relatedYTDLP(ctx, videoID)
+	if ferr == nil && len(fallback.Tracks) > 0 {
+		return fallback, nil
+	}
+	if err != nil {
+		return model.RadioResponse{}, err
+	}
+	if ferr != nil {
+		return model.RadioResponse{}, ferr
+	}
+	return res, nil
+}
+
+func (c *Client) relatedInnerTube(ctx context.Context, videoID string) (model.RadioResponse, error) {
+	out := model.RadioResponse{Source: "ytmusic-next", Tracks: []model.Track{}}
+	payload := map[string]any{
+		"context": map[string]any{
+			"client": map[string]any{
+				"clientName":    clientName,
+				"clientVersion": clientVer,
+				"hl":            "en",
+				"gl":            "US",
+			},
+		},
+		"videoId": videoID,
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.NextEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return out, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Origin", "https://music.youtube.com")
+	req.Header.Set("Referer", "https://music.youtube.com/")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return out, fmt.Errorf("%w: %v", ErrNetwork, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return out, fmt.Errorf("%w (HTTP %d)", ErrProvider, resp.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 12<<20))
+	if err != nil {
+		return out, fmt.Errorf("%w: %v", ErrNetwork, err)
+	}
+	parsed, err := ParseNextResponse(raw)
+	if err != nil {
+		return out, err
+	}
+	return parsed, nil
+}
+
+// relatedYTDLP dumps the seed's YouTube mix (RD<videoID>) as a flat playlist.
+func (c *Client) relatedYTDLP(ctx context.Context, videoID string) (model.RadioResponse, error) {
+	if c.YTDLP == nil {
+		return model.RadioResponse{}, ErrProvider
+	}
+	out, err := c.YTDLP.Run(ctx, "--dump-single-json", "--flat-playlist", "--no-warnings",
+		"https://www.youtube.com/playlist?list=RD"+videoID)
+	if err != nil {
+		return model.RadioResponse{}, fmt.Errorf("%w: %v", ErrNetwork, err)
+	}
+	res, err := ParseYTDLPSearch(out, "")
+	if err != nil {
+		return model.RadioResponse{}, err
+	}
+	return model.RadioResponse{Tracks: res.Songs, Source: "yt-dlp-mix"}, nil
+}
+
+// ParseNextResponse walks an InnerTube /next payload defensively and collects
+// the watch-next queue items ("playlistPanelVideoRenderer"): the panel YouTube
+// Music shows as "Up next" while a song plays.
+func ParseNextResponse(raw []byte) (model.RadioResponse, error) {
+	var root any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return model.RadioResponse{}, fmt.Errorf("%w: malformed JSON", ErrProvider)
+	}
+	items := []map[string]any{}
+	collect(root, "playlistPanelVideoRenderer", &items)
+	out := model.RadioResponse{Source: "ytmusic-next", Tracks: []model.Track{}}
+	seen := map[string]bool{}
+	for _, it := range items {
+		videoID := firstString(it, "videoId")
+		titleRuns := runsOfValue(it["title"])
+		if videoID == "" || len(titleRuns) == 0 || titleRuns[0].Text == "" || seen[videoID] {
+			continue
+		}
+		seen[videoID] = true
+		t := model.Track{
+			ID:       "yt:" + videoID,
+			SourceID: videoID,
+			Source:   "youtube",
+			URL:      "https://music.youtube.com/watch?v=" + videoID,
+			Title:    titleRuns[0].Text,
+			Artwork:  bestThumbnail(it),
+			Explicit: hasExplicitBadge(it),
+		}
+		if length := panelLength(it); length > 0 {
+			t.Duration = length
+		}
+		byline := panelBylineRuns(it)
+		var artistParts []string
+		for _, r := range byline {
+			switch {
+			case durationRe.MatchString(r.Text):
+				if t.Duration == 0 {
+					t.Duration = parseClock(r.Text)
+				}
+			case strings.HasPrefix(r.BrowseID, "MPRE"):
+				if t.Album == "" {
+					t.Album = r.Text
+				}
+			case strings.HasPrefix(r.BrowseID, "UC"):
+				artistParts = append(artistParts, r.Text)
+			}
+		}
+		if len(artistParts) == 0 {
+			// Video-style panels often carry a bare channel name.
+			for _, r := range byline {
+				if isTypeLabel(r.Text) || durationRe.MatchString(r.Text) || viewsRe.MatchString(r.Text) {
+					continue
+				}
+				artistParts = append(artistParts, r.Text)
+				break
+			}
+		}
+		t.Artist = strings.Join(uniqueStrings(artistParts), ", ")
+		out.Tracks = append(out.Tracks, t)
+	}
+	return out, nil
+}
+
+// panelBylineRuns returns the "Artist • Album • duration" runs of a watch-next
+// panel item, preferring the long byline.
+func panelBylineRuns(item map[string]any) []run {
+	if rs := runsOfValue(item["longBylineText"]); len(rs) > 0 {
+		return rs
+	}
+	return runsOfValue(item["shortBylineText"])
+}
+
+func panelLength(item map[string]any) float64 {
+	rs := runsOfValue(item["lengthText"])
+	for _, r := range rs {
+		if durationRe.MatchString(r.Text) {
+			return parseClock(r.Text)
+		}
+	}
+	return 0
 }
 
 // ---------------- yt-dlp fallback ----------------

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -222,4 +223,117 @@ func ids(list []model.Track) []string {
 		out[i] = t.ID
 	}
 	return out
+}
+
+func TestRecordPlayEventUpdatesStatsAndHistory(t *testing.T) {
+	s, _ := newStore(t)
+	a := track("a")
+
+	s.RecordPlayEvent(a, model.PlayStarted)
+	s.RecordPlayEvent(a, model.PlayedSignificantly)
+	s.RecordPlayEvent(a, model.PlayCompleted)
+
+	taste := s.Taste()
+	st := taste.Stats["a"]
+	if st.PlayCount != 1 || st.SignificantCount != 1 || st.CompleteCount != 1 || st.SkipCount != 0 {
+		t.Fatalf("unexpected stats: %+v", st)
+	}
+	if st.LastPlayedAt == 0 {
+		t.Fatal("expected LastPlayedAt to be recorded")
+	}
+	if len(taste.History) != 1 || taste.History[0].Track.ID != "a" {
+		t.Fatalf("only play_started should touch history: %+v", taste.History)
+	}
+
+	// A skip is a different event, not a new history row.
+	s.RecordPlayEvent(a, model.PlaySkipped)
+	taste = s.Taste()
+	if taste.Stats["a"].SkipCount != 1 {
+		t.Fatalf("expected skip to be counted: %+v", taste.Stats["a"])
+	}
+	if len(taste.History) != 1 {
+		t.Fatalf("skip must not add history rows: %+v", taste.History)
+	}
+
+	// Unknown events are ignored rather than corrupting state.
+	s.RecordPlayEvent(a, "something_new")
+	if got := s.Taste().Stats["a"]; got.PlayCount != 1 {
+		t.Fatalf("unknown event changed stats: %+v", got)
+	}
+}
+
+func TestRecordPlayEventStillCollapsesRepeats(t *testing.T) {
+	s, _ := newStore(t)
+	s.RecordPlayEvent(track("a"), model.PlayStarted)
+	s.RecordPlayEvent(track("a"), model.PlayStarted)
+	taste := s.Taste()
+	if len(taste.History) != 1 {
+		t.Fatalf("expected collapsed history, got %d rows", len(taste.History))
+	}
+	if taste.Stats["a"].PlayCount != 2 {
+		t.Fatalf("stats should still count every start: %+v", taste.Stats["a"])
+	}
+}
+
+func TestSetDisliked(t *testing.T) {
+	s, _ := newStore(t)
+	s.SetDisliked(track("nope"), true)
+	s.SetDisliked(track("nope"), true)
+	if len(s.State().Disliked) != 1 || !s.IsDisliked("nope") {
+		t.Fatalf("expected idempotent dislike: %+v", s.State().Disliked)
+	}
+	// Dislike is independent from likes until the UI reconciles them.
+	if s.IsLiked("nope") {
+		t.Fatal("dislike must not imply like")
+	}
+	s.SetDisliked(track("nope"), false)
+	if s.IsDisliked("nope") || len(s.State().Disliked) != 0 {
+		t.Fatal("expected dislike to clear")
+	}
+}
+
+func TestStatsStayBounded(t *testing.T) {
+	s, _ := newStore(t)
+	for i := 0; i < maxStats+80; i++ {
+		s.RecordPlayEvent(model.Track{ID: fmt.Sprintf("t%d", i), Title: "T"}, model.PlayStarted)
+	}
+	if got := len(s.State().Stats); got > maxStats {
+		t.Fatalf("stats exceeded the bound: %d", got)
+	}
+	if _, ok := s.State().Stats[fmt.Sprintf("t%d", 0)]; ok {
+		t.Fatal("the oldest entry should have been evicted")
+	}
+	// The most recent entries survive.
+	if _, ok := s.State().Stats[fmt.Sprintf("t%d", maxStats+79)]; !ok {
+		t.Fatal("the newest entry should have been kept")
+	}
+}
+
+func TestTastePersistsAcrossRestart(t *testing.T) {
+	s, dir := newStore(t)
+	s.RecordPlayEvent(track("a"), model.PlayStarted)
+	s.RecordPlayEvent(track("a"), model.PlayedSignificantly)
+	s.RecordPlayEvent(track("a"), model.PlayCompleted)
+	s.RecordPlayEvent(track("b"), model.PlayStarted)
+	s.RecordPlayEvent(track("b"), model.PlaySkipped)
+	s.SetDisliked(track("c"), true)
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+	taste := reopened.Taste()
+	if len(taste.History) != 2 {
+		t.Fatalf("history did not survive: %+v", taste.History)
+	}
+	if taste.Stats["a"].CompleteCount != 1 || taste.Stats["b"].SkipCount != 1 {
+		t.Fatalf("stats did not survive: %+v", taste.Stats)
+	}
+	if len(taste.Disliked) != 1 || taste.Disliked[0].ID != "c" {
+		t.Fatalf("dislikes did not survive: %+v", taste.Disliked)
+	}
 }

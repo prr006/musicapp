@@ -20,6 +20,8 @@ export interface PlayerState {
   /** Source of the current playback: the explicit queue or autoplay. */
   playingFrom: 'queue' | 'autoplay'
   contextLabel: string
+  /** Which pipeline produced the current autoplay batch (radio transparency). */
+  radioSource: string
 }
 
 export const usePlayerStore = create<PlayerState>(() => ({
@@ -36,6 +38,7 @@ export const usePlayerStore = create<PlayerState>(() => ({
   speed: 1,
   playingFrom: 'queue',
   contextLabel: '',
+  radioSource: '',
 }))
 
 export const playerState = () => usePlayerStore.getState()

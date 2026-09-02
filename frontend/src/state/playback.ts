@@ -14,7 +14,11 @@
 import { PlaybackEngine } from '../audio/engine'
 import { backend } from '../bridge/backend'
 import type { RepeatMode, Track } from '../bridge/types'
-import { normalizeTitle, pickDiscoveryCandidates, type DiscoveryBlock } from '../lib/discovery'
+import {
+  buildRadioBatch, canonicalSongKey, radioSeedFromTrack, splitArtists,
+  type RadioContext, type RadioKind, type RadioSeed,
+} from '../lib/radio'
+import { tasteSnapshot, type TasteSnapshot } from '../lib/taste'
 import { dedupeTracks, moveItem, shuffleUpcoming } from '../lib/queue'
 import { library, useLibraryStore } from './libraryStore'
 import { lyrics } from './lyricsStore'
@@ -33,24 +37,49 @@ const PREVIOUS_RESTART_THRESHOLD = 3
 
 /** Discovery (autoplay) keeps at least this many upcoming tracks ready. */
 const DISCOVERY_TARGET = 8
-/** Recent-history window used to avoid replaying songs the user just heard. */
-const DISCOVERY_RECENT_HISTORY = 50
+/** Hard bound on the autoplay list: radio stays lightweight and fresh. */
+const DISCOVERY_MAX = 20
 /** Upper bound for how many candidates one discovery fetch may add. */
 const DISCOVERY_BATCH = 20
+/** A listen counts as "significant" after this many seconds (or half the song). */
+const SIGNIFICANT_LISTEN_SECONDS = 30
+
+/** Seconds after which a listen counts as significant: 30s or half the song. */
+function significantAt(track: Track): number {
+  if (track.duration > 0) return Math.min(SIGNIFICANT_LISTEN_SECONDS, track.duration / 2)
+  return SIGNIFICANT_LISTEN_SECONDS
+}
 
 export class PlaybackController {
   readonly engine: PlaybackEngine
   private sessionTimer: ReturnType<typeof setTimeout> | null = null
   private recordedForToken = new Set<number>()
+  /** Tokens whose listen crossed the "significant" threshold. */
+  private significantForToken = new Set<number>()
+  /** Tokens that reached the natural end (or were recorded as skipped). */
+  private concludedForToken = new Set<number>()
   private discoveryGen = 0
   private discoveryPromise: Promise<void> | null = null
   private discoveryWarned = false
   /** Engine generation that has already kicked off a discovery refill. */
   private discoveryRefillGen = 0
+  /** An explicit artist/album seed from Start Radio; holds until playback moves on. */
+  private explicitSeed: RadioSeed | null = null
 
   constructor(engine = new PlaybackEngine()) {
     this.engine = engine
     this.engine.subscribe((event) => this.onEngineEvent(event))
+    // Disliked tracks disappear from the current autoplay list immediately;
+    // the next batch also excludes them via the ranking context.
+    useLibraryStore.subscribe((state, prev) => {
+      if (state.disliked === prev.disliked) return
+      const disliked = new Set(state.disliked.map((t) => t.id))
+      const auto = playerState().autoQueue
+      if (auto.some((t) => disliked.has(t.id))) {
+        setPlayerState({ autoQueue: auto.filter((t) => !disliked.has(t.id)) })
+        this.queueSessionSave()
+      }
+    })
   }
 
   // ---------- engine events ----------
@@ -77,6 +106,7 @@ export class PlaybackController {
       }
       case 'position':
         positionChannel.setPosition(event.position)
+        this.checkSignificant()
         break
       case 'ended':
         this.handleEnded(event.trackId)
@@ -91,6 +121,7 @@ export class PlaybackController {
   private handleEnded(trackId: string): void {
     const state = playerState()
     if (!state.current || state.current.id !== trackId) return
+    this.recordConclusion('completed')
     if (state.repeat === 'one') {
       positionChannel.setPosition(0)
       this.engine.restart()
@@ -101,11 +132,15 @@ export class PlaybackController {
 
   /** Tray tooltip / notification mirroring. Best-effort and never blocking. */
   private mirrorToDesktop(title: string, artist: string): void {
-    void backend()
-      .setNowPlaying(title, artist)
-      .catch(() => {
-        /* desktop mirroring is cosmetic; a failure must not affect playback */
-      })
+    try {
+      void backend()
+        .setNowPlaying(title, artist)
+        .catch(() => {
+          /* desktop mirroring is cosmetic; a failure must not affect playback */
+        })
+    } catch {
+      /* same guarantee for backends that are not fully wired (tests) */
+    }
   }
 
   private markPlayed(): void {
@@ -114,9 +149,51 @@ export class PlaybackController {
     const current = playerState().current
     if (!current) return
     this.recordedForToken.add(token)
-    void library.recordPlay(current).catch(() => {
+    void library.recordPlayEvent(current, 'play_started').catch(() => {
       /* history is best-effort; the error surfaces through the store */
     })
+  }
+
+  /**
+   * PLAYED_SIGNIFICANTLY: the listen crossed the "real listen" threshold
+   * (30 seconds or half the song, whichever comes first). Recorded at most
+   * once per track — never per position tick.
+   */
+  private checkSignificant(): void {
+    const token = this.engine.currentGeneration
+    if (this.significantForToken.has(token)) return
+    if (!this.recordedForToken.has(token)) return // never started playing
+    const current = playerState().current
+    if (!current) return
+    if (positionChannel.getPosition() < significantAt(current)) return
+    this.significantForToken.add(token)
+    void library.recordPlayEvent(current, 'played_significantly').catch(() => {})
+  }
+
+  /**
+   * COMPLETED (natural end) or SKIPPED (manual next before a real listen).
+   * Recorded at most once per track; both count as "concluded".
+   */
+  private recordConclusion(event: 'completed' | 'skipped'): void {
+    const token = this.engine.currentGeneration
+    if (this.concludedForToken.has(token)) return
+    if (!this.recordedForToken.has(token)) return // nothing was really played
+    this.concludedForToken.add(token)
+    const current = playerState().current
+    if (!current) return
+    void library.recordPlayEvent(current, event).catch(() => {})
+  }
+
+  /**
+   * A manual "next" before the significant threshold is a skip — a weaker
+   * negative signal than an explicit dislike (see the radio ranker).
+   */
+  private recordSkipIfEarly(): void {
+    const current = playerState().current
+    if (!current) return
+    if (positionChannel.getPosition() < significantAt(current)) {
+      this.recordConclusion('skipped')
+    }
   }
 
   // ---------- transport ----------
@@ -131,6 +208,7 @@ export class PlaybackController {
     // Any explicit choice supersedes discovery: stale continuations are dropped
     // and rebuilt from the new listening context as needed.
     this.resetDiscovery()
+    this.explicitSeed = null
     const tracks = context.tracks ? dedupeTracks(context.tracks) : null
     let queue: Track[]
     let index: number
@@ -164,10 +242,36 @@ export class PlaybackController {
     await this.start(track)
   }
 
+  /**
+   * START RADIO: replaces the session with the selected track as the radio
+   * seed and builds a fresh autoplay queue around it. Sibling search results
+   * are never enqueued — the queue contains exactly the chosen track, and
+   * everything after it is MELO-generated.
+   *
+   * `kind` anchors the first batch tighter: 'artist'/'album' seeds keep the
+   * radio on the artist/album the user started from until playback drifts on.
+   */
+  async startRadio(track: Track, opts: { kind?: RadioKind; label?: string } = {}): Promise<void> {
+    const kind = opts.kind ?? 'track'
+    this.resetDiscovery()
+    this.explicitSeed = radioSeedFromTrack(track, kind)
+    const label =
+      opts.label ??
+      (kind === 'artist'
+        ? `Artist radio · ${track.artist.split(',')[0]?.trim() || track.artist}`
+        : kind === 'album' && track.album
+          ? `Album radio · ${track.album}`
+          : `Radio · ${track.title}`)
+    setPlayerState({ queue: [track], index: 0, contextLabel: label, playingFrom: 'queue' })
+    await this.start(track)
+  }
+
   /** Starts a specific track: clears old state first, then resolves. */
   private async start(track: Track, startAt = 0): Promise<void> {
     const token = this.engine.beginLoad(track.id)
     this.recordedForToken.clear()
+    this.significantForToken.clear()
+    this.concludedForToken.clear()
     this.discoveryRefillGen = 0
     positionChannel.reset()
     positionChannel.setDuration(track.duration || 0)
@@ -214,6 +318,8 @@ export class PlaybackController {
   stop(): void {
     this.engine.stop()
     this.recordedForToken.clear()
+    this.significantForToken.clear()
+    this.concludedForToken.clear()
     positionChannel.reset()
     setPlayerState({ current: null, status: 'idle', error: null, index: -1 })
     lyrics.clear()
@@ -222,6 +328,7 @@ export class PlaybackController {
   }
 
   async next(): Promise<void> {
+    this.recordSkipIfEarly()
     await this.advance(1, { auto: false })
   }
 
@@ -452,14 +559,14 @@ export class PlaybackController {
     await this.play(list[0], { tracks: list, index: 0, label })
   }
 
-  // ---------- autoplay / discovery ----------
+  // ---------- autoplay / radio ----------
 
   /**
    * Keeps several upcoming discovery tracks ahead of the listener. It is the
    * background continuation that makes playback endless: when the discovery
-   * count drops below DISCOVERY_TARGET it fetches more, anchored on the current
-   * track (artist first, then the normalized title) so the radio drifts as
-   * playback moves on — it never reuses the original search-results array.
+   * count drops below DISCOVERY_TARGET it fetches more, anchored on the track
+   * that is currently playing — never on a search-results list — so the radio
+   * drifts naturally as playback moves on.
    *
    * Concurrency and staleness are guarded: only one fetch runs at a time
    * (discoveryPromise) and every response is validated against discoveryGen, so
@@ -480,59 +587,128 @@ export class PlaybackController {
     return promise
   }
 
-  private discoveryBlock(): DiscoveryBlock {
+  /**
+   * The seed the current radio is built around: an explicit artist/album seed
+   * while its own track is still playing, otherwise the current track itself.
+   */
+  private currentSeed(): RadioSeed | null {
+    const current = playerState().current
+    if (!current) return null
+    if (this.explicitSeed && this.explicitSeed.id === current.id) return this.explicitSeed
+    return radioSeedFromTrack(current)
+  }
+
+  /**
+   * Collects everything the ranker needs to judge a candidate: what is already
+   * playing/queued (hard exclusions) and the local taste snapshot (positive and
+   * negative signals). Pure data assembly — all decisions live in lib/radio.
+   */
+  private radioContext(seed: RadioSeed, snapshot: TasteSnapshot): RadioContext {
     const state = playerState()
-    const ids = new Set<string>()
-    const titles = new Set<string>()
-    const addId = (id?: string) => {
-      if (id) ids.add(id)
+    const lib = useLibraryStore.getState()
+    const blockedIds = new Set<string>()
+    const blockedKeys = new Set<string>()
+    if (state.current) {
+      blockedIds.add(state.current.id)
+      blockedKeys.add(canonicalSongKey(state.current))
     }
-    const addTitle = (title?: string) => {
-      const key = normalizeTitle(title ?? '')
-      if (key) titles.add(key)
+    for (const t of [...state.queue, ...state.autoQueue]) {
+      blockedIds.add(t.id)
+      blockedKeys.add(canonicalSongKey(t))
     }
-    addId(state.current?.id)
-    addTitle(state.current?.title)
-    for (const t of state.queue) {
-      addId(t.id)
-      addTitle(t.title)
+    const likedArtistKeys = new Set<string>()
+    for (const t of lib.liked) {
+      const artist = splitArtists(t.artist)[0]
+      if (artist) likedArtistKeys.add(artist)
     }
-    for (const t of state.autoQueue) {
-      addId(t.id)
-      addTitle(t.title)
+    return {
+      seed,
+      blockedIds,
+      blockedKeys,
+      dislikedIds: new Set(lib.disliked.map((t) => t.id)),
+      veryRecentIds: snapshot.recentIds,
+      heardIds: snapshot.heardIds,
+      recentArtistKeys: snapshot.recentArtistKeys,
+      likedIds: new Set(lib.liked.map((t) => t.id)),
+      likedArtistKeys,
+      artistPlays: snapshot.artistPlays,
+      netSkips: snapshot.netSkips,
     }
-    for (const h of useLibraryStore.getState().history.slice(0, DISCOVERY_RECENT_HISTORY)) {
-      addId(h.track.id)
-    }
-    return { ids, titles }
+  }
+
+  /**
+   * Deterministic fallback queries built only from the seed's own metadata.
+   * These run exclusively when the provider's dedicated related feed is
+   * unavailable or empty — they are artist/album context queries, never a
+   * generic "radio" search.
+   */
+  private radioFallbackQueries(seed: RadioSeed): string[] {
+    const queries: string[] = []
+    if (seed.rawArtist) queries.push(seed.rawArtist)
+    if (seed.album && seed.rawArtist) queries.push(`${seed.rawArtist} ${seed.album}`)
+    if (seed.kind === 'track' && seed.rawArtist && seed.title) queries.push(`${seed.rawArtist} ${seed.title}`)
+    return [...new Set(queries.filter((q) => q.trim().length > 1))]
   }
 
   private async doDiscoveryFetch(): Promise<void> {
     const gen = ++this.discoveryGen
-    const current = playerState().current
-    if (!current) return
-    const artist = (current.artist || '').split(',')[0].trim()
-    const title = current.title.trim()
+    const seed = this.currentSeed()
+    if (!seed) return
 
-    // 1) related discovery from the provider, seeded by the current artist,
-    // 2) a bounded contextual search on the normalized title as fallback.
-    let combined: Track[] = []
+    // ---- candidate sources, in priority order ----
+    //
+    // 1) The provider's dedicated related feed: the same "Up next" watch
+    //    continuation YouTube Music itself plays (Go: InnerTube /next, with a
+    //    yt-dlp mix fallback). This is the real radio endpoint — plain search
+    //    results are never used while it answers.
+    let candidates: Track[] = []
+    let source = ''
     let failed = false
-    for (const query of [artist, title].filter(Boolean)) {
-      if (combined.length >= DISCOVERY_BATCH) break
-      try {
-        const res = await backend().search(query, 'songs')
-        if (gen !== this.discoveryGen) return // superseded by a newer request
-        combined = dedupeTracks([...combined, ...(res.songs ?? []), ...(res.videos ?? [])])
-      } catch {
-        failed = true
+    try {
+      const res = await backend().relatedTracks(playerState().current!)
+      if (gen !== this.discoveryGen) return // superseded by a newer request
+      candidates = res?.tracks ?? []
+      source = res?.source ?? ''
+    } catch {
+      failed = true
+    }
+
+    // 2) Deterministic metadata fallback (only when the related feed is
+    //    unavailable or empty): queries constructed from the seed's own
+    //    artist/album/title metadata — artist results and album context, not
+    //    a generic "radio" search.
+    if (candidates.length === 0) {
+      for (const query of this.radioFallbackQueries(seed)) {
+        if (candidates.length >= DISCOVERY_BATCH) break
+        try {
+          const res = await backend().search(query, 'songs')
+          if (gen !== this.discoveryGen) return
+          candidates = dedupeTracks([...candidates, ...(res.songs ?? []), ...(res.videos ?? [])])
+          source = 'seed-metadata'
+        } catch {
+          failed = true
+        }
       }
     }
     if (gen !== this.discoveryGen) return
 
-    const fresh = pickDiscoveryCandidates(combined, this.discoveryBlock(), DISCOVERY_BATCH)
+    // ---- rank → dedupe → diversify → append, bounded ----
+    // The taste snapshot is taken at decision time (after the awaits) so the
+    // play event of the track that just started is already part of it.
+    const lib = useLibraryStore.getState()
+    const snapshot = tasteSnapshot(lib.history, lib.stats)
+    const auto = playerState().autoQueue
+    const room = Math.max(0, DISCOVERY_MAX - auto.length)
+    if (room === 0) return
+    const fresh = buildRadioBatch(candidates, this.radioContext(seed, snapshot), {
+      limit: Math.min(DISCOVERY_BATCH, room),
+      queueTailArtists: auto.slice(-4).map((t) => splitArtists(t.artist)[0] ?? ''),
+    })
     if (fresh.length > 0) {
-      setPlayerState({ autoQueue: dedupeTracks([...playerState().autoQueue, ...fresh]) })
+      setPlayerState({
+        autoQueue: dedupeTracks([...playerState().autoQueue, ...fresh]).slice(0, DISCOVERY_MAX),
+        radioSource: source || playerState().radioSource,
+      })
       this.discoveryWarned = false
     } else if (failed) {
       // Non-destructive: keep what we have and warn once; the next refill retries.
@@ -552,7 +728,7 @@ export class PlaybackController {
     this.discoveryGen += 1
     this.discoveryWarned = false
     this.discoveryPromise = null
-    setPlayerState({ autoQueue: [] })
+    setPlayerState({ autoQueue: [], radioSource: '' })
   }
 
   /** Called when the autoplay setting changes. */

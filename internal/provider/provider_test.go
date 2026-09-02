@@ -214,3 +214,135 @@ func TestEmptyQueryShortCircuits(t *testing.T) {
 		t.Fatalf("expected empty response, got %+v %v", res, err)
 	}
 }
+
+// nextFixture mirrors the YouTube Music /next watch payload: a queue panel of
+// playlistPanelVideoRenderer items ("Up next"), including the seed echo.
+const nextFixture = `{
+ "contents": {"singleColumnMusicWatchNextResultsRenderer": {"playlist": {"playlist": {"contents": [
+  {"playlistPanelVideoRenderer": {
+    "videoId": "seed111",
+    "title": {"runs": [{"text": "Nightfall"}]},
+    "longBylineText": {"runs": [{"text": "Halcyon"}]},
+    "lengthText": {"runs": [{"text": "3:42"}]}
+  }},
+  {"playlistPanelVideoRenderer": {
+    "videoId": "rel222",
+    "title": {"runs": [{"text": "Paper Lanterns"}]},
+    "longBylineText": {"runs": [
+      {"text": "Halcyon", "navigationEndpoint": {"browseEndpoint": {"browseId": "UC12345"}}},
+      {"text": " • "},
+      {"text": "Blue Hours", "navigationEndpoint": {"browseEndpoint": {"browseId": "MPREb_9999"}}},
+      {"text": " • "},
+      {"text": "2:35"}
+    ]},
+    "lengthText": {"runs": [{"text": "2:35"}]},
+    "thumbnail": {"thumbnails": [{"url": "https://i.ytimg.com/vi/rel222/mqdefault.jpg", "width": 320}]}
+  }},
+  {"playlistPanelVideoRenderer": {
+    "videoId": "rel333",
+    "title": {"runs": [{"text": "Live at Dusk"}]},
+    "shortBylineText": {"runs": [
+      {"text": "Halcyon - Topic"},
+      {"text": " • "},
+      {"text": "1:02:05"}
+    ]},
+    "lengthText": {"runs": [{"text": "1:02:05"}]}
+  }}
+ ]}}}}
+}`
+
+func TestParseNextResponse(t *testing.T) {
+	res, err := ParseNextResponse([]byte(nextFixture))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if res.Source != "ytmusic-next" {
+		t.Fatalf("expected ytmusic-next source tag, got %q", res.Source)
+	}
+	if len(res.Tracks) != 3 {
+		t.Fatalf("expected 3 panel tracks, got %d", len(res.Tracks))
+	}
+	second := res.Tracks[1]
+	if second.ID != "yt:rel222" || second.Title != "Paper Lanterns" {
+		t.Fatalf("bad identity: %+v", second)
+	}
+	if second.Artist != "Halcyon" || second.Album != "Blue Hours" {
+		t.Fatalf("bad metadata: %+v", second)
+	}
+	if second.Duration != 155 {
+		t.Fatalf("expected 155s, got %v", second.Duration)
+	}
+	if !strings.Contains(second.Artwork, "mqdefault") {
+		t.Fatalf("expected real artwork, got %q", second.Artwork)
+	}
+	third := res.Tracks[2]
+	if third.Artist != "Halcyon - Topic" || third.Duration != 3725 {
+		t.Fatalf("expected video-style fallbacks: %+v", third)
+	}
+}
+
+func TestRelatedInnerTubeSuccessAndSeedEcho(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["videoId"] != "seed111" {
+			t.Errorf("video id not forwarded: %+v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(nextFixture))
+	}))
+	defer srv.Close()
+	c := New(&fakeRunner{})
+	c.NextEndpoint = srv.URL
+	res, err := c.Related(context.Background(), "seed111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Source != "ytmusic-next" || len(res.Tracks) != 3 {
+		t.Fatalf("unexpected radio response: %+v", res)
+	}
+}
+
+func TestRelatedFallsBackToMixPlaylist(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	raw, _ := json.Marshal(map[string]any{"entries": []map[string]any{
+		{"id": "mix1", "title": "Mix Track", "uploader": "Other Artist", "duration": 180.0},
+		{"id": "mix2", "title": "Mix Track Two", "uploader": "Someone", "duration": 200.0},
+	}})
+	runner := &fakeRunner{out: raw}
+	c := New(runner)
+	c.NextEndpoint = srv.URL
+
+	res, err := c.Related(context.Background(), "seed111")
+	if err != nil {
+		t.Fatalf("expected mix fallback to succeed: %v", err)
+	}
+	if res.Source != "yt-dlp-mix" || len(res.Tracks) != 2 {
+		t.Fatalf("unexpected mix response: %+v", res)
+	}
+	if res.Tracks[0].SourceID != "mix1" {
+		t.Fatalf("bad mix track: %+v", res.Tracks[0])
+	}
+	wantList := "https://www.youtube.com/playlist?list=RDseed111"
+	found := false
+	for _, arg := range runner.got {
+		if arg == wantList {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the seed mix playlist %q, got %v", wantList, runner.got)
+	}
+}
+
+func TestRelatedErrorsWhenAllSourcesFail(t *testing.T) {
+	c := New(&fakeRunner{err: context.DeadlineExceeded})
+	c.NextEndpoint = "http://127.0.0.1:1/none"
+	if _, err := c.Related(context.Background(), "seed111"); err == nil {
+		t.Fatal("expected an error when both radio sources fail")
+	}
+}

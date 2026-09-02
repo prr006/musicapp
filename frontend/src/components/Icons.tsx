@@ -107,6 +107,21 @@ export const HeartIcon = ({ filled, ...p }: Props & { filled?: boolean }) => (
   </Icon>
 )
 
+export const ThumbDownIcon = ({ filled, ...p }: Props & { filled?: boolean }) => (
+  <Icon {...p} fill={filled ? 'currentColor' : 'none'}>
+    <path d="M7 4.5h9.4a1.6 1.6 0 0 1 1.55 1.2l1.5 6.1a1.6 1.6 0 0 1-1.56 2H14l.7 3.3a1.9 1.9 0 0 1-3.7.7L9.4 14H7a1.6 1.6 0 0 1-1.6-1.6V6.1A1.6 1.6 0 0 1 7 4.5" />
+    <path d="M7 4.5A1.6 1.6 0 0 0 5.4 6.1v6.3A1.6 1.6 0 0 0 7 14h2.4" />
+  </Icon>
+)
+
+export const RadioIcon = (p: Props) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="2.2" />
+    <path d="M8 8a5.6 5.6 0 0 0 0 8M16 8a5.6 5.6 0 0 1 0 8" />
+    <path d="M5.2 5.2a9.6 9.6 0 0 0 0 13.6M18.8 5.2a9.6 9.6 0 0 1 0 13.6" />
+  </Icon>
+)
+
 export const VolumeIcon = ({ level = 2, ...p }: Props & { level?: 0 | 1 | 2 }) => (
   <Icon {...p}>
     <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z" />

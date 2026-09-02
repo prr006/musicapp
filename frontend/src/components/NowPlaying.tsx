@@ -3,7 +3,7 @@ import { library, useLibraryStore } from '../state/libraryStore'
 import { playback, usePlayer } from '../state/playback'
 import { ui, useUIStore } from '../state/uiStore'
 import { Artwork } from './Artwork'
-import { ChevronDown, HeartIcon, LyricsIcon, QueueIcon, SpeedIcon } from './Icons'
+import { ChevronDown, HeartIcon, LyricsIcon, QueueIcon, SpeedIcon, ThumbDownIcon } from './Icons'
 import { LyricsPane } from './LyricsPane'
 import { ProgressRow, TransportButtons, VolumeControl } from './MiniPlayer'
 
@@ -15,6 +15,7 @@ export function NowPlaying() {
   const lyricsOpen = useUIStore((s) => s.lyricsOpen)
   const queueOpen = useUIStore((s) => s.queueOpen)
   const liked = useLibraryStore((s) => (current ? s.liked.some((t) => t.id === current.id) : false))
+  const disliked = useLibraryStore((s) => (current ? s.disliked.some((t) => t.id === current.id) : false))
   const showLyrics = useLibraryStore((s) => s.settings.showLyrics)
 
   const withLyrics = lyricsOpen && showLyrics
@@ -103,6 +104,16 @@ export function NowPlaying() {
                     type="button"
                   >
                     <HeartIcon size={19} filled={liked} />
+                  </button>
+                  <button
+                    className={`icon-btn ${disliked ? 'active' : ''}`}
+                    onClick={() => void library.setDisliked(current, !disliked)}
+                    aria-label={disliked ? 'Allow recommendations again' : 'Don’t recommend this song'}
+                    aria-pressed={disliked}
+                    title={disliked ? 'Allow recommendations again' : 'Don’t recommend this song'}
+                    type="button"
+                  >
+                    <ThumbDownIcon size={18} filled={disliked} />
                   </button>
                   <TransportButtons />
                   <div className="row" style={{ position: 'relative' }}>

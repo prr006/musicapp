@@ -7,19 +7,24 @@
  * VITE_MELO_MOCK so production builds can never silently fall back to it.
  */
 import type {
-  AppState, Diagnostics, LyricsQuery, LyricsResult, PlayableSource,
-  Playlist, PlayRecord, ResolverStatus, SearchResponse, Session, Settings, Track,
+  AppState, Diagnostics, LyricsQuery, LyricsResult, PlayableSource, PlayEvent,
+  Playlist, PlayRecord, RadioResponse, ResolverStatus, SearchResponse, Session, Settings, Taste, Track,
 } from './types'
 
 export interface Backend {
   getState(): Promise<AppState>
   getDiagnostics(): Promise<Diagnostics>
   search(query: string, filter: string): Promise<SearchResponse>
+  /** Dedicated related-music source for autoplay radio (never plain search). */
+  relatedTracks(track: Track): Promise<RadioResponse>
   getPlayable(track: Track): Promise<PlayableSource>
   getLyrics(query: LyricsQuery): Promise<LyricsResult>
   saveSettings(settings: Settings): Promise<Settings>
   setLiked(track: Track, liked: boolean): Promise<Track[]>
+  setDisliked(track: Track, disliked: boolean): Promise<Taste>
   recordPlay(track: Track): Promise<PlayRecord[]>
+  recordPlayEvent(track: Track, event: PlayEvent): Promise<Taste>
+  getTaste(): Promise<Taste>
   clearHistory(): Promise<void>
   addSearchTerm(term: string): Promise<string[]>
   removeSearchTerm(term: string): Promise<string[]>
@@ -72,11 +77,15 @@ const nativeBackend: Backend = {
   getState: () => call('GetState'),
   getDiagnostics: () => call('GetDiagnostics'),
   search: (query, filter) => call('Search', query, filter),
+  relatedTracks: (track) => call('RelatedTracks', track),
   getPlayable: (track) => call('GetPlayable', track),
   getLyrics: (query) => call('GetLyrics', query),
   saveSettings: (settings) => call('SaveSettings', settings),
   setLiked: (track, liked) => call('SetLiked', track, liked),
+  setDisliked: (track, disliked) => call('SetDisliked', track, disliked),
   recordPlay: (track) => call('RecordPlay', track),
+  recordPlayEvent: (track, event) => call('RecordPlayEvent', track, event),
+  getTaste: () => call('GetTaste'),
   clearHistory: () => call('ClearHistory'),
   addSearchTerm: (term) => call('AddSearchTerm', term),
   removeSearchTerm: (term) => call('RemoveSearchTerm', term),
@@ -139,11 +148,15 @@ const unavailableBackend: Backend = {
   getState: backendDown('Couldn\u2019t load your library'),
   getDiagnostics: backendDown('Diagnostics unavailable'),
   search: backendDown('Search is unavailable'),
+  relatedTracks: backendDown('Radio is unavailable'),
   getPlayable: backendDown('Playback engine unavailable'),
   getLyrics: backendDown('Lyrics unavailable'),
   saveSettings: backendDown('Couldn\u2019t save settings'),
   setLiked: backendDown('Couldn\u2019t update your library'),
+  setDisliked: backendDown('Couldn\u2019t update your library'),
   recordPlay: backendDown('Couldn\u2019t record playback'),
+  recordPlayEvent: backendDown('Couldn\u2019t record playback'),
+  getTaste: backendDown('Couldn\u2019t load your listening history'),
   clearHistory: backendDown('Couldn\u2019t clear history'),
   addSearchTerm: backendDown('Couldn\u2019t save search history'),
   removeSearchTerm: backendDown('Couldn\u2019t update search history'),

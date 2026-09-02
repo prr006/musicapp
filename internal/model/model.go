@@ -75,6 +75,41 @@ type PlayRecord struct {
 	PlayedAt int64 `json:"playedAt"`
 }
 
+// Play events recorded by the renderer. They are coarse on purpose: the player
+// emits at most a handful per track, never per transport-state update.
+const (
+	PlayStarted         = "play_started"         // playback of the track actually began
+	PlayedSignificantly = "played_significantly" // crossed the "real listen" threshold
+	PlayCompleted       = "completed"            // reached the natural end of file
+	PlaySkipped         = "skipped"              // the user moved on before a real listen
+)
+
+// PlayStats aggregates the listening events for one track. It is the local,
+// bounded "taste" signal the recommendation engine reads.
+type PlayStats struct {
+	PlayCount        int   `json:"playCount"`
+	SignificantCount int   `json:"significantCount"`
+	CompleteCount    int   `json:"completeCount"`
+	SkipCount        int   `json:"skipCount"`
+	LastPlayedAt     int64 `json:"lastPlayedAt"`
+}
+
+// Taste is everything the frontend needs to personalise discovery, delivered
+// as one payload so a single event can update history, stats and dislikes.
+type Taste struct {
+	History  []PlayRecord         `json:"history"`
+	Stats    map[string]PlayStats `json:"stats"`
+	Disliked []Track              `json:"disliked"`
+}
+
+// RadioResponse is the provider's dedicated related-music answer for a seed
+// track. Source documents which pipeline produced the candidates, e.g.
+// "ytmusic-next" (the YouTube Music watch-next radio) or "yt-dlp-mix".
+type RadioResponse struct {
+	Tracks []Track `json:"tracks"`
+	Source string  `json:"source"`
+}
+
 type Settings struct {
 	Theme           string            `json:"theme"`           // "dark" | "light" | "system"
 	Accent          string            `json:"accent"`          // accent key
@@ -106,13 +141,15 @@ type Session struct {
 
 // AppState is the full persisted state handed to the frontend on boot.
 type AppState struct {
-	Settings      Settings     `json:"settings"`
-	Liked         []Track      `json:"liked"`
-	Playlists     []Playlist   `json:"playlists"`
-	History       []PlayRecord `json:"history"`
-	SearchHistory []string     `json:"searchHistory"`
-	Session       *Session     `json:"session"`
-	Version       int          `json:"version"`
+	Settings      Settings             `json:"settings"`
+	Liked         []Track              `json:"liked"`
+	Disliked      []Track              `json:"disliked"`
+	Playlists     []Playlist           `json:"playlists"`
+	History       []PlayRecord         `json:"history"`
+	Stats         map[string]PlayStats `json:"stats"`
+	SearchHistory []string             `json:"searchHistory"`
+	Session       *Session             `json:"session"`
+	Version       int                  `json:"version"`
 }
 
 func DefaultSettings() Settings {

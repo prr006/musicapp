@@ -10,12 +10,26 @@
  */
 import type { Backend } from './backend'
 import type {
-  AppState, Diagnostics, LyricsQuery, LyricsResult, PlayableSource,
-  Playlist, PlayRecord, ResolverStatus, SearchResponse, Session, Settings, Track,
+  AppState, Diagnostics, LyricsQuery, LyricsResult, PlayableSource, PlayEvent,
+  Playlist, PlayRecord, PlayStats, RadioResponse, ResolverStatus, SearchResponse, Session, Settings, Taste, Track,
 } from './types'
 import { defaultSettings } from '../lib/defaults'
 
 const STORAGE_KEY = 'melo.mock.state'
+
+function emptyState(): AppState {
+  return {
+    settings: defaultSettings(),
+    liked: [],
+    disliked: [],
+    playlists: [],
+    history: [],
+    stats: {},
+    searchHistory: [],
+    session: null,
+    version: 1,
+  }
+}
 
 function art(seed: string, hue: number): string {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400">
@@ -97,15 +111,7 @@ function wavToneURL(freq: number, seconds: number): string {
 }
 
 function loadState(): AppState {
-  const base: AppState = {
-    settings: defaultSettings(),
-    liked: [],
-    playlists: [],
-    history: [],
-    searchHistory: [],
-    session: null,
-    version: 1,
-  }
+  const base = emptyState()
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return base
@@ -127,6 +133,50 @@ export function createMockBackend(): Backend {
   }
   const delay = <T>(value: T, ms = 220): Promise<T> =>
     new Promise((resolve) => setTimeout(() => resolve(value), ms))
+
+  const taste = (): Taste => ({
+    history: state.history,
+    stats: state.stats ?? {},
+    disliked: state.disliked ?? [],
+  })
+
+  const applyEvent = (track: Track, event: PlayEvent) => {
+    const now = Date.now()
+    const stats: PlayStats = state.stats?.[track.id] ?? {
+      playCount: 0, significantCount: 0, completeCount: 0, skipCount: 0, lastPlayedAt: 0,
+    }
+    switch (event) {
+      case 'play_started':
+        stats.playCount += 1
+        stats.lastPlayedAt = now
+        break
+      case 'played_significantly':
+        stats.significantCount += 1
+        break
+      case 'completed':
+        stats.completeCount += 1
+        break
+      case 'skipped':
+        stats.skipCount += 1
+        break
+    }
+    state.stats = { ...state.stats, [track.id]: stats }
+    // Keep the stats map bounded like the real store does.
+    const ids = Object.keys(state.stats)
+    if (ids.length > 400) {
+      const sorted = ids.sort((a, b) => (state.stats[b].lastPlayedAt ?? 0) - (state.stats[a].lastPlayedAt ?? 0))
+      for (const id of sorted.slice(400)) delete state.stats[id]
+    }
+    if (event === 'play_started') {
+      const last = state.history[0]
+      if (last && last.track.id === track.id && now - last.playedAt < 30_000) {
+        last.playedAt = now
+      } else {
+        state.history = [{ track, playedAt: now }, ...state.history].slice(0, 200)
+      }
+    }
+    persist()
+  }
 
   return {
     isNative: false,
@@ -177,6 +227,20 @@ export function createMockBackend(): Backend {
         expiresAt: Date.now() + 3600_000,
       }, 320)
     },
+    relatedTracks: (track: Track): Promise<RadioResponse> => {
+      // A deterministic fixture radio: other songs by the same artist first,
+      // then songs from the same album, then everything else. Never the seed.
+      const seed = FIXTURES.find((f) => `yt:${f.id}` === track.id)
+      if (!seed) return delay({ tracks: [], source: 'fixture-radio' }, 120)
+      const others = FIXTURES.filter((f) => f.id !== seed.id)
+      const sameArtist = others.filter((f) => f.artist === seed.artist)
+      const sameAlbum = others.filter((f) => f.artist !== seed.artist && f.album === seed.album && f.album)
+      const rest = others.filter((f) => f.artist !== seed.artist && !(f.album === seed.album && f.album))
+      return delay(
+        { tracks: [...sameArtist, ...sameAlbum, ...rest].map(toTrack), source: 'fixture-radio' },
+        160,
+      )
+    },
     getLyrics: (query: LyricsQuery): Promise<LyricsResult> => {
       const fixture = FIXTURES.find((f) => `yt:${f.id}` === query.trackId)
       if (!fixture) return Promise.reject(new Error('No lyrics found.'))
@@ -206,20 +270,27 @@ export function createMockBackend(): Backend {
       state.liked = liked
         ? [{ ...track, addedAt: Date.now() }, ...state.liked.filter((t) => t.id !== track.id)]
         : state.liked.filter((t) => t.id !== track.id)
+      if (liked) state.disliked = state.disliked.filter((t) => t.id !== track.id)
       persist()
       return delay(state.liked, 20)
     },
-    recordPlay: (track: Track) => {
-      const now = Date.now()
-      const last = state.history[0]
-      if (last && last.track.id === track.id && now - last.playedAt < 30_000) {
-        last.playedAt = now
-      } else {
-        state.history = [{ track, playedAt: now }, ...state.history].slice(0, 200)
-      }
+    setDisliked: (track: Track, disliked: boolean) => {
+      state.disliked = disliked
+        ? [{ ...track, addedAt: Date.now() }, ...state.disliked.filter((t) => t.id !== track.id)]
+        : state.disliked.filter((t) => t.id !== track.id)
+      if (disliked) state.liked = state.liked.filter((t) => t.id !== track.id)
       persist()
+      return delay(taste(), 20)
+    },
+    recordPlay: (track: Track) => {
+      applyEvent(track, 'play_started')
       return delay<PlayRecord[]>(state.history, 20)
     },
+    recordPlayEvent: (track: Track, event: PlayEvent) => {
+      applyEvent(track, event)
+      return delay(taste(), 20)
+    },
+    getTaste: () => delay(taste(), 20),
     clearHistory: () => {
       state.history = []
       persist()

@@ -82,13 +82,40 @@ clear upcoming, shuffle upcoming (current track never moves), dedupe. Autoplay
 ("keep playing similar music") is a **separate** auto-queue, clearly labelled and
 switchable off in settings.
 
+**Radio / autoplay** — MELO builds a proper radio around whatever is playing.
+The priority order is always *current track → user queue → autoplay*; autoplay
+never jumps ahead of an explicit choice. Candidates come from the provider's
+**dedicated related feed** (the same "Up next" watch continuation YouTube Music
+itself plays — InnerTube `/next`, with a yt-dlp mix `RD<id>` fallback, tagged in
+the UI), and only when that is unavailable does the engine fall back to
+deterministic queries built from the seed's own artist/album/title metadata —
+never from the current search-result list. Every candidate is scored (seed
+artist, album context, likes, local play counts, provider relevance; penalties
+for recently heard, recent skips, artist repetition), canonical-song deduped
+("Believer (Official Video)" ≡ "Believer", but two different songs sharing a
+title stay distinct), artist-diversified so one artist can't fill the queue
+while genuine artist radio still works, and appended to a bounded (≤ 20)
+autoplay list that refills below 8. Generation guards drop stale responses when
+you change tracks, and a failed fetch never destroys the queued suggestions.
+**Start radio** (song menu, artist and album pages) rebuilds the session around
+one seed; a 👎 *don't recommend* excludes a song from autoplay immediately.
+
+**Local taste** — a lightweight, login-free listening profile: every track
+records `play_started` / `played_significantly` (30 s or half the song) /
+`completed` / `skipped` events into bounded local history + per-track stats
+(plays, completions, skips). Likes (❤) and dislikes (👎) are local too — likes
+boost a song and its artist in ranking, dislikes exclude it, and a skip is a
+weaker penalty than a dislike (an accidental skip never blacklists a song).
+Home surfaces Recently played and Most played from the same data.
+
 **Library** — Liked Songs, Songs, Albums, Artists, Playlists, Recently Played.
 Albums and artists are *derived from real track metadata only*; nothing is
 invented to fill a grid. Opening an album or artist you don't actually have shows
 an explicit empty state.
 
 **Playlists** — create, rename, delete, add, remove, reorder, duplicate, play,
-shuffle-play, and save the current queue as a playlist.
+shuffle-play, and save the current queue (explicit + autoplay, in the visible
+order) as a playlist.
 
 **Lyrics** — LRCLIB, synced (LRC) and plain, with instrumental / not-found /
 network-failure states handled distinctly. Highlighting is driven purely by the
@@ -149,7 +176,10 @@ State lives in `%AppData%\MELO\melo-state.json` (override with `MELO_DATA_DIR`).
 Writes are atomic (temp file + rename) and debounced by 250 ms. A corrupt file is
 moved aside to `melo-state.json.corrupt` and MELO starts with a clean state
 instead of failing to launch. History is capped at 500 entries with a 30 s
-dedupe window; search history at 50.
+dedupe window; per-track listening stats at 400 entries (least-recently-played
+evicted first); dislikes at 200; search history at 50. Everything the radio
+uses — history, stats, likes, dislikes — is local to that one file; there is no
+account, no server and no telemetry.
 
 ## The resolver dependency
 

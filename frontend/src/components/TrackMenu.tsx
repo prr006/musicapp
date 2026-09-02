@@ -4,7 +4,7 @@ import type { Track } from '../bridge/types'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback } from '../state/playback'
 import { ui } from '../state/uiStore'
-import { AlbumIcon, ArtistIcon, HeartIcon, NextIcon, PlusIcon, QueueIcon } from './Icons'
+import { AlbumIcon, ArtistIcon, HeartIcon, NextIcon, PlusIcon, QueueIcon, RadioIcon, ThumbDownIcon } from './Icons'
 
 interface Props {
   track: Track
@@ -16,6 +16,7 @@ interface Props {
 export function TrackMenu({ track, anchor, onClose, extra = [] }: Props) {
   const playlists = useLibraryStore((s) => s.playlists)
   const liked = useLibraryStore((s) => s.liked.some((t) => t.id === track.id))
+  const disliked = useLibraryStore((s) => s.disliked.some((t) => t.id === track.id))
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState(anchor)
   const [showPlaylists, setShowPlaylists] = useState(false)
@@ -54,6 +55,9 @@ export function TrackMenu({ track, anchor, onClose, extra = [] }: Props) {
     <div className="menu" ref={ref} style={{ left: pos.x, top: pos.y }} role="menu">
       {!showPlaylists ? (
         <>
+          <button className="menu-item" role="menuitem" onClick={act(() => void playback.startRadio(track))}>
+            <RadioIcon size={16} /> Start radio
+          </button>
           <button className="menu-item" role="menuitem" onClick={act(() => playback.playNext([track]))}>
             <NextIcon size={16} /> Play next
           </button>
@@ -62,6 +66,14 @@ export function TrackMenu({ track, anchor, onClose, extra = [] }: Props) {
           </button>
           <button className="menu-item" role="menuitem" onClick={act(() => void library.toggleLike(track))}>
             <HeartIcon size={16} filled={liked} /> {liked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}
+          </button>
+          <button
+            className="menu-item"
+            role="menuitem"
+            onClick={act(() => void library.setDisliked(track, !disliked))}
+          >
+            <ThumbDownIcon size={16} filled={disliked} />
+            {disliked ? 'Allow recommendations again' : 'Don’t recommend this song'}
           </button>
           <div className="menu-sep" />
           <button className="menu-item" role="menuitem" onClick={() => setShowPlaylists(true)}>

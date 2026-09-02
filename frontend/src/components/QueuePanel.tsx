@@ -4,21 +4,43 @@ import { library } from '../state/libraryStore'
 import { playback, usePlayer } from '../state/playback'
 import { ui } from '../state/uiStore'
 import { Artwork } from './Artwork'
-import { CloseIcon, DownIcon, PlusIcon, TrashIcon, UpIcon } from './Icons'
+import { CloseIcon, DownIcon, PlusIcon, RadioIcon, TrashIcon, UpIcon } from './Icons'
 import { RepeatButton, ShuffleButton } from './MiniPlayer'
 import { EmptyState } from './States'
+
+/** How many autoplay suggestions are listed; the rest stay queued. */
+const AUTOPLAY_VISIBLE = 10
+
+const RADIO_SOURCE_LABELS: Record<string, string> = {
+  'ytmusic-next': 'YouTube Music radio',
+  'yt-dlp-mix': 'YouTube mix radio',
+  'seed-metadata': 'Based on the playing song',
+  'fixture-radio': 'Fixture radio',
+}
 
 export function QueuePanel() {
   const queue = usePlayer((s) => s.queue)
   const index = usePlayer((s) => s.index)
   const autoQueue = usePlayer((s) => s.autoQueue)
   const contextLabel = usePlayer((s) => s.contextLabel)
+  const radioSource = usePlayer((s) => s.radioSource)
   const status = usePlayer((s) => s.status)
   const current = usePlayer((s) => s.current)
   const [saving, setSaving] = useState(false)
   const [name, setName] = useState('')
 
   const upcoming = queue.slice(index + 1)
+  // The queue, in the exact order the panel shows it: now playing, the user's
+  // explicit choices, then MELO's autoplay suggestions.
+  const visibleOrder = [...(current ? [current] : []), ...upcoming, ...autoQueue]
+
+  const saveQueueAsPlaylist = () => {
+    void library.createPlaylist(name || 'Queue', visibleOrder).then(() => {
+      ui.toast('Queue saved as a playlist')
+      setSaving(false)
+      setName('')
+    })
+  }
 
   return (
     <aside className="panel" aria-label="Play queue">
@@ -60,7 +82,7 @@ export function QueuePanel() {
         </div>
 
         {upcoming.length === 0 && autoQueue.length === 0 && (
-          <EmptyState title="Nothing queued" message="Add songs with “Play next” or “Add to queue”." />
+          <EmptyState title="Nothing queued" message="Add songs with “Play next” or “Add to queue”. MELO radio keeps playing after them." />
         )}
 
         {upcoming.map((track, i) => {
@@ -123,12 +145,19 @@ export function QueuePanel() {
         {autoQueue.length > 0 && (
           <>
             <div className="queue-group-title">
-              <span>Autoplay · based on your listening</span>
+              <span className="row" style={{ gap: 6 }}>
+                <RadioIcon size={13} /> Autoplay · MELO radio
+                {radioSource && (
+                  <span className="muted" style={{ fontSize: 11 }}>
+                    {RADIO_SOURCE_LABELS[radioSource] ?? radioSource}
+                  </span>
+                )}
+              </span>
               <button className="link" onClick={() => playback.clearAutoplay()} type="button" style={{ color: 'var(--text-3)' }}>
                 Clear
               </button>
             </div>
-            {autoQueue.slice(0, 10).map((track, i) => (
+            {autoQueue.slice(0, AUTOPLAY_VISIBLE).map((track, i) => (
               <div
                 className="track-row compact"
                 key={`auto-${track.id}`}
@@ -158,6 +187,11 @@ export function QueuePanel() {
                 </div>
               </div>
             ))}
+            {autoQueue.length > AUTOPLAY_VISIBLE && (
+              <div className="muted" style={{ fontSize: 12, padding: '6px 10px' }}>
+                + {formatCount(autoQueue.length - AUTOPLAY_VISIBLE, 'more song')} queued
+              </div>
+            )}
           </>
         )}
       </div>
@@ -168,11 +202,7 @@ export function QueuePanel() {
             style={{ display: 'flex', gap: 8, width: '100%' }}
             onSubmit={(e) => {
               e.preventDefault()
-              void library.createPlaylist(name || 'Queue', queue).then(() => {
-                ui.toast('Queue saved as a playlist')
-                setSaving(false)
-                setName('')
-              })
+              saveQueueAsPlaylist()
             }}
           >
             <input
@@ -192,7 +222,7 @@ export function QueuePanel() {
             <button
               className="btn ghost"
               onClick={() => setSaving(true)}
-              disabled={queue.length === 0}
+              disabled={visibleOrder.length === 0}
               type="button"
               style={{ flex: 1 }}
             >

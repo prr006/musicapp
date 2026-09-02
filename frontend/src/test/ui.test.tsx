@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Artwork } from '../components/Artwork'
@@ -26,7 +26,9 @@ function stub(overrides: Partial<Backend> = {}): Backend {
     getPlayable: vi.fn(async () => ({ trackId: song.id, url: 'http://local/a', mimeType: 'audio/mp4', duration: 200, bitrate: 128, expiresAt: 0 })),
     getLyrics: vi.fn(async () => ({ trackId: song.id, source: 't', synced: false, lines: [], plain: '', instrumental: false, offset: 0, matchedTitle: '', matchedArtist: '' })),
     recordPlay: vi.fn(async () => []),
+    setDisliked: vi.fn(async () => ({ history: [], stats: {}, disliked: [song] })),
     saveSession: vi.fn(async () => {}),
+    setNowPlaying: vi.fn(async () => {}),
     on: vi.fn(() => () => {}),
     ...overrides,
   } as unknown as Backend
@@ -35,7 +37,7 @@ function stub(overrides: Partial<Backend> = {}): Backend {
 }
 
 beforeEach(() => {
-  useLibraryStore.setState({ ready: true, loadError: null, settings: defaultSettings(), liked: [], playlists: [], history: [], searchHistory: [] })
+  useLibraryStore.setState({ ready: true, loadError: null, settings: defaultSettings(), liked: [], disliked: [], stats: {}, playlists: [], history: [], searchHistory: [] })
   useSearchStore.setState({ query: '', submitted: '', filter: '', status: 'idle', results: null, error: null })
   usePlayerStore.setState({ queue: [], autoQueue: [], index: -1, current: null, status: 'idle', error: null, shuffle: false, repeat: 'off', volume: 1, muted: false, speed: 1, playingFrom: 'queue', contextLabel: '' })
 })
@@ -171,5 +173,51 @@ describe('Artwork fit strategy', () => {
     const fallback = document.querySelector('.artwork .fallback')
     expect(fallback).toBeInTheDocument()
     expect(fallback).toHaveTextContent('NI')
+  })
+})
+
+describe('radio actions in the song menu', () => {
+  it('offers start radio, play next, add to queue and don\u2019t-recommend', async () => {
+    stub()
+    const onPlay = vi.fn()
+    render(<TrackRow track={song} index={0} onPlay={onPlay} />)
+    await userEvent.click(screen.getByRole('button', { name: 'More options' }))
+    const menu = await screen.findByRole('menu')
+    for (const label of [/Start radio/i, /Play next/i, /Add to queue/i, /Don\u2019t recommend/i]) {
+      expect(within(menu).getByRole('menuitem', { name: label })).toBeInTheDocument()
+    }
+    // Playback is never triggered by opening the menu.
+    expect(onPlay).not.toHaveBeenCalled()
+  })
+
+  it('start radio plays only the chosen track and builds autoplay separately', async () => {
+    const other: Track = { ...song, id: 'yt:b', sourceId: 'b', title: 'Paper Lanterns' }
+    stub({ search: vi.fn(async () => ({ query: 'q', songs: [song, other], videos: [], albums: [], artists: [], provider: 'ytmusic' })) })
+    const onPlay = vi.fn()
+    render(<TrackRow track={song} index={0} onPlay={onPlay} />)
+    await userEvent.click(screen.getByRole('button', { name: 'More options' }))
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Start radio/i }))
+    await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe(song.id))
+    expect(usePlayerStore.getState().queue.map((t) => t.id)).toEqual([song.id])
+    await waitFor(() => expect(usePlayerStore.getState().autoQueue.length).toBeGreaterThan(0))
+    expect(usePlayerStore.getState().playingFrom).toBe('queue')
+  })
+
+  it('don\u2019t-recommend records feedback without touching playback', async () => {
+    const be = stub()
+    const onPlay = vi.fn()
+    render(<TrackRow track={song} index={0} onPlay={onPlay} />)
+    await userEvent.click(screen.getByRole('button', { name: 'More options' }))
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Don\u2019t recommend/i }))
+    await waitFor(() => expect(be.setDisliked).toHaveBeenCalledWith(song, true))
+    expect(onPlay).not.toHaveBeenCalled()
+  })
+
+  it('renders exactly one add-to-queue control per row — no duplicates, no no-ops', async () => {
+    stub()
+    render(<TrackRow track={song} index={0} onPlay={() => {}} />)
+    expect(screen.getAllByRole('button', { name: 'Add to queue' })).toHaveLength(1)
+    // The like control is also singular and functional.
+    expect(screen.getAllByRole('button', { name: /Add to Liked Songs/i })).toHaveLength(1)
   })
 })

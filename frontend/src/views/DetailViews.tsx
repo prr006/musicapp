@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Artwork } from '../components/Artwork'
-import { AlbumIcon, ArtistIcon, MusicIcon } from '../components/Icons'
+import { AlbumIcon, ArtistIcon, MusicIcon, RadioIcon } from '../components/Icons'
 import { MediaCard } from '../components/MediaCard'
 import { EmptyState } from '../components/States'
 import { TrackRow } from '../components/TrackRow'
@@ -78,6 +78,15 @@ export function AlbumView({ albumKey }: { albumKey: string }) {
         <button className="btn ghost" onClick={() => playback.addToQueue(list)} type="button">
           Add to queue
         </button>
+        {list.length > 0 && (
+          <button
+            className="btn ghost"
+            onClick={() => void playback.startRadio(list[0], { kind: 'album' })}
+            type="button"
+          >
+            <RadioIcon size={15} /> Radio
+          </button>
+        )}
       </div>
 
       <div className="track-list">
@@ -139,6 +148,15 @@ export function ArtistView({ name }: { name: string }) {
         <button className="btn ghost" onClick={() => void playback.playAll(list, artist.name, true)} type="button">
           Shuffle
         </button>
+        {list.length > 0 && (
+          <button
+            className="btn ghost"
+            onClick={() => void playback.startRadio(list[0], { kind: 'artist' })}
+            type="button"
+          >
+            <RadioIcon size={15} /> Radio
+          </button>
+        )}
       </div>
 
       <section className="section">

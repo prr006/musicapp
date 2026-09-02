@@ -81,10 +81,10 @@ function stubBackend(): Backend {
 }
 
 beforeEach(() => {
-  useLibraryStore.setState({ ready: true, loadError: null, settings: defaultSettings(), liked: [], playlists: [], history: [], searchHistory: [] })
+  useLibraryStore.setState({ ready: true, loadError: null, settings: defaultSettings(), liked: [], disliked: [], stats: {}, playlists: [], history: [], searchHistory: [] })
   usePlayerStore.setState({
     queue: [], autoQueue: [], index: -1, current: null, status: 'idle', error: null,
-    shuffle: false, repeat: 'off', volume: 1, muted: false, speed: 1, playingFrom: 'queue', contextLabel: '',
+    shuffle: false, repeat: 'off', volume: 1, muted: false, speed: 1, playingFrom: 'queue', contextLabel: '', radioSource: '',
   })
   useUIStore.setState({ route: { name: 'home' }, history: [], future: [], queueOpen: false, nowPlayingOpen: false, lyricsOpen: false, toasts: [], resolverError: null, resolverProgress: null })
 })
@@ -171,6 +171,56 @@ describe('MELO application', () => {
       await userEvent.click(screen.getByRole('button', { name: label }))
       expect(queue()).toEqual([a.id, extra.id])
     }
+  })
+
+  it('labels the queue sections Now playing / Up next / Autoplay (MELO radio)', async () => {
+    stubBackend()
+    render(<App />)
+    await userEvent.type(screen.getByRole('textbox', { name: 'Search' }), 'night{enter}')
+    await userEvent.click(await screen.findByRole('button', { name: /Play Nightfall/i }))
+    await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
+    const player = document.querySelector('.player') as HTMLElement
+    await userEvent.click(within(player).getByRole('button', { name: 'Queue' }))
+    const panel = await screen.findByRole('complementary', { name: /Play queue/i })
+    expect(within(panel).getByText('Now playing')).toBeInTheDocument()
+    expect(within(panel).getByText(/^Up next/)).toBeInTheDocument()
+    await waitFor(() => expect(within(panel).getByText(/Autoplay · MELO radio/i)).toBeInTheDocument())
+  })
+
+  it('saves the visible queue — explicit plus autoplay — as a playlist', async () => {
+    const be = stubBackend()
+    render(<App />)
+    await userEvent.type(screen.getByRole('textbox', { name: 'Search' }), 'night{enter}')
+    await userEvent.click(await screen.findByRole('button', { name: /Play Nightfall/i }))
+    await waitFor(() => expect(usePlayerStore.getState().autoQueue.map((t) => t.id)).toEqual([b.id]))
+    const player = document.querySelector('.player') as HTMLElement
+    await userEvent.click(within(player).getByRole('button', { name: 'Queue' }))
+    const panel = await screen.findByRole('complementary', { name: /Play queue/i })
+    await userEvent.click(within(panel).getByRole('button', { name: /Save as playlist/i }))
+    await userEvent.type(within(panel).getByRole('textbox', { name: 'Playlist name' }), 'Evening Mix')
+    await userEvent.click(within(panel).getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(be.createPlaylist).toHaveBeenCalledWith('Evening Mix', [a, b]),
+    )
+  })
+
+  it('starts a radio from the track menu with only the chosen song queued', async () => {
+    stubBackend()
+    render(<App />)
+    await userEvent.type(screen.getByRole('textbox', { name: 'Search' }), 'night{enter}')
+    await waitFor(() => expect(screen.getByText('Paper Lanterns')).toBeInTheDocument())
+
+    // Open the row menu and start a radio around the second result.
+    const rows = document.querySelectorAll('.track-list .track-row')
+    const second = within(rows[1] as HTMLElement)
+    await userEvent.click(second.getByRole('button', { name: 'More options' }))
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Start radio/i }))
+
+    await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe(b.id))
+    // The explicit queue holds exactly the seed — never its search siblings.
+    expect(usePlayerStore.getState().queue.map((t) => t.id)).toEqual([b.id])
+    // Discovery builds separately, anchored on the radio seed.
+    await waitFor(() => expect(usePlayerStore.getState().autoQueue.map((t) => t.id)).toEqual([a.id]))
   })
 
   it('keeps the sidebar reachable while the expanded Now Playing is open', async () => {

@@ -23,6 +23,8 @@ import (
 const (
 	stateVersion   = 1
 	maxHistory     = 500
+	maxStats       = 400
+	maxDisliked    = 200
 	maxSearchTerms = 50
 )
 
@@ -97,6 +99,12 @@ func migrate(st model.AppState) model.AppState {
 	if st.Liked == nil {
 		st.Liked = []model.Track{}
 	}
+	if st.Disliked == nil {
+		st.Disliked = []model.Track{}
+	}
+	if st.Stats == nil {
+		st.Stats = map[string]model.PlayStats{}
+	}
 	if st.History == nil {
 		st.History = []model.PlayRecord{}
 	}
@@ -116,9 +124,16 @@ func (s *Store) State() model.AppState {
 	defer s.mu.RUnlock()
 	st := s.state
 	st.Liked = append([]model.Track(nil), s.state.Liked...)
+	st.Disliked = append([]model.Track(nil), s.state.Disliked...)
 	st.Playlists = append([]model.Playlist(nil), s.state.Playlists...)
 	st.History = append([]model.PlayRecord(nil), s.state.History...)
 	st.SearchHistory = append([]string(nil), s.state.SearchHistory...)
+	if s.state.Stats != nil {
+		st.Stats = make(map[string]model.PlayStats, len(s.state.Stats))
+		for k, v := range s.state.Stats {
+			st.Stats[k] = v
+		}
+	}
 	return st
 }
 
@@ -216,13 +231,92 @@ func (s *Store) IsLiked(id string) bool {
 	return indexOfTrack(s.state.Liked, id) >= 0
 }
 
-// ---------- history ----------
+// ---------- dislikes (don't recommend) ----------
+
+// SetDisliked records or clears "don't recommend this song" feedback. Dislike
+// is local only and never touches the liked list; the renderer keeps the two
+// mutually exclusive so the intent is unambiguous.
+func (s *Store) SetDisliked(t model.Track, disliked bool) []model.Track {
+	s.mutate(func(st *model.AppState) {
+		idx := indexOfTrack(st.Disliked, t.ID)
+		if disliked {
+			if idx == -1 {
+				t.AddedAt = time.Now().UnixMilli()
+				st.Disliked = append([]model.Track{t}, st.Disliked...)
+				if len(st.Disliked) > maxDisliked {
+					st.Disliked = st.Disliked[:maxDisliked]
+				}
+			}
+			return
+		}
+		if idx >= 0 {
+			st.Disliked = append(st.Disliked[:idx], st.Disliked[idx+1:]...)
+		}
+	})
+	return s.State().Disliked
+}
+
+func (s *Store) IsDisliked(id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return indexOfTrack(s.state.Disliked, id) >= 0
+}
+
+// ---------- history & listening events ----------
 
 // RecordPlay appends a real playback event. Consecutive duplicates within
 // 30 seconds are collapsed so a seek-heavy session does not spam history.
 func (s *Store) RecordPlay(t model.Track) []model.PlayRecord {
+	s.RecordPlayEvent(t, model.PlayStarted)
+	return s.State().History
+}
+
+// Taste returns the full personalisation payload: listening history, the
+// per-track play statistics and the dislike list.
+func (s *Store) Taste() model.Taste {
+	st := s.State()
+	return model.Taste{History: st.History, Stats: st.Stats, Disliked: st.Disliked}
+}
+
+// RecordPlayEvent applies one listening event. Only play_started touches the
+// visible history (with the same 30s collapse as before); every event updates
+// the bounded per-track statistics that feed recommendations:
+//
+//	play_started         PlayCount++, LastPlayedAt
+//	played_significantly SignificantCount++
+//	completed            CompleteCount++
+//	skipped              SkipCount++
+//
+// Unknown events are ignored so a newer renderer talking to an older store
+// degrades gracefully rather than corrupting the document.
+func (s *Store) RecordPlayEvent(t model.Track, event string) model.Taste {
+	if t.ID == "" {
+		return s.Taste()
+	}
 	now := time.Now().UnixMilli()
-	s.mutate(func(st *model.AppState) {
+	apply := func(st *model.AppState) {
+		if st.Stats == nil {
+			st.Stats = map[string]model.PlayStats{}
+		}
+		stats := st.Stats[t.ID]
+		switch event {
+		case model.PlayStarted:
+			stats.PlayCount++
+			stats.LastPlayedAt = now
+		case model.PlayedSignificantly:
+			stats.SignificantCount++
+		case model.PlayCompleted:
+			stats.CompleteCount++
+		case model.PlaySkipped:
+			stats.SkipCount++
+		default:
+			return
+		}
+		st.Stats[t.ID] = stats
+		trimStats(st)
+		if event != model.PlayStarted {
+			return
+		}
 		if len(st.History) > 0 {
 			last := st.History[0]
 			if last.Track.ID == t.ID && now-last.PlayedAt < 30_000 {
@@ -234,8 +328,29 @@ func (s *Store) RecordPlay(t model.Track) []model.PlayRecord {
 		if len(st.History) > maxHistory {
 			st.History = st.History[:maxHistory]
 		}
-	})
-	return s.State().History
+	}
+	s.mutate(apply)
+	return s.Taste()
+}
+
+// trimStats keeps the statistics map bounded, evicting the least recently
+// played entries first so long-term favourites survive.
+func trimStats(st *model.AppState) {
+	if len(st.Stats) <= maxStats {
+		return
+	}
+	type kv struct {
+		id   string
+		last int64
+	}
+	entries := make([]kv, 0, len(st.Stats))
+	for id, s := range st.Stats {
+		entries = append(entries, kv{id, s.LastPlayedAt})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].last > entries[j].last })
+	for _, e := range entries[maxStats:] {
+		delete(st.Stats, e.id)
+	}
 }
 
 func (s *Store) ClearHistory() {

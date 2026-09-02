@@ -286,12 +286,48 @@ func (a *App) SetNowPlaying(title, artist string) {
 func (a *App) SetLiked(t model.Track, liked bool) []model.Track { return a.store.SetLiked(t, liked) }
 func (a *App) RecordPlay(t model.Track) []model.PlayRecord      { return a.store.RecordPlay(t) }
 func (a *App) ClearHistory()                                    { a.store.ClearHistory() }
-func (a *App) AddSearchTerm(q string) []string                  { return a.store.AddSearchTerm(q) }
-func (a *App) RemoveSearchTerm(q string) []string               { return a.store.RemoveSearchTerm(q) }
-func (a *App) ClearSearchHistory()                              { a.store.ClearSearchHistory() }
-func (a *App) LibraryTracks() []model.Track                     { return a.store.LibraryTracks() }
-func (a *App) SaveSession(s model.Session)                      { a.store.SaveSession(s) }
-func (a *App) ClearSession()                                    { a.store.ClearSession() }
+
+// Listening events & local taste (the recommendation engine's inputs).
+func (a *App) RecordPlayEvent(t model.Track, event string) model.Taste {
+	return a.store.RecordPlayEvent(t, event)
+}
+func (a *App) GetTaste() model.Taste { return a.store.Taste() }
+func (a *App) SetDisliked(t model.Track, disliked bool) []model.Track {
+	return a.store.SetDisliked(t, disliked)
+}
+
+// RelatedTracks returns the provider's dedicated related-music answer for a
+// seed track — MELO radio's primary candidate source. Ordinary search is never
+// used for autoplay while this endpoint yields candidates.
+func (a *App) RelatedTracks(track model.Track) (model.RadioResponse, error) {
+	if track.SourceID == "" {
+		return model.RadioResponse{}, errors.New("couldn't load radio: missing source id")
+	}
+	ctx, cancel := context.WithTimeout(a.baseCtx(), 25*time.Second)
+	defer cancel()
+	res, err := a.provider.Related(ctx, track.SourceID)
+	if err != nil {
+		return model.RadioResponse{}, err
+	}
+	// The watch feed echoes the seed itself as the first queue entry; the
+	// ranking stage drops it, but removing it here keeps the payload honest.
+	filtered := make([]model.Track, 0, len(res.Tracks))
+	for _, t := range res.Tracks {
+		if t.ID != track.ID {
+			filtered = append(filtered, t)
+		}
+	}
+	if filtered == nil {
+		filtered = []model.Track{}
+	}
+	return model.RadioResponse{Tracks: filtered, Source: res.Source}, nil
+}
+func (a *App) AddSearchTerm(q string) []string    { return a.store.AddSearchTerm(q) }
+func (a *App) RemoveSearchTerm(q string) []string { return a.store.RemoveSearchTerm(q) }
+func (a *App) ClearSearchHistory()                { a.store.ClearSearchHistory() }
+func (a *App) LibraryTracks() []model.Track       { return a.store.LibraryTracks() }
+func (a *App) SaveSession(s model.Session)        { a.store.SaveSession(s) }
+func (a *App) ClearSession()                      { a.store.ClearSession() }
 
 func (a *App) CreatePlaylist(name string, tracks []model.Track) model.Playlist {
 	return a.store.CreatePlaylist(name, tracks)

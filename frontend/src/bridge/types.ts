@@ -63,6 +63,35 @@ export interface PlayRecord {
   playedAt: number
 }
 
+/**
+ * Listening events recorded by the player — one per real user action, never
+ * per transport-state update. "played_significantly" means the track was on
+ * for a real listen (30s or half the song, whichever comes first).
+ */
+export type PlayEvent = 'play_started' | 'played_significantly' | 'completed' | 'skipped'
+
+export interface PlayStats {
+  playCount: number
+  significantCount: number
+  completeCount: number
+  skipCount: number
+  lastPlayedAt: number
+}
+
+/** History + per-track stats + dislikes: the local taste payload. */
+export interface Taste {
+  history: PlayRecord[]
+  stats: Record<string, PlayStats>
+  disliked: Track[]
+}
+
+/** The provider's dedicated related-music answer for a seed track. */
+export interface RadioResponse {
+  tracks: Track[]
+  /** Which pipeline produced the candidates, e.g. "ytmusic-next". */
+  source: string
+}
+
 export type ThemeMode = 'dark' | 'light' | 'system'
 export type RepeatMode = 'off' | 'one' | 'all'
 
@@ -97,8 +126,10 @@ export interface Session {
 export interface AppState {
   settings: Settings
   liked: Track[]
+  disliked: Track[]
   playlists: Playlist[]
   history: PlayRecord[]
+  stats: Record<string, PlayStats>
   searchHistory: string[]
   session: Session | null
   version: number

@@ -33,7 +33,7 @@ interface Harness {
   backend: Backend
   resolveDelays: Map<string, number>
   resolveErrors: Map<string, string>
-  recorded: Track[]
+  recorded: { track: Track; event: string }[]
   lyricsDelays: Map<string, number>
 }
 
@@ -43,7 +43,7 @@ function harness(): Harness {
   const resolveDelays = new Map<string, number>()
   const resolveErrors = new Map<string, string>()
   const lyricsDelays = new Map<string, number>()
-  const recorded: Track[] = []
+  const recorded: { track: Track; event: string }[] = []
 
   const be = {
     isNative: false,
@@ -75,9 +75,28 @@ function harness(): Harness {
     saveSettings: vi.fn(async (s) => s),
     setLiked: vi.fn(async () => []),
     recordPlay: vi.fn(async (t: Track) => {
-      recorded.push(t)
+      recorded.push({ track: t, event: 'play_started' })
       return []
     }),
+    recordPlayEvent: vi.fn(async (t: Track, event: string) => {
+      recorded.push({ track: t, event })
+      // Neutral by default: echo the store's current taste back.
+      const s = useLibraryStore.getState()
+      return { history: s.history, stats: s.stats, disliked: s.disliked }
+    }),
+    getTaste: vi.fn(async () => {
+      const s = useLibraryStore.getState()
+      return { history: s.history, stats: s.stats, disliked: s.disliked }
+    }),
+    setDisliked: vi.fn(async (t: Track, disliked: boolean) => {
+      const s = useLibraryStore.getState()
+      return {
+        history: s.history,
+        stats: s.stats,
+        disliked: disliked ? [t, ...s.disliked.filter((d) => d.id !== t.id)] : s.disliked.filter((d) => d.id !== t.id),
+      }
+    }),
+    relatedTracks: vi.fn(async () => ({ tracks: [], source: '' })),
     clearHistory: vi.fn(async () => {}),
     addSearchTerm: vi.fn(async () => []),
     removeSearchTerm: vi.fn(async () => []),
@@ -107,9 +126,9 @@ beforeEach(() => {
   usePlayerStore.setState({
     queue: [], autoQueue: [], index: -1, current: null, status: 'idle', error: null,
     shuffle: false, repeat: 'off', volume: 0.9, muted: false, speed: 1,
-    playingFrom: 'queue', contextLabel: '',
+    playingFrom: 'queue', contextLabel: '', radioSource: '',
   })
-  useLibraryStore.setState({ ...useLibraryStore.getState(), settings: defaultSettings(), liked: [], history: [] })
+  useLibraryStore.setState({ ...useLibraryStore.getState(), settings: defaultSettings(), liked: [], disliked: [], stats: {}, history: [] })
   useLyricsStore.setState({ trackId: null, status: 'idle', result: null, error: null })
   positionChannel.reset()
 })
@@ -436,9 +455,11 @@ describe('discovery (endless queue)', () => {
     const dup = track('dup')
     const fresh = track('fresh')
     // The backend reports `dup` as recently played, so discovery must skip it.
-    ;(h.backend.recordPlay as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { track: dup, playedAt: Date.now() },
-    ])
+    ;(h.backend.recordPlayEvent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      history: [{ track: dup, playedAt: Date.now() }],
+      stats: {},
+      disliked: [],
+    })
     ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
       query: '', songs: [a, b, dup, fresh], videos: [], albums: [], artists: [], provider: 'test',
     })
@@ -582,9 +603,9 @@ describe('discovery (endless queue)', () => {
     ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
       query: '', songs: pool, videos: [], albums: [], artists: [], provider: 'test',
     })
-    ;(h.backend.recordPlay as ReturnType<typeof vi.fn>).mockImplementation(async (t: Track) => {
+    ;(h.backend.recordPlayEvent as ReturnType<typeof vi.fn>).mockImplementation(async (t: Track) => {
       played.unshift({ track: t, playedAt: Date.now() })
-      return played
+      return { history: played, stats: {}, disliked: [] }
     })
 
     await h.controller.play(a, { tracks: [a], index: 0 })
@@ -627,6 +648,211 @@ describe('discovery (endless queue)', () => {
     await new Promise((r) => setTimeout(r, 80))
     expect(state().autoQueue.map((t) => t.id)).toEqual([fresh.id])
     expect(state().autoQueue.some((t) => t.id === stale.id)).toBe(false)
+  })
+})
+
+describe('radio engine', () => {
+  function mockRelated(h: Harness, songs: Track[], source = 'ytmusic-next'): void {
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({ tracks: songs, source })
+  }
+
+  it('prefers the dedicated related feed and never touches plain search while it answers', async () => {
+    const h = harness()
+    const a = track('a')
+    const rel = [track('r1'), track('r2')]
+    mockRelated(h, rel)
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:r1', 'yt:r2']))
+    expect(state().radioSource).toBe('ytmusic-next')
+    expect(h.backend.search).not.toHaveBeenCalled()
+  })
+
+  it('falls back to deterministic seed-metadata searches when the related feed is empty', async () => {
+    const h = harness()
+    const a = track('a', { title: 'Nightfall', artist: 'Halcyon' })
+    mockRelated(h, [])
+    const meta = track('m1', { title: 'Other Halcyon Song', artist: 'Halcyon' })
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: '', songs: [meta], videos: [], albums: [], artists: [], provider: 'test',
+    })
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:m1']))
+    // The fallback query is anchored on the seed's own artist metadata.
+    const queries = (h.backend.search as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]))
+    expect(queries.some((q) => q.toLowerCase().includes('halcyon'))).toBe(true)
+    expect(state().radioSource).toBe('seed-metadata')
+  })
+
+  it('start radio builds a fresh session: only the seed in the queue, discovery separate', async () => {
+    const h = harness()
+    const old = track('old')
+    mockRelated(h, [track('oldrel')])
+    await h.controller.play(old, { tracks: [old], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
+
+    const seed = track('seed', { title: 'Nuvole Bianche', artist: 'Einaudi' })
+    const siblings = [track('s1'), track('s2')]
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: '', songs: siblings, videos: [], albums: [], artists: [], provider: 'test',
+    })
+    mockRelated(h, [track('rel1'), track('rel2')])
+    await h.controller.startRadio(seed)
+
+    expect(state().current?.id).toBe(seed.id)
+    expect(state().queue.map((t) => t.id)).toEqual([seed.id]) // never the search siblings
+    expect(state().contextLabel).toContain('Radio')
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:rel1', 'yt:rel2']))
+    expect(state().autoQueue.some((t) => t.id === 'yt:oldrel')).toBe(false)
+  })
+
+  it('never recommends the current track itself, even if the feed echoes it', async () => {
+    const h = harness()
+    const a = track('a', { title: 'Echoed', artist: 'Artist' })
+    mockRelated(h, [a, track('variant', { title: 'Echoed (Official Video)' }), track('fresh')])
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:fresh']))
+  })
+
+  it('excludes disliked tracks from the radio batch', async () => {
+    const h = harness()
+    const a = track('a')
+    const nope = track('nope')
+    mockRelated(h, [nope, track('fresh1'), track('fresh2')])
+    useLibraryStore.setState({ disliked: [nope] })
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
+    expect(state().autoQueue.some((t) => t.id === nope.id)).toBe(false)
+  })
+
+  it('purges a track from the current autoplay list the moment it is disliked', async () => {
+    const h = harness()
+    const a = track('a')
+    mockRelated(h, [track('x'), track('y')])
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:x', 'yt:y']))
+
+    const x = state().autoQueue[0]
+    ;(h.backend.setDisliked as ReturnType<typeof vi.fn>).mockResolvedValue({
+      history: [], stats: {}, disliked: [x],
+    })
+    await library.setDisliked(x, true)
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:y']))
+  })
+
+  it('gives liked tracks positive weighting in the radio order', async () => {
+    const h = harness()
+    const a = track('a')
+    const plain = track('plain', { title: 'Plain Song' })
+    const favourite = track('favourite', { title: 'Favourite Song' })
+    useLibraryStore.setState({ liked: [favourite] })
+    mockRelated(h, [plain, favourite]) // plain comes first from the provider
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(2))
+    expect(state().autoQueue.map((t) => t.id)).toEqual([favourite.id, plain.id])
+  })
+
+  it('does not re-request discovery on ordinary playback state updates', async () => {
+    const h = harness()
+    const a = track('a')
+    mockRelated(h, [track('r1')])
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
+    const calls = (h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.length
+
+    // Buffering, duration changes and position ticks are ordinary playback
+    // noise — none of them may trigger another discovery fetch for this track.
+    h.media.setDuration(120)
+    h.media.dispatchEvent(new Event('progress'))
+    h.media.tick(5)
+    h.media.tick(11)
+    h.media.tick(19)
+    await new Promise((r) => setTimeout(r, 30))
+    expect((h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls)
+  })
+
+  it('records the full listening event ladder: started → significant → completed', async () => {
+    const h = harness()
+    const a = track('a') // duration 100 → significant at 30s
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(h.recorded.filter((r) => r.event === 'play_started')).toHaveLength(1))
+
+    h.media.tick(31) // crossed the significant threshold
+    await vi.waitFor(() => expect(h.recorded.filter((r) => r.event === 'played_significantly')).toHaveLength(1))
+    h.media.tick(60) // further ticks never repeat the event
+    await new Promise((r) => setTimeout(r, 10))
+    expect(h.recorded.filter((r) => r.event === 'played_significantly')).toHaveLength(1)
+
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(h.recorded.filter((r) => r.event === 'completed')).toHaveLength(1))
+  })
+
+  it('records a skip — a weaker signal — when the user moves on before a real listen', async () => {
+    const h = harness()
+    const a = track('a')
+    await h.controller.play(a, { tracks: [a, track('b')], index: 0 })
+    await vi.waitFor(() => expect(h.recorded.some((r) => r.event === 'play_started')).toBe(true))
+    h.media.tick(8) // under the 30s threshold
+    await h.controller.next()
+    expect(h.recorded.filter((r) => r.event === 'skipped')).toHaveLength(1)
+    expect(h.recorded.filter((r) => r.event === 'completed')).toHaveLength(0)
+  })
+
+  it('stops after the user queue ends when autoplay is off', async () => {
+    const h = harness()
+    useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: false } })
+    mockRelated(h, [track('r1')])
+    const a = track('a')
+    const b = track('b')
+    await h.controller.play(a, { tracks: [a, b], index: 0 })
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe(b.id))
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().status).toBe('idle'))
+    expect(state().autoQueue).toHaveLength(0)
+  })
+
+  it('a new radio seed drops the previous seed\u2019s late responses', async () => {
+    const h = harness()
+    const stale = track('stale')
+    const fresh = track('fresh')
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockImplementation(async (t: Track) => {
+      if (t.id === 'yt:a') {
+        await new Promise((r) => setTimeout(r, 60))
+        return { tracks: [stale], source: 'test' }
+      }
+      return { tracks: [fresh], source: 'test' }
+    })
+    const a = track('a')
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await h.controller.startRadio(track('b'))
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual([fresh.id]))
+    await new Promise((r) => setTimeout(r, 90))
+    expect(state().autoQueue.some((t) => t.id === stale.id)).toBe(false)
+  })
+})
+
+describe('library feedback', () => {
+  it('liking a disliked track clears the dislike', async () => {
+    const h = harness()
+    const a = track('a')
+    useLibraryStore.setState({ disliked: [a] })
+    ;(h.backend.setLiked as ReturnType<typeof vi.fn>).mockResolvedValue([a])
+    ;(h.backend.setDisliked as ReturnType<typeof vi.fn>).mockResolvedValue({ history: [], stats: {}, disliked: [] })
+    await library.toggleLike(a)
+    expect(useLibraryStore.getState().liked.map((t) => t.id)).toEqual([a.id])
+    expect(h.backend.setDisliked).toHaveBeenCalledWith(a, false)
+  })
+
+  it('disliking a liked track removes the like', async () => {
+    const h = harness()
+    const a = track('a')
+    useLibraryStore.setState({ liked: [a] })
+    ;(h.backend.setDisliked as ReturnType<typeof vi.fn>).mockResolvedValue({ history: [], stats: {}, disliked: [a] })
+    ;(h.backend.setLiked as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    await library.setDisliked(a, true)
+    expect(h.backend.setLiked).toHaveBeenCalledWith(a, false)
+    expect(useLibraryStore.getState().disliked.map((t) => t.id)).toEqual([a.id])
+    expect(useLibraryStore.getState().liked).toHaveLength(0)
   })
 })
 

@@ -5,6 +5,7 @@ import { TrackRow } from '../components/TrackRow'
 import { HomeIcon, SearchIcon } from '../components/Icons'
 import { deriveAlbums } from '../lib/derive'
 import { relativeTime } from '../lib/format'
+import { mostPlayed } from '../lib/taste'
 import { useLibraryStore } from '../state/libraryStore'
 import { playback } from '../state/playback'
 import { search } from '../state/searchStore'
@@ -12,6 +13,7 @@ import { ui } from '../state/uiStore'
 
 export function HomeView() {
   const history = useLibraryStore((s) => s.history)
+  const stats = useLibraryStore((s) => s.stats)
   const liked = useLibraryStore((s) => s.liked)
   const playlists = useLibraryStore((s) => s.playlists)
   const searchHistory = useLibraryStore((s) => s.searchHistory)
@@ -20,6 +22,8 @@ export function HomeView() {
     const seen = new Set<string>()
     return history.filter((h) => (seen.has(h.track.id) ? false : (seen.add(h.track.id), true))).slice(0, 12)
   }, [history])
+
+  const top = useMemo(() => mostPlayed(history, stats, 5).filter((t) => t.playCount > 1), [history, stats])
 
   const albums = useMemo(() => deriveAlbums([...liked, ...history.map((h) => h.track)]).slice(0, 12), [liked, history])
 
@@ -65,6 +69,31 @@ export function HomeView() {
                 artwork={record.track.artwork}
                 onOpen={() => void playback.play(record.track, { tracks: recent.map((r) => r.track), label: 'Recently played' })}
                 onPlay={() => void playback.play(record.track, { tracks: recent.map((r) => r.track), label: 'Recently played' })}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {top.length > 0 && (
+        <section className="section">
+          <div className="section-head">
+            <h2>Most played</h2>
+          </div>
+          <div className="track-list">
+            {top.map((entry, i) => (
+              <TrackRow
+                key={entry.track.id}
+                track={entry.track}
+                index={i}
+                onPlay={() =>
+                  void playback.play(entry.track, {
+                    tracks: top.map((t) => t.track),
+                    index: i,
+                    label: 'Most played',
+                  })
+                }
+                trailing={<span className="muted">{entry.playCount} plays</span>}
               />
             ))}
           </div>
