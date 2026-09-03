@@ -12,10 +12,11 @@ type Track struct {
 	Source   string  `json:"source"`   // "youtube"
 	URL      string  `json:"url"`      // canonical web URL, when meaningful
 	Title    string  `json:"title"`
-	Artist   string  `json:"artist"`
-	Album    string  `json:"album"`    // empty when the provider has no album
-	Artwork  string  `json:"artwork"`  // real provider artwork URL, may be empty
-	Duration float64 `json:"duration"` // seconds; 0 when unknown
+	Artist   string  `json:"artist"`             // performing artist, only when the provider identifies one
+	Uploader string  `json:"uploader,omitempty"` // channel/uploader when it is NOT the performing artist
+	Album    string  `json:"album"`              // empty when the provider has no album
+	Artwork  string  `json:"artwork"`            // real provider artwork URL, may be empty
+	Duration float64 `json:"duration"`           // seconds; 0 when unknown
 	Explicit bool    `json:"explicit"`
 	AddedAt  int64   `json:"addedAt,omitempty"`
 }

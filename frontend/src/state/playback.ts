@@ -15,8 +15,8 @@ import { PlaybackEngine } from '../audio/engine'
 import { backend } from '../bridge/backend'
 import type { RepeatMode, Track } from '../bridge/types'
 import {
-  buildRadioBatch, canonicalSongKey, radioSeedFromTrack, splitArtists,
-  type RadioContext, type RadioKind, type RadioSeed,
+  buildRadioBatch, canonicalSongKey, identityKeyOf, radioSeedFromTrack, splitArtists,
+  verifiedSeedContext, type RadioContext, type RadioKind, type RadioSeed,
 } from '../lib/radio'
 import { tasteSnapshot, type TasteSnapshot } from '../lib/taste'
 import { dedupeTracks, moveItem, shuffleUpcoming } from '../lib/queue'
@@ -637,16 +637,14 @@ export class PlaybackController {
   }
 
   /**
-   * Deterministic fallback queries built only from the seed's own metadata.
-   * These run exclusively when the provider's dedicated related feed is
-   * unavailable or empty — they are artist/album context queries, never a
-   * generic "radio" search.
+   * Last-resort fallback queries: anchored exclusively on the seed's
+   * *identified* performing artist (never the uploader/channel, never title
+   * words — searching "fearless" is title-keyword matching in disguise).
    */
-  private radioFallbackQueries(seed: RadioSeed): string[] {
-    const queries: string[] = []
-    if (seed.rawArtist) queries.push(seed.rawArtist)
-    if (seed.album && seed.rawArtist) queries.push(`${seed.rawArtist} ${seed.album}`)
-    if (seed.kind === 'track' && seed.rawArtist && seed.title) queries.push(`${seed.rawArtist} ${seed.title}`)
+  private fallbackArtistQueries(seed: RadioSeed): string[] {
+    if (!seed.primaryArtist || !seed.rawArtist) return []
+    const queries = [seed.rawArtist]
+    if (seed.album) queries.push(`${seed.rawArtist} ${seed.album}`)
     return [...new Set(queries.filter((q) => q.trim().length > 1))]
   }
 
@@ -657,10 +655,11 @@ export class PlaybackController {
 
     // ---- candidate sources, in priority order ----
     //
-    // 1) The provider's dedicated related feed: the same "Up next" watch
-    //    continuation YouTube Music itself plays (Go: InnerTube /next, with a
-    //    yt-dlp mix fallback). This is the real radio endpoint — plain search
-    //    results are never used while it answers.
+    // 1) The provider's real recommendation feed: the same "Up next" / autoplay
+    //    queue YouTube Music itself plays (Go: InnerTube /next incl. the
+    //    automix continuation, with a yt-dlp mix fallback). Its ordering is
+    //    the relevance graph — plain text search is never used while it
+    //    answers, and the ranker keeps its order dominant.
     let candidates: Track[] = []
     let source = ''
     let failed = false
@@ -673,21 +672,28 @@ export class PlaybackController {
       failed = true
     }
 
-    // 2) Deterministic metadata fallback (only when the related feed is
-    //    unavailable or empty): queries constructed from the seed's own
-    //    artist/album/title metadata — artist results and album context, not
-    //    a generic "radio" search.
+    // 2) Explicit last resort, only when the feed is unavailable or empty AND
+    //    the seed has an identified performing artist: text-search the
+    //    artist's own material, then hard-verify every candidate's identity.
+    //    Songs that merely share a title (three unrelated "Fearless"es), bare
+    //    channel matches and artist-less uploads are all rejected here.
+    //    Uploader-only seeds (e.g. a slowed upload on a personal channel)
+    //    never generate text queries at all.
     if (candidates.length === 0) {
-      for (const query of this.radioFallbackQueries(seed)) {
+      const queries = this.fallbackArtistQueries(seed)
+      for (const query of queries) {
         if (candidates.length >= DISCOVERY_BATCH) break
         try {
           const res = await backend().search(query, 'songs')
           if (gen !== this.discoveryGen) return
           candidates = dedupeTracks([...candidates, ...(res.songs ?? []), ...(res.videos ?? [])])
-          source = 'seed-metadata'
         } catch {
           failed = true
         }
+      }
+      if (candidates.length > 0 || queries.length > 0) {
+        candidates = candidates.filter((t) => verifiedSeedContext(t, seed))
+        source = 'seed-artist'
       }
     }
     if (gen !== this.discoveryGen) return
@@ -700,9 +706,12 @@ export class PlaybackController {
     const auto = playerState().autoQueue
     const room = Math.max(0, DISCOVERY_MAX - auto.length)
     if (room === 0) return
+    const fromProvider = source !== 'seed-artist'
     const fresh = buildRadioBatch(candidates, this.radioContext(seed, snapshot), {
       limit: Math.min(DISCOVERY_BATCH, room),
-      queueTailArtists: auto.slice(-4).map((t) => splitArtists(t.artist)[0] ?? ''),
+      source: fromProvider ? 'provider' : 'search',
+      verifiedOnly: !fromProvider,
+      queueTailArtists: auto.slice(-4).map(identityKeyOf),
     })
     if (fresh.length > 0) {
       setPlayerState({

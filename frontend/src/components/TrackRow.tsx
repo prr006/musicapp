@@ -1,6 +1,6 @@
 import { memo, useState } from 'react'
 import type { Track } from '../bridge/types'
-import { formatTime } from '../lib/format'
+import { displayArtist, formatTime } from '../lib/format'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback, usePlayer } from '../state/playback'
 import { Artwork } from './Artwork'
@@ -85,7 +85,7 @@ export const TrackRow = memo(function TrackRow({
             {track.explicit && <span className="badge">E</span>}
             {isCurrent && status === 'loading' && <span className="spinner" aria-label="Loading" />}
           </div>
-          <div className="track-sub">{track.artist || 'Unknown artist'}</div>
+          <div className="track-sub">{displayArtist(track) || 'Unknown artist'}</div>
         </div>
         {!compact && showAlbum && <div className="track-album">{track.album}</div>}
         <div className="track-end">

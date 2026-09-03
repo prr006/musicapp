@@ -6,7 +6,10 @@ export interface Track {
   source: string
   url: string
   title: string
+  /** Performing artist — only when the provider identifies one. */
   artist: string
+  /** Channel/uploader when it is NOT the performing artist (e.g. uploads). */
+  uploader?: string
   album: string
   artwork: string
   duration: number

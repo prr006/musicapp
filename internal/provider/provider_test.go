@@ -87,7 +87,8 @@ func TestParseSearchResponse(t *testing.T) {
 	if !strings.Contains(s.Artwork, "w544-h544") {
 		t.Fatalf("expected upgraded real artwork url, got %q", s.Artwork)
 	}
-	if len(res.Videos) != 1 || res.Videos[0].Artist != "Halcyon Official" {
+	if len(res.Videos) != 1 || res.Videos[0].Artist != "" || res.Videos[0].Uploader != "Halcyon Official" {
+		// A bare channel name is uploader metadata, never the performing artist.
 		t.Fatalf("bad video result: %+v", res.Videos)
 	}
 	if res.Videos[0].Duration != 3725 {
@@ -147,7 +148,8 @@ func TestParseYTDLPSearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Songs) != 1 || res.Songs[0].ID != "yt:xyz" || res.Songs[0].Artist != "Chan" {
+	if len(res.Songs) != 1 || res.Songs[0].ID != "yt:xyz" || res.Songs[0].Artist != "" || res.Songs[0].Uploader != "Chan" {
+		// Uploader/channel is metadata, not the performing artist.
 		t.Fatalf("bad parse: %+v", res.Songs)
 	}
 	if res.Provider != "yt-dlp" {
@@ -276,8 +278,10 @@ func TestParseNextResponse(t *testing.T) {
 		t.Fatalf("expected real artwork, got %q", second.Artwork)
 	}
 	third := res.Tracks[2]
-	if third.Artist != "Halcyon - Topic" || third.Duration != 3725 {
-		t.Fatalf("expected video-style fallbacks: %+v", third)
+	if third.Artist != "Halcyon" || third.Uploader != "Halcyon - Topic" || third.Duration != 3725 {
+		// "- Topic" channels are official artist channels: promoted to artist,
+		// with the raw channel preserved as uploader metadata.
+		t.Fatalf("expected topic-channel promotion: %+v", third)
 	}
 }
 
@@ -344,5 +348,89 @@ func TestRelatedErrorsWhenAllSourcesFail(t *testing.T) {
 	c.NextEndpoint = "http://127.0.0.1:1/none"
 	if _, err := c.Related(context.Background(), "seed111"); err == nil {
 		t.Fatal("expected an error when both radio sources fail")
+	}
+}
+
+func TestArtistFromChannel(t *testing.T) {
+	// The one channel shape that explicitly identifies an artist.
+	if artist, ok := artistFromChannel("Homixide Gang - Topic"); !ok || artist != "Homixide Gang" {
+		t.Fatalf("topic channel should promote its artist: %q %v", artist, ok)
+	}
+	// Everything else stays uploader metadata — including "fearless", the
+	// channel behind "Farben (Slowed)" that used to become a bogus artist.
+	for _, channel := range []string{"fearless", "Halcyon Official", "TaylorSwiftVEVO", "Music Channel"} {
+		if _, ok := artistFromChannel(channel); ok {
+			t.Fatalf("channel %q must not be treated as an artist", channel)
+		}
+	}
+}
+
+// automixFixture: the first /next answer for most uploads — no queue items,
+// only an autoplay preview holding the continuation token.
+const automixFixture = `{
+ "contents": {"singleColumnMusicWatchNextResultsRenderer": {"playlist": {"playlist": {"contents": [
+  {"automixPreviewVideoRenderer": {"content": {"automixPlaylistVideoRenderer": {
+    "mixId": "RDxyz",
+    "CONTINUATION": {"continuationCommand": {"token": "automix-token-123"}}
+  }}}}
+ ]}}}}
+}`
+
+// automixContinuationFixture: the answer to the continuation request — the
+// real autoplay queue under continuationContents.
+const automixContinuationFixture = `{
+ "continuationContents": {"playlistPanelContinuation": {"contents": [
+  {"playlistPanelVideoRenderer": {
+    "videoId": "mix-a",
+    "title": {"runs": [{"text": "Nuvole Bianche"}]},
+    "longBylineText": {"runs": [
+      {"text": "Einaudi", "navigationEndpoint": {"browseEndpoint": {"browseId": "UCEinaudi"}}},
+      {"text": " • "},
+      {"text": "2:59"}
+    ]},
+    "lengthText": {"runs": [{"text": "2:59"}]}
+  }},
+  {"playlistPanelVideoRenderer": {
+    "videoId": "mix-b",
+    "title": {"runs": [{"text": "Farben (Slowed)"}]},
+    "shortBylineText": {"runs": [{"text": "fearless"}, {"text": " • "}, {"text": "3:12"}]},
+    "lengthText": {"runs": [{"text": "3:12"}]}
+  }}
+ ]}}
+}`
+
+func TestRelatedFollowsAutomixContinuation(t *testing.T) {
+	var calls []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		calls = append(calls, body)
+		w.Header().Set("Content-Type", "application/json")
+		if body["videoId"] != nil {
+			_, _ = w.Write([]byte(automixFixture))
+			return
+		}
+		_, _ = w.Write([]byte(automixContinuationFixture))
+	}))
+	defer srv.Close()
+	c := New(&fakeRunner{})
+	c.NextEndpoint = srv.URL
+
+	res, err := c.Related(context.Background(), "seed111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Source != "ytmusic-next" || len(res.Tracks) != 2 {
+		t.Fatalf("expected the automix queue, got %+v", res)
+	}
+	if res.Tracks[0].Title != "Nuvole Bianche" || res.Tracks[0].Artist != "Einaudi" {
+		t.Fatalf("bad mix track: %+v", res.Tracks[0])
+	}
+	// The channel behind a slowed upload stays uploader metadata, never artist.
+	if res.Tracks[1].Artist != "" || res.Tracks[1].Uploader != "fearless" {
+		t.Fatalf("uploader must not leak into artist: %+v", res.Tracks[1])
+	}
+	if len(calls) != 2 || calls[1]["continuation"] != "automix-token-123" {
+		t.Fatalf("the autoplay continuation must be requested: %+v", calls)
 	}
 }

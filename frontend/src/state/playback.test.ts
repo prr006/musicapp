@@ -667,20 +667,58 @@ describe('radio engine', () => {
     expect(h.backend.search).not.toHaveBeenCalled()
   })
 
-  it('falls back to deterministic seed-metadata searches when the related feed is empty', async () => {
+  it('falls back to identity-verified artist searches only when the related feed is empty', async () => {
     const h = harness()
     const a = track('a', { title: 'Nightfall', artist: 'Halcyon' })
     mockRelated(h, [])
-    const meta = track('m1', { title: 'Other Halcyon Song', artist: 'Halcyon' })
+    const same = track('m1', { title: 'Other Halcyon Song', artist: 'Halcyon' })
+    // Songs that merely share a title with the seed must not survive the
+    // fallback, no matter how prominently text search returns them.
+    const sameTitle = track('t1', { title: 'Nightfall', artist: 'Taylor Swift' })
+    const sameTitle2 = track('t2', { title: 'Nightfall', artist: 'Pink Floyd' })
     ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: [meta], videos: [], albums: [], artists: [], provider: 'test',
+      query: '', songs: [sameTitle, sameTitle2, same], videos: [], albums: [], artists: [], provider: 'test',
     })
     await h.controller.play(a, { tracks: [a], index: 0 })
     await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:m1']))
-    // The fallback query is anchored on the seed's own artist metadata.
     const queries = (h.backend.search as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]))
-    expect(queries.some((q) => q.toLowerCase().includes('halcyon'))).toBe(true)
-    expect(state().radioSource).toBe('seed-metadata')
+    // Artist-anchored queries only — never the song title, never a channel name.
+    expect(queries.every((q) => q.toLowerCase().includes('halcyon'))).toBe(true)
+    expect(queries.some((q) => q.toLowerCase().includes('nightfall'))).toBe(false)
+    expect(state().radioSource).toBe('seed-artist')
+  })
+
+  it('never text-searches for a channel-only seed (uploader is not an artist)', async () => {
+    const h = harness()
+    // The real-world failure shape: a slowed upload whose "artist" is really
+    // the uploader channel. No performing artist => no fallback at all.
+    const seed = track('farben', { title: 'Farben (Slowed)', artist: '', uploader: 'fearless' })
+    mockRelated(h, [])
+    const fearlessness = [
+      track('t1', { title: 'Fearless', artist: 'Taylor Swift' }),
+      track('t2', { title: 'Fearless', artist: 'Pink Floyd' }),
+      track('t3', { title: 'FEARLESS', artist: 'LE SSERAFIM' }),
+    ]
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: '', songs: fearlessness, videos: [], albums: [], artists: [], provider: 'test',
+    })
+    await h.controller.play(seed, { tracks: [seed], index: 0 })
+    await new Promise((r) => setTimeout(r, 40))
+    expect(h.backend.search).not.toHaveBeenCalled()
+    expect(state().autoQueue).toHaveLength(0)
+    // The queue stays valid and untouched — nothing unrelated leaked in.
+    expect(state().queue.map((t) => t.id)).toEqual([seed.id])
+  })
+
+  it('preserves the provider recommendation order when the feed answers', async () => {
+    const h = harness()
+    const a = track('a')
+    const feed = Array.from({ length: 8 }, (_, i) => track(`r${i}`, { title: `Rec ${i}`, artist: `Artist ${i}` }))
+    mockRelated(h, feed)
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(8))
+    // The feed's own order is the relevance graph: no re-sorting by MELO.
+    expect(state().autoQueue.map((t) => t.id)).toEqual(feed.map((t) => t.id))
   })
 
   it('start radio builds a fresh session: only the seed in the queue, discovery separate', async () => {
@@ -703,6 +741,39 @@ describe('radio engine', () => {
     expect(state().contextLabel).toContain('Radio')
     await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:rel1', 'yt:rel2']))
     expect(state().autoQueue.some((t) => t.id === 'yt:oldrel')).toBe(false)
+  })
+
+  it('autoplays from the real feed for a channel-only seed (the Farben case)', async () => {
+    const h = harness()
+    const seed = track('farben', { title: 'Farben (Slowed)', artist: '', uploader: 'fearless' })
+    const feed = [
+      track('r1', { title: 'Nuvole Bianche', artist: 'Einaudi' }),
+      track('r2', { title: 'Experience', artist: 'Einaudi' }),
+      track('r3', { title: 'Farben', artist: 'Homixide' }), // shares the title, different artist
+      track('r4', { title: 'Una Mattina', artist: 'Einaudi' }),
+    ]
+    mockRelated(h, feed, 'ytmusic-next')
+    await h.controller.play(seed, { tracks: [seed], index: 0 })
+    // The provider's recommendation queue fills autoplay in its own order. The
+    // same-title/different-artist track is kept only because the feed
+    // recommended it (never boosted by its title — see the radio unit tests,
+    // where the title-collision demotion is asserted directly).
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(feed.map((t) => t.id)))
+    expect(state().radioSource).toBe('ytmusic-next')
+    // …and no text search ever ran.
+    expect(h.backend.search).not.toHaveBeenCalled()
+  })
+
+  it('keeps same-artist recommendations when the feed actually recommends them', async () => {
+    const h = harness()
+    const a = track('a', { title: 'Nuvole Bianche', artist: 'Einaudi' })
+    const sameArtist = Array.from({ length: 4 }, (_, i) => track(`e${i}`, { title: `Einaudi Song ${i}`, artist: 'Einaudi' }))
+    const others = Array.from({ length: 4 }, (_, i) => track(`x${i}`, { title: `Other ${i}`, artist: `Artist ${i}` }))
+    mockRelated(h, [...sameArtist, ...others])
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(8))
+    const picked = state().autoQueue.filter((t) => t.artist === 'Einaudi')
+    expect(picked).toHaveLength(4) // all of them: familiarity is welcome
   })
 
   it('never recommends the current track itself, even if the feed echoes it', async () => {
@@ -739,16 +810,20 @@ describe('radio engine', () => {
     await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:y']))
   })
 
-  it('gives liked tracks positive weighting in the radio order', async () => {
+  it('likes nudge provider recommendations up without overriding the feed order', async () => {
     const h = harness()
     const a = track('a')
-    const plain = track('plain', { title: 'Plain Song' })
-    const favourite = track('favourite', { title: 'Favourite Song' })
+    const p0 = track('p0', { title: 'Feed Leader', artist: 'Feed Artist' })
+    const p1 = track('p1', { title: 'Feed Second', artist: 'Feed Artist Two' })
+    const favourite = track('p2', { title: 'Liked Song', artist: 'Fave' })
+    const p3 = track('p3', { title: 'Feed Fourth', artist: 'Feed Artist Four' })
     useLibraryStore.setState({ liked: [favourite] })
-    mockRelated(h, [plain, favourite]) // plain comes first from the provider
+    mockRelated(h, [p0, p1, favourite, p3])
     await h.controller.play(a, { tracks: [a], index: 0 })
-    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(2))
-    expect(state().autoQueue.map((t) => t.id)).toEqual([favourite.id, plain.id])
+    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(4))
+    // The liked song climbs above its direct neighbour but never above the
+    // feed's own leader: taste personalizes, the provider graph decides.
+    expect(state().autoQueue.map((t) => t.id)).toEqual([p0.id, favourite.id, p1.id, p3.id])
   })
 
   it('does not re-request discovery on ordinary playback state updates', async () => {

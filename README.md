@@ -82,23 +82,36 @@ clear upcoming, shuffle upcoming (current track never moves), dedupe. Autoplay
 ("keep playing similar music") is a **separate** auto-queue, clearly labelled and
 switchable off in settings.
 
-**Radio / autoplay** — MELO builds a proper radio around whatever is playing.
+**Radio / autoplay** — MELO builds a proper radio around whatever is playing,
+the way modern streaming apps do: play one song → get the provider's real
+"Up next"/autoplay recommendations for *that* song → keep the sequence going.
 The priority order is always *current track → user queue → autoplay*; autoplay
-never jumps ahead of an explicit choice. Candidates come from the provider's
-**dedicated related feed** (the same "Up next" watch continuation YouTube Music
-itself plays — InnerTube `/next`, with a yt-dlp mix `RD<id>` fallback, tagged in
-the UI), and only when that is unavailable does the engine fall back to
-deterministic queries built from the seed's own artist/album/title metadata —
-never from the current search-result list. Every candidate is scored (seed
-artist, album context, likes, local play counts, provider relevance; penalties
-for recently heard, recent skips, artist repetition), canonical-song deduped
-("Believer (Official Video)" ≡ "Believer", but two different songs sharing a
-title stay distinct), artist-diversified so one artist can't fill the queue
-while genuine artist radio still works, and appended to a bounded (≤ 20)
-autoplay list that refills below 8. Generation guards drop stale responses when
-you change tracks, and a failed fetch never destroys the queued suggestions.
-**Start radio** (song menu, artist and album pages) rebuilds the session around
-one seed; a 👎 *don't recommend* excludes a song from autoplay immediately.
+never jumps ahead of an explicit choice.
+
+Candidates come from the provider's **dedicated recommendation feed** — the
+YouTube Music watch-next endpoint, *including the autoplay ("automix")
+continuation* most uploads answer with, with a yt-dlp mix `RD<id>` fallback —
+and the feed's own ordering is preserved as the relevance graph: local taste
+(likes, history, recent skips) only nudges songs a few positions and never
+reorders the radio. **Music identity is strict**: a performing artist is only
+set when the provider identifies one (artist metadata or an official
+`- Topic` channel); channel/uploader names are kept as uploader metadata and
+never become artists, so an upload on a channel called "fearless" can no longer
+turn the radio into songs merely titled "Fearless". Title normalization is
+used for dedupe and version handling only — a shared title is never treated as
+evidence of relatedness (in fact it's slightly demoted). Text search is an
+explicit last resort: it runs only when the feed is unavailable *and* the seed
+has an identified artist, and every result is hard-verified as that artist's
+own material (or the same album for album seeds) before it can enter autoplay
+— otherwise nothing is added rather than something unrelated. Diversity is
+identity-based (artist *or* channel), so no artist or uploader can fill a
+block, while genuine artist radio still works; canonical-song dedupe collapses
+"Believer (Official Video)" onto "Believer" without merging different songs
+that share a title. The autoplay list stays bounded (≤ 20), refills below 8,
+generation guards discard stale responses, and a failed fetch never destroys
+the queued suggestions. **Start radio** (song menu, artist and album pages)
+rebuilds the session around one seed; a 👎 *don't recommend* excludes a song
+from autoplay immediately.
 
 **Local taste** — a lightweight, login-free listening profile: every track
 records `play_started` / `played_significantly` (30 s or half the song) /

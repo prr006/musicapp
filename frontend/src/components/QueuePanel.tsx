@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { formatCount } from '../lib/format'
+import { formatCount, displayArtist } from '../lib/format'
 import { library } from '../state/libraryStore'
 import { playback, usePlayer } from '../state/playback'
 import { ui } from '../state/uiStore'
@@ -14,7 +14,7 @@ const AUTOPLAY_VISIBLE = 10
 const RADIO_SOURCE_LABELS: Record<string, string> = {
   'ytmusic-next': 'YouTube Music radio',
   'yt-dlp-mix': 'YouTube mix radio',
-  'seed-metadata': 'Based on the playing song',
+  'seed-artist': 'More from this artist',
   'fixture-radio': 'Fixture radio',
 }
 
@@ -66,7 +66,7 @@ export function QueuePanel() {
               <Artwork src={current.artwork} alt={current.title} style={{ width: 44, height: 44 }} />
               <div className="track-main">
                 <div className="track-title">{current.title}</div>
-                <div className="track-sub">{status === 'loading' ? 'Loading…' : current.artist}</div>
+                <div className="track-sub">{status === 'loading' ? 'Loading…' : displayArtist(current)}</div>
               </div>
             </div>
           </>
@@ -99,7 +99,7 @@ export function QueuePanel() {
               <Artwork src={track.artwork} alt={track.title} style={{ width: 44, height: 44 }} />
               <div className="track-main">
                 <div className="track-title">{track.title}</div>
-                <div className="track-sub">{track.artist}</div>
+                <div className="track-sub">{displayArtist(track) || 'Unknown artist'}</div>
               </div>
               <div className="track-end">
                 <div className="row-actions">
@@ -170,7 +170,7 @@ export function QueuePanel() {
                 <Artwork src={track.artwork} alt={track.title} style={{ width: 44, height: 44 }} />
                 <div className="track-main">
                   <div className="track-title">{track.title}</div>
-                  <div className="track-sub">{track.artist}</div>
+                  <div className="track-sub">{displayArtist(track) || 'Unknown artist'}</div>
                 </div>
                 <div className="track-end">
                   <button

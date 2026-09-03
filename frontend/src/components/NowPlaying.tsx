@@ -1,4 +1,5 @@
 import { SPEEDS } from '../lib/defaults'
+import { displayArtist } from '../lib/format'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback, usePlayer } from '../state/playback'
 import { ui, useUIStore } from '../state/uiStore'
@@ -67,12 +68,16 @@ export function NowPlaying() {
               <div>
                 <h1 className="np-title">{current.title}</h1>
                 <div className="np-artist">
-                  <button
-                    type="button"
-                    onClick={() => ui.navigate({ name: 'artist', artist: current.artist.split(',')[0].trim() })}
-                  >
-                    {current.artist || 'Unknown artist'}
-                  </button>
+                  {current.artist ? (
+                    <button
+                      type="button"
+                      onClick={() => ui.navigate({ name: 'artist', artist: current.artist.split(',')[0].trim() })}
+                    >
+                      {displayArtist(current)}
+                    </button>
+                  ) : (
+                    <span>{displayArtist(current) || 'Unknown artist'}</span>
+                  )}
                   {current.album && (
                     <>
                       <span className="dot-sep" />

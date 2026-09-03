@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { formatTime } from '../lib/format'
+import { displayArtist, formatTime } from '../lib/format'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback, usePlayer } from '../state/playback'
 import { useBuffered, useDuration, usePosition } from '../state/positionChannel'
@@ -185,7 +185,7 @@ export function MiniPlayer() {
                 {current.title}
               </div>
               <div className="player-artist">
-                {status === 'loading' ? 'Loading…' : error ? error : current.artist || 'Unknown artist'}
+                {status === 'loading' ? 'Loading…' : error ? error : displayArtist(current) || 'Unknown artist'}
               </div>
             </div>
             <button

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { Track } from '../bridge/types'
 import {
-  buildRadioBatch, canonicalSongKey, netSkipsFor, normalizeArtistKey, radioSeedFromTrack,
-  scoreCandidate, splitArtists, type RadioContext,
+  buildRadioBatch, canonicalSongKey, identityKeyOf, netSkipsFor, normalizeArtistKey,
+  radioSeedFromTrack, scoreCandidate, splitArtists, verifiedSeedContext,
+  W_TITLE_COLLISION, type RadioContext,
 } from './radio'
 import { tasteSnapshot } from './taste'
 
@@ -269,5 +270,106 @@ describe('taste snapshot', () => {
     expect(snap.netSkips.get('yt:x')).toBe(0) // completions outweigh skips
     expect(snap.netSkips.get('yt:z')).toBe(2)
     expect(netSkipsFor({ playCount: 1, significantCount: 0, completeCount: 1, skipCount: 3, lastPlayedAt: 0 })).toBe(2)
+  })
+})
+
+describe('music identity (artist vs uploader)', () => {
+  it('identityKeyOf prefers the performing artist and falls back to the uploader', () => {
+    expect(identityKeyOf(track('a', { artist: 'Einaudi', uploader: 'some channel' }))).toBe('einaudi')
+    expect(identityKeyOf(track('b', { artist: '', uploader: 'Fearless' }))).toBe('fearless')
+    expect(identityKeyOf(track('c', { artist: '', uploader: 'X - Topic' }))).toBe('x')
+  })
+
+  it('verifiedSeedContext accepts the seed artist, never a shared title or an uploader', () => {
+    const seed = radioSeedFromTrack(track('seed', { title: 'Nightfall', artist: 'Halcyon' }))
+    expect(verifiedSeedContext(track('x', { title: 'Other Song', artist: 'Halcyon' }), seed)).toBe(true)
+    // Three unrelated songs that merely share the title — all rejected.
+    expect(verifiedSeedContext(track('t1', { title: 'Nightfall', artist: 'Taylor Swift' }), seed)).toBe(false)
+    expect(verifiedSeedContext(track('t2', { title: 'Nightfall', artist: 'Pink Floyd' }), seed)).toBe(false)
+    expect(verifiedSeedContext(track('t3', { title: 'Nightfall', artist: 'LE SSERAFIM' }), seed)).toBe(false)
+    // Channel-name matches and artist-less uploads are not context either.
+    expect(verifiedSeedContext(track('u1', { title: 'Nightfall', artist: '', uploader: 'Halcyon' }), seed)).toBe(false)
+    expect(verifiedSeedContext(track('u2', { title: 'Whatever', artist: '' }), seed)).toBe(false)
+    // Album seeds also accept album mates.
+    const albumSeed = radioSeedFromTrack(
+      track('s2', { title: 'X', artist: 'Halcyon', album: 'Blue Hours' }),
+      'album',
+    )
+    expect(verifiedSeedContext(track('m1', { title: 'Y', artist: 'Guest', album: 'Blue Hours' }), albumSeed)).toBe(true)
+    expect(verifiedSeedContext(track('m2', { title: 'Y', artist: 'Guest', album: 'Other' }), albumSeed)).toBe(false)
+    // An uploader-only seed verifies nothing: it must never text-search.
+    const channelSeed = radioSeedFromTrack(track('s3', { title: 'Farben (Slowed)', artist: '', uploader: 'fearless' }))
+    expect(verifiedSeedContext(track('f1', { title: 'Farben', artist: '', uploader: 'fearless' }), channelSeed)).toBe(false)
+  })
+
+  it('demotes candidates that share the seed title but not its artist', () => {
+    const base = ctx()
+    const plain = track('plain', { title: 'Unrelated Title', artist: 'Someone' })
+    const collision = { ...plain, title: 'Seed Song' } // the seed's normalized title
+    const delta =
+      scoreCandidate(collision, base, 0, 2) - scoreCandidate(plain, base, 0, 2)
+    expect(delta).toBeCloseTo(W_TITLE_COLLISION)
+    // The seed's own song version (same artist) is NOT demoted — that is
+    // dedupe's job, not relevance's.
+    const own = { ...plain, title: 'Seed Song', artist: 'Einaudi' }
+    expect(scoreCandidate(own, base, 0, 2)).toBeGreaterThan(scoreCandidate(collision, base, 0, 2))
+  })
+})
+
+describe('provider recommendation order', () => {
+  it('keeps the feed order when there are no taste signals', () => {
+    const feed = Array.from({ length: 6 }, (_, i) => track(`f${i}`, { title: `Rec ${i}`, artist: `Artist ${i}` }))
+    const batch = buildRadioBatch(feed, ctx({ blockedIds: new Set() }), { limit: 6, source: 'provider' })
+    expect(batch.map((t) => t.id)).toEqual(feed.map((t) => t.id))
+  })
+
+  it('lets likes climb a neighbouring track without overriding the feed leader', () => {
+    const feed = [
+      track('f0', { title: 'Leader', artist: 'Feed One' }),
+      track('f1', { title: 'Second', artist: 'Feed Two' }),
+      track('f2', { title: 'Liked', artist: 'Fave' }),
+      track('f3', { title: 'Fourth', artist: 'Feed Four' }),
+    ]
+    const base = ctx({
+      blockedIds: new Set(),
+      likedIds: new Set(['yt:f2']),
+      likedArtistKeys: new Set(['fave']),
+    })
+    const batch = buildRadioBatch(feed, base, { limit: 4, source: 'provider' })
+    expect(batch.map((t) => t.id)).toEqual(['yt:f0', 'yt:f2', 'yt:f1', 'yt:f3'])
+  })
+
+  it('hard-filters text-search batches to identity-verified candidates', () => {
+    const seedTrack = track('seed', { title: 'Nightfall', artist: 'Halcyon' })
+    const seed = radioSeedFromTrack(seedTrack)
+    const base = ctx({ seed, blockedIds: new Set() })
+    const searchResults = [
+      track('t1', { title: 'Nightfall', artist: 'Taylor Swift' }),
+      track('t2', { title: 'Nightfall', artist: 'Pink Floyd' }),
+      track('ok1', { title: 'Paper Lanterns', artist: 'Halcyon' }),
+      track('u1', { title: 'Nightfall', artist: '', uploader: 'Halcyon' }),
+    ]
+    const batch = buildRadioBatch(searchResults, base, { limit: 5, verifiedOnly: true })
+    expect(batch.map((t) => t.id)).toEqual(['yt:ok1'])
+  })
+
+  it('diversifies by uploader when no artist is known (no channel runs)', () => {
+    const by = (channel: string, n: number, prefix: string) =>
+      Array.from({ length: n }, (_, i) => track(`${prefix}${i}`, { title: `Upload ${prefix}${i}`, artist: '', uploader: channel }))
+    const batch = buildRadioBatch(
+      [...by('Same Channel', 6, 'c'), ...by('Other Channel', 3, 'o'), ...by('Third Channel', 3, 't')],
+      ctx({ blockedIds: new Set() }),
+      { limit: 10, windowSize: 5, maxPerArtistInWindow: 2 },
+    )
+    expect(batch).toHaveLength(10)
+    // No window of 5 consecutive tracks may hold 3 uploads of one channel.
+    for (let i = 0; i + 5 <= batch.length; i += 1) {
+      const uploaders = batch.slice(i, i + 5).map((t) => t.uploader)
+      for (const channel of ['Same Channel', 'Other Channel', 'Third Channel']) {
+        expect(uploaders.filter((u) => u === channel).length).toBeLessThan(3)
+      }
+    }
+    // The dominant channel is still well represented — variety, not exclusion.
+    expect(batch.filter((t) => t.uploader === 'Same Channel').length).toBeGreaterThanOrEqual(4)
   })
 })

@@ -188,6 +188,7 @@ func ParseSearchResponse(raw []byte) (model.SearchResponse, error) {
 				Explicit: hasExplicitBadge(it),
 			}
 			var artistParts []string
+			var channel string
 			for _, r := range runs {
 				switch {
 				case durationRe.MatchString(r.Text):
@@ -200,16 +201,22 @@ func ParseSearchResponse(raw []byte) (model.SearchResponse, error) {
 			}
 			if len(artistParts) == 0 {
 				// No browse endpoints (typical for video results): the first
-				// run that is neither a type label nor a duration is the channel.
+				// run that is neither a type label nor a duration is the
+				// channel/uploader — kept out of Artist unless the channel is
+				// an official "<Artist> - Topic" artist channel.
 				for _, r := range runs {
 					if isTypeLabel(r.Text) || durationRe.MatchString(r.Text) || viewsRe.MatchString(r.Text) {
 						continue
 					}
-					artistParts = append(artistParts, r.Text)
+					channel = r.Text
 					break
+				}
+				if artist, ok := artistFromChannel(channel); ok {
+					artistParts = append(artistParts, artist)
 				}
 			}
 			t.Artist = strings.Join(uniqueStrings(artistParts), ", ")
+			t.Uploader = channel
 			if isVideoType(runs) {
 				out.Videos = append(out.Videos, t)
 			} else {
@@ -474,6 +481,24 @@ func uniqueStrings(in []string) []string {
 	return out
 }
 
+// ---------------- artist / channel identity ----------------
+
+// artistFromChannel reports the performing artist for a bare channel name,
+// ok=true only when the provider's naming explicitly identifies an artist.
+// YouTube's auto-generated "<Artist> - Topic" channels are official artist
+// channels, so they are the one channel shape that may become an artist.
+// Everything else (personal channels, "X Official", VEVO variants…) stays an
+// uploader: guessing an artist from a channel name is how "Farben (Slowed)"
+// uploaded by a channel called "fearless" once turned into a radio full of
+// songs merely titled "Fearless".
+func artistFromChannel(channel string) (artist string, ok bool) {
+	name := strings.TrimSpace(channel)
+	if s := strings.TrimSuffix(name, "- Topic"); s != name {
+		return strings.TrimSpace(s), true
+	}
+	return "", false
+}
+
 // ---------------- related music (radio) ----------------
 
 // Related returns the provider's dedicated related-music list for one video —
@@ -512,9 +537,15 @@ func (c *Client) Related(ctx context.Context, videoID string) (model.RadioRespon
 	return res, nil
 }
 
+// relatedInnerTube asks the YouTube Music watch-next endpoint for the "Up
+// next" queue of a video. For most uploads the first response only contains an
+// autoplay *preview* (automixPreviewVideoRenderer); the actual recommendation
+// queue is then one continuation request away — exactly the request YouTube
+// Music itself makes. Without following it, tracks with no explicit radio
+// panel would appear to have no related data and callers would fall back to
+// text search, which is how unrelated songs used to leak into autoplay.
 func (c *Client) relatedInnerTube(ctx context.Context, videoID string) (model.RadioResponse, error) {
-	out := model.RadioResponse{Source: "ytmusic-next", Tracks: []model.Track{}}
-	payload := map[string]any{
+	clientCtx := map[string]any{
 		"context": map[string]any{
 			"client": map[string]any{
 				"clientName":    clientName,
@@ -523,12 +554,52 @@ func (c *Client) relatedInnerTube(ctx context.Context, videoID string) (model.Ra
 				"gl":            "US",
 			},
 		},
-		"videoId": videoID,
 	}
+	raw, err := c.postNext(ctx, mergeMaps(clientCtx, map[string]any{"videoId": videoID}))
+	if err != nil {
+		return model.RadioResponse{}, err
+	}
+	parsed, err := ParseNextResponse(raw)
+	if err != nil {
+		return model.RadioResponse{}, err
+	}
+	if len(parsed.Tracks) > 0 {
+		return parsed, nil
+	}
+
+	// No direct queue: follow the autoplay ("automix") preview continuation.
+	var root any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return model.RadioResponse{}, fmt.Errorf("%w: malformed JSON", ErrProvider)
+	}
+	previews := []map[string]any{}
+	collect(root, "automixPreviewVideoRenderer", &previews)
+	for _, preview := range previews {
+		token := continuationToken(preview)
+		if token == "" {
+			continue
+		}
+		next, err := c.postNext(ctx, mergeMaps(clientCtx, map[string]any{"continuation": token}))
+		if err != nil {
+			continue
+		}
+		mix, err := ParseNextResponse(next)
+		if err != nil {
+			continue
+		}
+		if len(mix.Tracks) > 0 {
+			return mix, nil
+		}
+	}
+	return parsed, nil // empty: the caller decides the next ladder step
+}
+
+// postNext performs one InnerTube /next request and returns the raw body.
+func (c *Client) postNext(ctx context.Context, payload map[string]any) ([]byte, error) {
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.NextEndpoint, bytes.NewReader(body))
 	if err != nil {
-		return out, err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent)
@@ -537,21 +608,50 @@ func (c *Client) relatedInnerTube(ctx context.Context, videoID string) (model.Ra
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return out, fmt.Errorf("%w: %v", ErrNetwork, err)
+		return nil, fmt.Errorf("%w: %v", ErrNetwork, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return out, fmt.Errorf("%w (HTTP %d)", ErrProvider, resp.StatusCode)
+		return nil, fmt.Errorf("%w (HTTP %d)", ErrProvider, resp.StatusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 12<<20))
-	if err != nil {
-		return out, fmt.Errorf("%w: %v", ErrNetwork, err)
+	return io.ReadAll(io.LimitReader(resp.Body, 12<<20))
+}
+
+func mergeMaps(base map[string]any, extra map[string]any) map[string]any {
+	out := make(map[string]any, len(base)+len(extra))
+	for k, v := range base {
+		out[k] = v
 	}
-	parsed, err := ParseNextResponse(raw)
-	if err != nil {
-		return out, err
+	for k, v := range extra {
+		out[k] = v
 	}
-	return parsed, nil
+	return out
+}
+
+// continuationToken finds the continuation command's token anywhere inside an
+// autoplay preview renderer (YouTube nests it under an all-caps CONTINUATION
+// key whose shape changes over time).
+func continuationToken(v any) string {
+	switch t := v.(type) {
+	case map[string]any:
+		if cmd, ok := t["continuationCommand"].(map[string]any); ok {
+			if token, _ := cmd["token"].(string); token != "" {
+				return token
+			}
+		}
+		for _, v2 := range t {
+			if token := continuationToken(v2); token != "" {
+				return token
+			}
+		}
+	case []any:
+		for _, v2 := range t {
+			if token := continuationToken(v2); token != "" {
+				return token
+			}
+		}
+	}
+	return ""
 }
 
 // relatedYTDLP dumps the seed's YouTube mix (RD<videoID>) as a flat playlist.
@@ -604,6 +704,7 @@ func ParseNextResponse(raw []byte) (model.RadioResponse, error) {
 		}
 		byline := panelBylineRuns(it)
 		var artistParts []string
+		var channel string
 		for _, r := range byline {
 			switch {
 			case durationRe.MatchString(r.Text):
@@ -615,20 +716,28 @@ func ParseNextResponse(raw []byte) (model.RadioResponse, error) {
 					t.Album = r.Text
 				}
 			case strings.HasPrefix(r.BrowseID, "UC"):
+				// A browse endpoint into an artist channel is the provider
+				// explicitly identifying the performing artist.
 				artistParts = append(artistParts, r.Text)
 			}
 		}
 		if len(artistParts) == 0 {
-			// Video-style panels often carry a bare channel name.
+			// Video-style panels carry a bare channel/uploader name. It is NOT
+			// the performing artist unless the channel is an official
+			// "<Artist> - Topic" artist channel.
 			for _, r := range byline {
 				if isTypeLabel(r.Text) || durationRe.MatchString(r.Text) || viewsRe.MatchString(r.Text) {
 					continue
 				}
-				artistParts = append(artistParts, r.Text)
+				channel = r.Text
 				break
+			}
+			if artist, ok := artistFromChannel(channel); ok {
+				artistParts = append(artistParts, artist)
 			}
 		}
 		t.Artist = strings.Join(uniqueStrings(artistParts), ", ")
+		t.Uploader = channel
 		out.Tracks = append(out.Tracks, t)
 	}
 	return out, nil
@@ -697,8 +806,18 @@ func ParseYTDLPSearch(raw []byte, query string) (model.SearchResponse, error) {
 		if e.ID == "" {
 			continue
 		}
-		res.Songs = append(res.Songs, TrackFromYTDLP(e.ID, e.Title, firstNonEmpty(e.Artist, e.Uploader, e.Channel),
-			e.Album, bestEntryThumb(e), e.Duration))
+		channel := firstNonEmpty(e.Uploader, e.Channel)
+		artist := strings.TrimSpace(e.Artist)
+		if artist == "" {
+			// yt-dlp's uploader/channel is NOT the performing artist unless it
+			// is an official "<Artist> - Topic" artist channel.
+			if a, ok := artistFromChannel(channel); ok {
+				artist = a
+			}
+		}
+		t := TrackFromYTDLP(e.ID, e.Title, artist, e.Album, bestEntryThumb(e), e.Duration)
+		t.Uploader = channel
+		res.Songs = append(res.Songs, t)
 	}
 	return res, nil
 }

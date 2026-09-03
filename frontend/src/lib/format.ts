@@ -38,8 +38,17 @@ export function relativeTime(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
-/** Deterministic initials used when a track genuinely has no artwork. */
-export function initials(text: string): string {
+/**
+ * What to show as the track's subtitle: the performing artist when the
+ * provider identified one, otherwise the channel/uploader (uploads, remix
+ * channels), otherwise nothing. Display only — recommendation identity always
+ * uses `artist`, never `uploader`.
+ */
+export function displayArtist(track: { artist?: string; uploader?: string }): string {
+  return track.artist || track.uploader || ''
+}
+
+/** Deterministic initials used when a track genuinely has no artwork. */export function initials(text: string): string {
   const words = text.trim().split(/\s+/).filter(Boolean)
   if (words.length === 0) return '?'
   if (words.length === 1) return words[0].slice(0, 2).toUpperCase()
