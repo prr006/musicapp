@@ -15,10 +15,33 @@ export interface TasteSnapshot {
   heardIds: Set<string>
   /** Primary artist keys heard recently. */
   recentArtistKeys: Set<string>
-  /** Play counts per canonical primary artist. */
+  /** Raw play counts per canonical primary artist. */
   artistPlays: Map<string, number>
+  /**
+   * Completion-weighted artist affinity: a completed listen counts far more
+   * than a bare start (which may have been a skip). This is the number the
+   * ranker personalizes with — feedback quality matters, not just clicks.
+   */
+  artistAffinity: Map<string, number>
+  /** Skip rate per canonical primary artist (skips / plays), plays ≥ 2. */
+  artistSkipRates: Map<string, number>
   /** Track id → net recent skips (skip − complete). */
   netSkips: Map<string, number>
+}
+
+/** How strongly each listening event feeds artist affinity. */
+export const AFFINITY_PER_PLAY = 0.5
+export const AFFINITY_PER_SIGNIFICANT = 0.25
+export const AFFINITY_PER_COMPLETION = 1.0
+
+/** Completion-weighted affinity for one track's stats. */
+export function trackAffinity(stats: PlayStats | undefined, playedWithoutStats = false): number {
+  if (!stats) return playedWithoutStats ? AFFINITY_PER_PLAY : 0
+  return (
+    stats.playCount * AFFINITY_PER_PLAY +
+    stats.significantCount * AFFINITY_PER_SIGNIFICANT +
+    stats.completeCount * AFFINITY_PER_COMPLETION
+  )
 }
 
 /**
@@ -36,6 +59,8 @@ export function tasteSnapshot(
   const heardIds = new Set<string>()
   const recentArtistKeys = new Set<string>()
   const artistPlays = new Map<string, number>()
+  const artistAffinity = new Map<string, number>()
+  const artistSkipRates = new Map<string, number>()
   const netSkips = new Map<string, number>()
 
   history.slice(0, recentWindow).forEach((record, i) => {
@@ -49,18 +74,29 @@ export function tasteSnapshot(
     netSkips.set(id, Math.max(0, s.skipCount - s.completeCount))
   }
 
-  // Artist play counts come from stats when available (they survive history
-  // trimming), otherwise they are counted from history records.
+  // Artist play counts and completion-weighted affinity come from stats when
+  // available (they survive history trimming), otherwise from history records.
+  // Skip rates accumulate per artist so frequently-abandoned artists can be
+  // gently down-weighted without ever blacklisting them.
+  const artistSkips = new Map<string, number>()
+  const artistPlayTotals = new Map<string, number>()
+  const bump = (m: Map<string, number>, key: string, n: number) => m.set(key, (m.get(key) ?? 0) + n)
   for (const record of history) {
     const primary = splitArtists(record.track.artist)[0] ?? ''
     if (!primary) continue
     const id = record.track.id
     const s = stats?.[id]
     const plays = s ? s.playCount : 1
-    artistPlays.set(primary, (artistPlays.get(primary) ?? 0) + plays)
+    bump(artistPlays, primary, plays)
+    bump(artistAffinity, primary, trackAffinity(s, !s))
+    bump(artistPlayTotals, primary, s ? s.playCount : 1)
+    if (s) bump(artistSkips, primary, s.skipCount)
+  }
+  for (const [artist, plays] of artistPlayTotals) {
+    if (plays >= 2) artistSkipRates.set(artist, (artistSkips.get(artist) ?? 0) / plays)
   }
 
-  return { recentIds, heardIds, recentArtistKeys, artistPlays, netSkips }
+  return { recentIds, heardIds, recentArtistKeys, artistPlays, artistAffinity, artistSkipRates, netSkips }
 }
 
 export interface PlayedTrack {

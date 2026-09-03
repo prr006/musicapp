@@ -904,6 +904,107 @@ describe('radio engine', () => {
     await new Promise((r) => setTimeout(r, 90))
     expect(state().autoQueue.some((t) => t.id === stale.id)).toBe(false)
   })
+
+  // ---------- session-aware, multi-anchor discovery ----------
+
+  it('re-anchors discovery on the current track as the session moves on, and labels the mix', async () => {
+    const h = harness()
+    const a = track('a', { title: 'Anime Opening', artist: 'A Artist' })
+    const b = track('b', { title: 'Phonk Drift', artist: 'B Artist' })
+    const a2 = track('a2', { title: 'A Song Two', artist: 'A Artist' })
+    const c1 = track('c1', { title: 'C Song One', artist: 'C Artist' })
+    const c2 = track('c2', { title: 'C Song Two', artist: 'C Artist' })
+    const related = new Map<string, { tracks: Track[]; source: string }>([
+      ['yt:a', { tracks: [b, a2], source: 'ytmusic-next' }],
+      ['yt:b', { tracks: [c1, c2], source: 'ytmusic-next' }],
+    ])
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockImplementation(
+      async (t: Track) => related.get(t.id) ?? { tracks: [], source: '' },
+    )
+
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:b', 'yt:a2']))
+    expect(state().radioSource).toBe('ytmusic-next') // one feed: based on this song
+
+    // The session moves onto the provider-recommended phonk track: the next
+    // batch must be anchored on IT (b's own feed), with the earlier anchor's
+    // feed merged as a drift pool — no hard-coded transitions anywhere.
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe('yt:b'))
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toContain('yt:c1'))
+    expect(state().autoQueue.map((t) => t.id)).toContain('yt:c2')
+    expect(state().radioSource).toBe('session-mix') // several sources contributed
+    const anchors = (h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => (c[0] as Track).id,
+    )
+    expect(anchors).toContain('yt:a')
+    expect(anchors).toContain('yt:b')
+  })
+
+  it('a concentrated provider feed triggers broader candidate generation, not acceptance', async () => {
+    const h = harness()
+    // The reported failure shape: one artist flooding the whole feed.
+    const names = ['CRIMINAL', 'TAKA', 'UNICO', 'STYLE', 'BPM', 'MASTER', 'CLUB', 'RARE']
+    const funk = names.map((n, i) => track(`f${i}`, { title: `FUNK ${n}`, artist: 'Funk Artist' }))
+    const likedAnchor = track('L', { title: 'Liked Song', artist: 'Liked Artist' })
+    const others = [
+      track('o1', { title: 'Other One', artist: 'Other Artist' }),
+      track('o2', { title: 'Other Two', artist: 'Second Artist' }),
+      track('o3', { title: 'Other Three', artist: 'Third Artist' }),
+    ]
+    const related = new Map<string, { tracks: Track[]; source: string }>([
+      ['yt:s', { tracks: funk, source: 'ytmusic-next' }],
+      ['yt:L', { tracks: others, source: 'ytmusic-next' }],
+    ])
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockImplementation(
+      async (t: Track) => related.get(t.id) ?? { tracks: [], source: '' },
+    )
+    useLibraryStore.setState({ ...useLibraryStore.getState(), liked: [likedAnchor] })
+
+    const s = track('s', { title: 'Seed Song', artist: 'Seed Artist' })
+    await h.controller.play(s, { tracks: [s], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
+
+    // Broadening actually fired: a second anchor's feed was fetched.
+    const anchors = (h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => (c[0] as Track).id,
+    )
+    expect(anchors).toContain('yt:L')
+    // The queue is not the FUNK wall: alternatives are in, funk is capped.
+    const funkCount = state().autoQueue.filter((t) => t.artist === 'Funk Artist').length
+    const otherCount = state().autoQueue.filter((t) => t.artist !== 'Funk Artist').length
+    expect(otherCount).toBeGreaterThanOrEqual(2)
+    expect(funkCount).toBeLessThanOrEqual(4)
+  })
+
+  it('refills continuously: every consumed anchor becomes the next primary as the queue drains', async () => {
+    const h = harness()
+    // A chain: each track's feed recommends the next (all distinct artists).
+    const chain = Array.from({ length: 12 }, (_, i) =>
+      track(`t${i}`, { title: `Chain ${i}`, artist: `Chain Artist ${i}` }),
+    )
+    const related = new Map<string, { tracks: Track[]; source: string }>(
+      chain.map((t, i) => [t.id, { tracks: [chain[(i + 1) % chain.length]], source: 'ytmusic-next' }]),
+    )
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockImplementation(
+      async (t: Track) => related.get(t.id) ?? { tracks: [], source: '' },
+    )
+
+    await h.controller.play(chain[0], { tracks: [chain[0]], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThanOrEqual(1))
+    const before = (h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.length
+    for (let i = 0; i < 4; i += 1) {
+      h.media.endNaturally()
+      await vi.waitFor(() => expect(state().status).toBe('playing'))
+    }
+    // Each advance refilled: every consumed track became a fetch anchor.
+    const calls = (h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.length
+    expect(calls).toBeGreaterThan(before)
+    const anchors = (h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => (c[0] as Track).id,
+    )
+    for (let i = 1; i <= 4; i += 1) expect(anchors).toContain(`yt:t${i}`)
+  })
 })
 
 describe('library feedback', () => {

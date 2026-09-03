@@ -15,8 +15,10 @@ import { PlaybackEngine } from '../audio/engine'
 import { backend } from '../bridge/backend'
 import type { RepeatMode, Track } from '../bridge/types'
 import {
-  buildRadioBatch, canonicalSongKey, identityKeyOf, radioSeedFromTrack, splitArtists,
-  verifiedSeedContext, type RadioContext, type RadioKind, type RadioSeed,
+  buildRadioBatch, canonicalSongKey, DIVERSITY, identityKeyOf,
+  MAX_RADIO_DURATION, MIN_RADIO_DURATION, poolConcentration, radioSeedFromTrack,
+  splitArtists, verifiedSeedContext, W_DRIFT_SOURCE, W_TASTE_SOURCE,
+  type CandidatePool, type RadioContext, type RadioKind, type RadioSeed,
 } from '../lib/radio'
 import { tasteSnapshot, type TasteSnapshot } from '../lib/taste'
 import { dedupeTracks, moveItem, shuffleUpcoming } from '../lib/queue'
@@ -43,6 +45,11 @@ const DISCOVERY_MAX = 20
 const DISCOVERY_BATCH = 20
 /** A listen counts as "significant" after this many seconds (or half the song). */
 const SIGNIFICANT_LISTEN_SECONDS = 30
+/** How much of the listening session feeds the radio context. */
+const SESSION_WINDOW = 12
+/** Broadening fetch budget per refill: session drift anchors + taste anchors. */
+const MAX_DRIFT_ANCHORS_PER_REFILL = 2
+const MAX_TASTE_ANCHORS_PER_REFILL = 1
 
 /** Seconds after which a listen counts as significant: 30s or half the song. */
 function significantAt(track: Track): number {
@@ -65,6 +72,15 @@ export class PlaybackController {
   private discoveryRefillGen = 0
   /** An explicit artist/album seed from Start Radio; holds until playback moves on. */
   private explicitSeed: RadioSeed | null = null
+  /**
+   * The listening session: tracks actually played recently, most recent first
+   * (bounded). This is the drift context — if the listener moves from anime
+   * OSTs into phonk, these entries carry the radio along without any
+   * hard-coded genre transition.
+   */
+  private sessionRecent: Track[] = []
+  /** Anchor track ids whose recommendation feed was already fetched this session. */
+  private sessionAnchorsTried = new Set<string>()
 
   constructor(engine = new PlaybackEngine()) {
     this.engine = engine
@@ -149,9 +165,22 @@ export class PlaybackController {
     const current = playerState().current
     if (!current) return
     this.recordedForToken.add(token)
+    this.rememberInSession(current)
     void library.recordPlayEvent(current, 'play_started').catch(() => {
       /* history is best-effort; the error surfaces through the store */
     })
+  }
+
+  /** Records a played track in the bounded session profile. */
+  private rememberInSession(track: Track): void {
+    if (this.sessionRecent[0]?.id === track.id) return
+    this.sessionRecent = [track, ...this.sessionRecent.filter((t) => t.id !== track.id)].slice(0, SESSION_WINDOW)
+  }
+
+  /** Starts a fresh session context (new radio / stop). */
+  private resetSessionContext(): void {
+    this.sessionRecent = []
+    this.sessionAnchorsTried = new Set()
   }
 
   /**
@@ -254,6 +283,7 @@ export class PlaybackController {
   async startRadio(track: Track, opts: { kind?: RadioKind; label?: string } = {}): Promise<void> {
     const kind = opts.kind ?? 'track'
     this.resetDiscovery()
+    this.resetSessionContext()
     this.explicitSeed = radioSeedFromTrack(track, kind)
     const label =
       opts.label ??
@@ -320,6 +350,7 @@ export class PlaybackController {
     this.recordedForToken.clear()
     this.significantForToken.clear()
     this.concludedForToken.clear()
+    this.resetSessionContext()
     positionChannel.reset()
     setPlayerState({ current: null, status: 'idle', error: null, index: -1 })
     lyrics.clear()
@@ -588,12 +619,15 @@ export class PlaybackController {
   }
 
   /**
-   * The seed the current radio is built around: an explicit artist/album seed
-   * while its own track is still playing, otherwise the current track itself.
+   * The seed the current radio is anchored on. A Song radio re-anchors on the
+   * current track for every refill (the session profile provides the drift).
+   * Artist/Album radios keep their explicit anchor for the whole session so
+   * they stay legitimately artist/album-heavy; any manual play() drops it.
    */
   private currentSeed(): RadioSeed | null {
     const current = playerState().current
     if (!current) return null
+    if (this.explicitSeed && this.explicitSeed.kind !== 'track') return this.explicitSeed
     if (this.explicitSeed && this.explicitSeed.id === current.id) return this.explicitSeed
     return radioSeedFromTrack(current)
   }
@@ -632,8 +666,22 @@ export class PlaybackController {
       likedIds: new Set(lib.liked.map((t) => t.id)),
       likedArtistKeys,
       artistPlays: snapshot.artistPlays,
+      artistAffinity: snapshot.artistAffinity,
+      artistSkipRates: snapshot.artistSkipRates,
       netSkips: snapshot.netSkips,
+      sessionArtistCounts: this.sessionArtistCounts(),
     }
+  }
+
+  /** Artist plays within the current listening session (familiarity signal). */
+  private sessionArtistCounts(): Map<string, number> {
+    const counts = new Map<string, number>()
+    for (const track of this.sessionRecent) {
+      const artist = splitArtists(track.artist)[0]
+      if (!artist) continue
+      counts.set(artist, (counts.get(artist) ?? 0) + 1)
+    }
+    return counts
   }
 
   /**
@@ -648,39 +696,108 @@ export class PlaybackController {
     return [...new Set(queries.filter((q) => q.trim().length > 1))]
   }
 
+  /**
+   * One discovery generation: build a candidate POOL from several real
+   * recommendation feeds, then filter → rank → diversify → append.
+   *
+   * Sources (all actual provider recommendation data, in anchor priority):
+   *  1. the current track's "Up next" feed — the primary anchor (weight 1);
+   *  2. drift anchors: recent *session* tracks (weight W_DRIFT_SOURCE) — this
+   *     is what lets a session that wandered from anime into phonk keep
+   *     recommending phonk instead of snapping back to the original seed;
+   *  3. taste anchors: liked tracks (weight W_TASTE_SOURCE).
+   *
+   * Broader generation is triggered — never just accepted — when the primary
+   * pool is empty, yields too few fresh candidates, or is dominated by one
+   * artist/channel identity (the "FUNK CRIMINAL → FUNK TAKA → …" failure).
+   * Text search remains the explicit last resort with identity verification.
+   */
   private async doDiscoveryFetch(): Promise<void> {
     const gen = ++this.discoveryGen
     const seed = this.currentSeed()
     if (!seed) return
 
-    // ---- candidate sources, in priority order ----
-    //
-    // 1) The provider's real recommendation feed: the same "Up next" / autoplay
-    //    queue YouTube Music itself plays (Go: InnerTube /next incl. the
-    //    automix continuation, with a yt-dlp mix fallback). Its ordering is
-    //    the relevance graph — plain text search is never used while it
-    //    answers, and the ranker keeps its order dominant.
-    let candidates: Track[] = []
-    let source = ''
+    // ---- candidate generation ----
+    const pools: CandidatePool[] = []
+    const contributors: string[] = []
     let failed = false
+
+    // 1) Primary anchor: the current track's real recommendation feed.
+    let primary: Track[] = []
+    let primarySource = ''
     try {
       const res = await backend().relatedTracks(playerState().current!)
       if (gen !== this.discoveryGen) return // superseded by a newer request
-      candidates = res?.tracks ?? []
-      source = res?.source ?? ''
+      primary = res?.tracks ?? []
+      primarySource = res?.source ?? ''
     } catch {
       failed = true
     }
+    if (primary.length > 0) {
+      pools.push({ weight: 1, tracks: primary })
+      contributors.push(primarySource)
+    }
 
-    // 2) Explicit last resort, only when the feed is unavailable or empty AND
-    //    the seed has an identified performing artist: text-search the
-    //    artist's own material, then hard-verify every candidate's identity.
-    //    Songs that merely share a title (three unrelated "Fearless"es), bare
-    //    channel matches and artist-less uploads are all rejected here.
-    //    Uploader-only seeds (e.g. a slowed upload on a personal channel)
-    //    never generate text queries at all.
-    if (candidates.length === 0) {
+    // 2) Broader generation when the primary pool is thin or one-sided.
+    //    Anchors come from the session (drift) and the liked list (taste);
+    //    each anchor's feed is fetched at most once per session, and the
+    //    budget per refill stays tiny (≤ 2 drift + 1 taste fetch).
+    const yieldSoFar = this.freshCandidateCount(primary)
+    const concentration = poolConcentration(primary)
+    const dominated = primary.length >= 6 && concentration.share >= 0.6
+    const needsBroader = primary.length === 0 || yieldSoFar < DISCOVERY_TARGET || dominated
+    if (needsBroader && gen === this.discoveryGen) {
+      const driftAnchors = this.driftAnchors()
+      let driftFetches = 0
+      for (const anchor of driftAnchors) {
+        if (driftFetches >= MAX_DRIFT_ANCHORS_PER_REFILL) break
+        if (this.sessionAnchorsTried.has(anchor.id)) continue
+        this.sessionAnchorsTried.add(anchor.id)
+        driftFetches += 1
+        try {
+          const res = await backend().relatedTracks(anchor)
+          if (gen !== this.discoveryGen) return
+          if ((res?.tracks ?? []).length > 0) {
+            pools.push({ weight: W_DRIFT_SOURCE, tracks: res!.tracks })
+            contributors.push(`${primarySource || 'session'}+drift`)
+          }
+        } catch {
+          /* a failing drift anchor is never fatal */
+        }
+      }
+      // Taste anchors only when drift could not contribute (keeps requests low).
+      if (pools.length === 1) {
+        const lib = useLibraryStore.getState()
+        let tasteFetches = 0
+        for (const anchor of lib.liked) {
+          if (tasteFetches >= MAX_TASTE_ANCHORS_PER_REFILL) break
+          if (this.sessionAnchorsTried.has(anchor.id)) continue
+          if (anchor.id === playerState().current?.id) continue
+          this.sessionAnchorsTried.add(anchor.id)
+          tasteFetches += 1
+          try {
+            const res = await backend().relatedTracks(anchor)
+            if (gen !== this.discoveryGen) return
+            if ((res?.tracks ?? []).length > 0) {
+              pools.push({ weight: W_TASTE_SOURCE, tracks: res!.tracks })
+              contributors.push(`${primarySource || 'taste'}+liked`)
+            }
+          } catch {
+            /* best-effort */
+          }
+        }
+      }
+    }
+
+    // 3) Explicit last resort, only when no feed answered AND the seed has an
+    //    identified performing artist: text-search the artist's own material,
+    //    then hard-verify every candidate's identity. Songs that merely share
+    //    a title, bare channel matches and artist-less uploads are rejected.
+    //    Uploader-only seeds never generate text queries at all.
+    let fallbackCandidates: Track[] | null = null
+    if (pools.length === 0) {
       const queries = this.fallbackArtistQueries(seed)
+      let candidates: Track[] = []
       for (const query of queries) {
         if (candidates.length >= DISCOVERY_BATCH) break
         try {
@@ -691,10 +808,8 @@ export class PlaybackController {
           failed = true
         }
       }
-      if (candidates.length > 0 || queries.length > 0) {
-        candidates = candidates.filter((t) => verifiedSeedContext(t, seed))
-        source = 'seed-artist'
-      }
+      candidates = candidates.filter((t) => verifiedSeedContext(t, seed))
+      if (candidates.length > 0) fallbackCandidates = candidates
     }
     if (gen !== this.discoveryGen) return
 
@@ -706,14 +821,38 @@ export class PlaybackController {
     const auto = playerState().autoQueue
     const room = Math.max(0, DISCOVERY_MAX - auto.length)
     if (room === 0) return
-    const fromProvider = source !== 'seed-artist'
-    const fresh = buildRadioBatch(candidates, this.radioContext(seed, snapshot), {
-      limit: Math.min(DISCOVERY_BATCH, room),
-      source: fromProvider ? 'provider' : 'search',
-      verifiedOnly: !fromProvider,
-      queueTailArtists: auto.slice(-4).map(identityKeyOf),
-    })
+    const diversity = DIVERSITY[seed.kind] ?? DIVERSITY.track
+    // Identity counts from the live autoplay list: caps hold across refills,
+    // so a one-sided feed can never grow into a wall batch after batch.
+    const seeded = new Map<string, number>()
+    for (const t of auto) {
+      const key = identityKeyOf(t)
+      if (key) seeded.set(key, (seeded.get(key) ?? 0) + 1)
+    }
+    const fresh = fallbackCandidates
+      ? buildRadioBatch(fallbackCandidates, this.radioContext(seed, snapshot), {
+          limit: Math.min(DISCOVERY_BATCH, room),
+          source: 'search',
+          verifiedOnly: true,
+          queueTailArtists: auto.slice(-4).map(identityKeyOf),
+        })
+      : buildRadioBatch(pools, this.radioContext(seed, snapshot), {
+          limit: Math.min(DISCOVERY_BATCH, room),
+          source: 'provider',
+          windowSize: diversity.windowSize,
+          maxPerArtistInWindow: diversity.maxPerArtistInWindow,
+          identityCap: diversity.identityCapFor(Math.min(DISCOVERY_BATCH, room)),
+          seededIdentityCounts: seeded,
+          queueTailArtists: auto.slice(-4).map(identityKeyOf),
+        })
     if (fresh.length > 0) {
+      // Contextual source label: a single feed is "based on this song";
+      // several contributing sources make it a session-driven radio.
+      const source = fallbackCandidates
+        ? 'seed-artist'
+        : pools.length > 1 && contributors.some((c) => c.includes('+'))
+          ? 'session-mix'
+          : primarySource
       setPlayerState({
         autoQueue: dedupeTracks([...playerState().autoQueue, ...fresh]).slice(0, DISCOVERY_MAX),
         radioSource: source || playerState().radioSource,
@@ -727,6 +866,44 @@ export class PlaybackController {
       }
     }
   }
+
+  /**
+   * How many genuinely new usable candidates a pool still holds (not blocked,
+   * not disliked, not just played, music-shaped). Drives the broadening
+   * decision as the queue is consumed.
+   */
+  private freshCandidateCount(pool: Track[]): number {
+    const lib = useLibraryStore.getState()
+    const state = playerState()
+    const blocked = new Set<string>([...state.queue, ...state.autoQueue].map((t) => t.id))
+    const disliked = new Set(lib.disliked.map((t) => t.id))
+    let count = 0
+    for (const track of pool) {
+      if (!track?.id || track.id === state.current?.id) continue
+      if (blocked.has(track.id) || disliked.has(track.id)) continue
+      if (lib.history.slice(0, 6).some((h) => h.track.id === track.id)) continue
+      if (track.duration > MAX_RADIO_DURATION || (track.duration > 0 && track.duration < MIN_RADIO_DURATION)) {
+        continue
+      }
+      count += 1
+      if (count >= DISCOVERY_TARGET) break
+    }
+    return count
+  }
+
+  /**
+   * Drift anchors: recent session tracks, newest first, excluding the current
+   * track and anchors already fetched this session. Their recommendation
+   * feeds carry the session's current direction (e.g. the phonk tracks the
+   * listener just chose) into the next batch.
+   */
+  private driftAnchors(): Track[] {
+    const currentId = playerState().current?.id
+    return this.sessionRecent.filter(
+      (t) => t.id !== currentId && t.sourceId && !this.sessionAnchorsTried.has(t.id),
+    )
+  }
+
 
   /** Empties the discovery list without touching the autoplay setting. */
   clearAutoplay(): void {

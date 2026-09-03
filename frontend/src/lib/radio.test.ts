@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { Track } from '../bridge/types'
 import {
-  buildRadioBatch, canonicalSongKey, identityKeyOf, netSkipsFor, normalizeArtistKey,
-  radioSeedFromTrack, scoreCandidate, splitArtists, verifiedSeedContext,
-  W_TITLE_COLLISION, type RadioContext,
+  buildRadioBatch, canonicalSongKey, DIVERSITY, identityKeyOf, netSkipsFor, normalizeArtistKey,
+  poolConcentration, radioSeedFromTrack, scoreCandidate, splitArtists, verifiedSeedContext,
+  W_DRIFT_SOURCE, W_TASTE_SOURCE, W_TITLE_COLLISION,
+  type CandidatePool, type RadioContext, type RadioKind,
 } from './radio'
 import { tasteSnapshot } from './taste'
 
@@ -216,10 +217,22 @@ describe('buildRadioBatch', () => {
     expect(batch.filter((t) => t.artist === 'Big Artist').length).toBeGreaterThanOrEqual(4)
   })
 
-  it('allows a homogeneous pool (a legitimate artist radio) to fill the batch', () => {
-    const pool = Array.from({ length: 10 }, (_, i) => track(`a${i}`, { title: `Song ${i}`, artist: 'Only Artist' }))
+  it('allows a homogeneous pool of the seed\u2019s own artist (a legitimate artist radio) to fill the batch', () => {
+    // The seed is Einaudi; a feed of ten Einaudi tracks is an artist radio in
+    // all but name — it fills the batch.
+    const pool = Array.from({ length: 10 }, (_, i) => track(`a${i}`, { title: `Song ${i}`, artist: 'Einaudi' }))
     const batch = buildRadioBatch(pool, ctx({ blockedIds: new Set() }), { limit: 10 })
     expect(batch).toHaveLength(10)
+    expect(batch.every((t) => t.artist === 'Einaudi')).toBe(true)
+  })
+
+  it('caps a homogeneous pool of a foreign artist instead of filling the batch with it', () => {
+    // One unrelated artist flooding the feed is the one-artist-wall failure:
+    // acceptance would rebuild the wall; the cap holds and the controller is
+    // expected to broaden generation instead.
+    const pool = Array.from({ length: 10 }, (_, i) => track(`a${i}`, { title: `Song ${i}`, artist: 'Only Artist' }))
+    const batch = buildRadioBatch(pool, ctx({ blockedIds: new Set() }), { limit: 10 })
+    expect(batch.length).toBeLessThanOrEqual(5) // default cap ceil(10/2) + window slack
     expect(batch.every((t) => t.artist === 'Only Artist')).toBe(true)
   })
 
@@ -373,3 +386,133 @@ describe('provider recommendation order', () => {
     expect(batch.filter((t) => t.uploader === 'Same Channel').length).toBeGreaterThanOrEqual(4)
   })
 })
+
+// ---------- pool-based radio architecture ----------
+
+describe('pool-based radio architecture', () => {
+  const seedCtx = ctx()
+
+  it('song radio is not an artist-only queue even when the feed is one-sided', () => {
+    // The "FUNK CRIMINAL -> FUNK TAKA -> ..." failure shape: a provider feed
+    // dominated by one identity must not become the queue wholesale.
+    const pool: CandidatePool[] = [
+      {
+        weight: 1,
+        tracks: [
+          ...[1, 2, 3, 4, 5, 6].map((n) => track(`f${n}`, { title: `Funk ${n}`, artist: 'Funk Artist' })),
+          track('o1', { title: 'Other One', artist: 'Other Artist' }),
+          track('o2', { title: 'Other Two', artist: 'Third Artist' }),
+          track('o3', { title: 'Other Three', artist: 'Fourth Artist' }),
+        ],
+      },
+    ]
+    const batch = buildRadioBatch(pool, seedCtx, { limit: 8, source: 'provider' })
+    const funk = batch.filter((t) => t.artist === 'Funk Artist').length
+    // Identity cap for song radio: ceil(8/2) = 4 — and with alternatives
+    // available, no relaxation may exceed it. Diversity beats completeness.
+    expect(funk).toBeLessThanOrEqual(4)
+    expect(batch.filter((t) => t.artist !== 'Funk Artist').length).toBeGreaterThanOrEqual(3)
+    // The run is also interleaved: never 3+ of one identity back to back.
+    for (let i = 0; i + 2 < batch.length; i += 1) {
+      const ids = batch.slice(i, i + 3).map((t) => identityKeyOf(t))
+      expect(new Set(ids).size).toBeGreaterThan(1)
+    }
+  })
+
+  it('provider results are candidates ranked into a batch, never the queue itself', () => {
+    const feed = Array.from({ length: 12 }, (_, i) => track(`p${i}`, { title: `Provider ${i}`, artist: `Artist ${i}` }))
+    const batch = buildRadioBatch([{ weight: 1, tracks: feed }], seedCtx, { limit: 6, source: 'provider' })
+    // A bounded, *selected* subset — not a verbatim echo of the feed.
+    expect(batch).toHaveLength(6)
+    expect(feed.map((t) => t.id)).not.toEqual(batch.map((t) => t.id))
+    // Selection keeps the provider's own order among the chosen ranks.
+    const ranks = batch.map((t) => Number(t.id.replace('yt:p', '')))
+    expect([...ranks].sort((a, b) => a - b)).toEqual(ranks)
+  })
+
+  it('multiple candidate sources contribute to one batch', () => {
+    const batch = buildRadioBatch(
+      [
+        { weight: 1, tracks: [track('a1', { title: 'Alpha One', artist: 'Alpha' })] },
+        { weight: W_DRIFT_SOURCE, tracks: [track('b1', { title: 'Beta One', artist: 'Beta' })] },
+        { weight: W_TASTE_SOURCE, tracks: [track('c1', { title: 'Gamma One', artist: 'Gamma' })] },
+      ],
+      seedCtx,
+      { limit: 6, source: 'provider' },
+    )
+    expect(batch.map((t) => t.id).sort()).toEqual(['yt:a1', 'yt:b1', 'yt:c1'])
+  })
+
+  it('the current track\u2019s own feed outranks equally-ranked drift and taste pools', () => {
+    // Same in-pool rank, different anchor weight: primary > drift > taste.
+    const batch = buildRadioBatch(
+      [
+        { weight: 1, tracks: [track('primary', { title: 'P', artist: 'P Artist' })] },
+        { weight: W_DRIFT_SOURCE, tracks: [track('drift', { title: 'D', artist: 'D Artist' })] },
+        { weight: W_TASTE_SOURCE, tracks: [track('taste', { title: 'T', artist: 'T Artist' })] },
+      ],
+      seedCtx,
+      { limit: 3, source: 'provider' },
+    )
+    expect(batch.map((t) => t.id)).toEqual(['yt:primary', 'yt:drift', 'yt:taste'])
+  })
+
+  it('diversity is deterministic, not random', () => {
+    const pool: CandidatePool[] = [
+      {
+        weight: 1,
+        tracks: [
+          ...[1, 2, 3, 4].map((n) => track(`f${n}`, { title: `Funk ${n}`, artist: 'Funk Artist' })),
+          ...[1, 2, 3, 4].map((n) => track(`o${n}`, { title: `Other ${n}`, artist: `Other ${n}` })),
+        ],
+      },
+    ]
+    const one = buildRadioBatch(pool, seedCtx, { limit: 8, source: 'provider' })
+    const two = buildRadioBatch(pool, seedCtx, { limit: 8, source: 'provider' })
+    expect(one).toEqual(two)
+  })
+
+  it('artist radio is legitimately artist-heavier than song radio', () => {
+    const funk = [1, 2, 3, 4, 5, 6].map((n) => track(`f${n}`, { title: `Funk ${n}`, artist: 'Funk Artist' }))
+    const others = [1, 2, 3].map((n) => track(`o${n}`, { title: `Other ${n}`, artist: `Other ${n}` }))
+    const pools: CandidatePool[] = [{ weight: 1, tracks: [...funk, ...others] }]
+    const songBatch = buildRadioBatch(pools, ctx(), {
+      limit: 8, source: 'provider', ...diversityOptsFor('track', 8),
+    })
+    const artistSeed = ctx({ seed: radioSeedFromTrack(track('seed', { title: 'Seed Song', artist: 'Funk Artist, Other' }), 'artist') })
+    const artistBatch = buildRadioBatch(pools, artistSeed, {
+      limit: 8, source: 'provider', ...diversityOptsFor('artist', 8),
+    })
+    const count = (batch: Track[]) => batch.filter((t) => t.artist === 'Funk Artist').length
+    expect(count(artistBatch)).toBeGreaterThan(count(songBatch))
+  })
+
+  it('poolConcentration detects one-sided feeds', () => {
+    const oneSided = [1, 2, 3, 4, 5, 6].map((n) => track(`f${n}`, { title: `Funk ${n}`, artist: 'Funk Artist' }))
+    expect(poolConcentration(oneSided).share).toBeGreaterThanOrEqual(0.99)
+    const mixed = [...oneSided.slice(0, 3), ...[1, 2, 3].map((n) => track(`o${n}`, { title: `O ${n}`, artist: `O ${n}` }))]
+    expect(poolConcentration(mixed).share).toBeLessThan(0.6)
+  })
+
+  it('session familiarity lifts revisited artists between discoveries', () => {
+    const revisited = track('r', { title: 'Revisited', artist: 'Revisited Artist' })
+    const stranger = track('s', { title: 'Stranger', artist: 'Stranger Artist' })
+    const withSession = ctx({ sessionArtistCounts: new Map([['revisited artist', 2]]) })
+    expect(scoreCandidate(revisited, withSession, 0, 2)).toBeGreaterThan(
+      scoreCandidate(stranger, withSession, 0, 2),
+    )
+  })
+
+  it('frequently skipped artists sink gently, never blacklisted', () => {
+    const skippedArtist = track('x', { title: 'X', artist: 'Skipme' })
+    const plain = ctx()
+    const sinking = ctx({ artistSkipRates: new Map([['skipme', 0.8]]) })
+    expect(scoreCandidate(skippedArtist, sinking, 0, 2)).toBeLessThan(scoreCandidate(skippedArtist, plain, 0, 2))
+    expect(scoreCandidate(skippedArtist, sinking, 0, 2)).toBeGreaterThan(-10) // still playable
+  })
+})
+
+function diversityOptsFor(kind: RadioKind, limit: number) {
+  const d = DIVERSITY[kind]
+  return { windowSize: d.windowSize, maxPerArtistInWindow: d.maxPerArtistInWindow, identityCap: d.identityCapFor(limit) }
+}

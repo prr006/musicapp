@@ -7,35 +7,42 @@
  *
  * Model (see PlaybackController.doDiscoveryFetch for the sourcing side):
  *
- *   PRIMARY signal   the provider's real recommendation feed ("Up next" /
- *                    autoplay continuation). Its ordering IS the relevance
- *                    graph: provider mode keeps it dominant and local taste
- *                    only nudges a few positions (likes lift, heard/skipped
- *                    sink). Text-search results are NEVER candidates while
- *                    the feed answers.
+ *   CURRENT SONG + CURRENT SESSION + USER TASTE + FEEDBACK
+ *     ↓ candidate generation   — several real provider recommendation feeds:
+ *       the current track\u2019s "Up next" feed (primary anchor), the feeds of
+ *       recent *session* tracks (drift: where the listener is heading right
+ *       now) and the feeds of liked tracks (taste anchors). All of them are
+ *       actual YouTube/YouTube Music related/automix data — never text search.
+ *     ↓ filter        — blocked/disliked/very-recent/non-music; identity
+ *       verification for the last-resort text-search fallback only.
+ *     ↓ rank          — the provider recommendation relationship is the
+ *       strongest signal: each pool\u2019s own ordering dominates, weighted by
+ *       how close its anchor is to the current listening context. Local taste
+ *       (completion-weighted artist affinity, likes, skip rates, session
+ *       familiarity) personalizes without reordering the graph.
+ *     ↓ diversify     — a property of the *final queue*: window-based
+ *       identity spacing plus a pool-concentration trigger that asks for
+ *       broader candidate generation instead of accepting a one-artist queue.
+ *     ↓ autoplay      → observe play/skip/like → update session context →
+ *       generate the next batch (bounded, generation-guarded).
  *
- *   SECONDARY signal local taste (history, likes, dislikes, recent skips,
- *                    artist familiarity) — used to personalize and filter the
- *                    provider's candidates, not to replace the graph.
- *
- *   LAST RESORT      when the feed is unavailable, only songs *verified* as
- *                    belonging to the seed's context (same identified
- *                    performing artist, or same album for album seeds) may
- *                    come from text search. Uploader/channel names never
- *                    generate queries and a shared title is never evidence of
- *                    relatedness ("Fearless" by three unrelated artists).
+ *   A shared title, an uploader or a channel name is NEVER musical
+ *   similarity ("Fearless" by three unrelated artists stays unrelated), and
+ *   no genre-transition table exists: adjacent-context moves emerge from the
+ *   drift anchors + the provider\u2019s own recommendation graph.
  *
  * Pipeline:
  *
- *   candidates
+ *   candidate pools
  *     → hard filters   (never the current track, duplicates, dislikes,
  *                       very recently played, non-music durations; identity
  *                       verification for text-search batches)
- *     → scoring        (provider order dominant in provider mode; taste and
- *                       seed-context signals nudge; title collisions demoted)
+ *     → scoring        (provider order dominant, weighted per pool; taste,
+ *                       session and feedback signals nudge; title collisions
+ *                       demoted)
  *     → sorting        (score desc, source order as the tiebreak)
- *     → diversity      (no artist-or-channel runs longer than the window
- *                       allows, unless the whole pool is one identity)
+ *     → diversity      (no artist-or-channel runs longer than the radio kind\u2019s
+ *                       window allows, unless the whole pool is one identity)
  *     → bounded output (canonical-song dedupe along the way)
  */
 import type { PlayStats, Track } from '../bridge/types'
@@ -61,6 +68,8 @@ export interface RadioSeed {
   otherArtists: string[]
   /** Raw channel/uploader name; metadata only, never a query or an artist. */
   uploader: string
+  /** The seed's own diversity identity (normalized artist-or-uploader key). */
+  identity: string
   album: string
   duration: number
   artwork: string
@@ -77,6 +86,7 @@ export function radioSeedFromTrack(track: Track, kind: RadioKind = 'track'): Rad
     rawArtist: firstRawArtist(track.artist),
     otherArtists: artists.slice(1),
     uploader: track.uploader ?? '',
+    identity: identityKeyOf(track),
     album: track.album ?? '',
     duration: track.duration || 0,
     artwork: track.artwork ?? '',
@@ -133,6 +143,9 @@ export function canonicalSongKey(track: Pick<Track, 'title' | 'artist'>): string
   return artist ? `${title}|${artist}` : title
 }
 
+/** Starvation floor: a homogeneous last-resort batch is filled at least this far. */
+export const MIN_BATCH_FLOOR = 4
+
 // ---------- ranking context ----------
 
 export interface RadioContext {
@@ -155,6 +168,12 @@ export interface RadioContext {
   artistPlays: Map<string, number>
   /** Net recent skips per track id (skipCount − completeCount), floored at 0. */
   netSkips: Map<string, number>
+  /** Completion-weighted artist affinity from listening history. */
+  artistAffinity?: Map<string, number>
+  /** Skip rate per artist (skips/plays); frequently abandoned artists sink. */
+  artistSkipRates?: Map<string, number>
+  /** How often each artist was played in the CURRENT session. */
+  sessionArtistCounts?: Map<string, number>
 }
 
 // ---------- scoring ----------
@@ -180,6 +199,22 @@ export const W_PROVIDER_RANK_MAX = 1.8
  * only nudges songs a few positions rather than reordering the radio.
  */
 export const W_PROVIDER_ORDER = 10
+/**
+ * Provider-order weight for candidates whose anchor is a recent *session*
+ * track rather than the current one: still a real recommendation graph, just
+ * one step away from "right now".
+ */
+export const W_DRIFT_SOURCE = 0.8
+/** Provider-order weight for candidates anchored on liked tracks. */
+export const W_TASTE_SOURCE = 0.55
+/**
+ * Familiarity balance: artists already played this session (but not just
+ * now) get a small bonus — a radio should revisit familiar ground between
+ * discoveries instead of oscillating wildly.
+ */
+export const W_SESSION_FAMILIAR_MAX = 0.8
+/** Penalty for artists the listener repeatedly abandons (skip rate ≥ 0.5). */
+export const W_ARTIST_SKIPPED = -0.8
 /** Well-formed music metadata (album known). */
 export const W_HAS_ALBUM = 0.3
 /** Music-shaped duration. */
@@ -217,8 +252,60 @@ export interface ScoredCandidate {
 export type RadioSourceKind = 'provider' | 'search'
 
 /**
- * Scores one candidate. All signals are additive and named above; the function
- * is exported so tests can assert individual weights end-to-end.
+ * The taste/session/feedback part of the score — everything that personalizes
+ * a candidate once the provider relationship has spoken. Bounded by design:
+ * all of it combined is far weaker than one step of provider relevance.
+ */
+export function tasteScore(track: Track, ctx: RadioContext): number {
+  const artists = splitArtists(track.artist)
+  const primary = artists[0] ?? ''
+  let score = 0
+
+  if (ctx.seed.primaryArtist && primary === ctx.seed.primaryArtist) {
+    score += W_SAME_ARTIST
+  } else if (artists.some((a) => ctx.seed.otherArtists.includes(a))) {
+    score += W_SEED_FEATURE_ARTIST
+  }
+  if (ctx.seed.album && (track.album || '').toLowerCase() === ctx.seed.album.toLowerCase()) {
+    score += W_ALBUM
+  }
+  if (ctx.likedIds.has(track.id)) score += W_LIKED_TRACK
+  if (primary && ctx.likedArtistKeys.has(primary)) score += W_LIKED_ARTIST
+  if (primary) {
+    const affinity = ctx.artistAffinity?.get(primary) ?? ctx.artistPlays.get(primary) ?? 0
+    if (affinity > 0) score += W_TASTE_ARTIST_MAX * (affinity / (affinity + 6))
+    const sessionCount = ctx.sessionArtistCounts?.get(primary) ?? 0
+    if (sessionCount > 0 && !ctx.recentArtistKeys.has(primary)) {
+      score += (W_SESSION_FAMILIAR_MAX * Math.min(sessionCount, 3)) / 3
+    }
+    const skipRate = ctx.artistSkipRates?.get(primary) ?? 0
+    if (skipRate >= 0.5) score += W_ARTIST_SKIPPED
+  }
+  if (track.album) score += W_HAS_ALBUM
+
+  if (track.duration > 0) {
+    if (track.duration >= 60 && track.duration <= 600) score += W_DURATION_FIT
+    else if (track.duration < MIN_RADIO_DURATION || track.duration > MAX_RADIO_DURATION) score += W_ODD_DURATION
+  }
+
+  if (ctx.heardIds.has(track.id)) score += W_HEARD_RECENTLY
+  const skips = ctx.netSkips.get(track.id) ?? 0
+  if (skips > 0) score += W_SKIP * Math.min(skips, 2)
+  if (primary && ctx.recentArtistKeys.has(primary)) score += W_RECENT_ARTIST
+  if (
+    ctx.seed.normalizedTitle &&
+    primary !== ctx.seed.primaryArtist &&
+    normalizeTitle(track.title) === ctx.seed.normalizedTitle
+  ) {
+    score += W_TITLE_COLLISION
+  }
+  return score
+}
+
+/**
+ * Scores one candidate from a single source list. All signals are additive and
+ * named above; the function is exported so tests can assert individual
+ * weights end-to-end.
  *
  * `source` matters: for 'provider' batches (a real recommendation feed) the
  * provider's own ordering dominates — taste only nudges within it. For
@@ -233,52 +320,13 @@ export function scoreCandidate(
   providerTotal: number,
   source: RadioSourceKind = 'search',
 ): number {
-  const artists = splitArtists(track.artist)
-  const primary = artists[0] ?? ''
-  let score = 0
-
-  // --- positive signals ---
-  if (ctx.seed.primaryArtist && primary === ctx.seed.primaryArtist) {
-    score += W_SAME_ARTIST
-  } else if (artists.some((a) => ctx.seed.otherArtists.includes(a))) {
-    score += W_SEED_FEATURE_ARTIST
-  }
-  if (ctx.seed.album && (track.album || '').toLowerCase() === ctx.seed.album.toLowerCase()) {
-    score += W_ALBUM
-  }
-  if (ctx.likedIds.has(track.id)) score += W_LIKED_TRACK
-  if (primary && ctx.likedArtistKeys.has(primary)) score += W_LIKED_ARTIST
-  if (primary) {
-    const plays = ctx.artistPlays.get(primary) ?? 0
-    if (plays > 0) score += W_TASTE_ARTIST_MAX * (plays / (plays + 6))
-  }
+  // All taste/session/feedback signals live in tasteScore; this adds only the
+  // provider-order term so single candidates stay scoreable in tests.
+  let score = tasteScore(track, ctx)
   if (providerTotal > 1) {
     const scale = source === 'provider' ? W_PROVIDER_ORDER : W_PROVIDER_RANK_MAX
     score += scale * (1 - providerRank / providerTotal)
   }
-  if (track.album) score += W_HAS_ALBUM
-
-  // --- duration shape (unknown durations are merely not rewarded) ---
-  if (track.duration > 0) {
-    if (track.duration >= 60 && track.duration <= 600) score += W_DURATION_FIT
-    else if (track.duration < MIN_RADIO_DURATION || track.duration > MAX_RADIO_DURATION) score += W_ODD_DURATION
-  }
-
-  // --- negative signals ---
-  if (ctx.heardIds.has(track.id)) score += W_HEARD_RECENTLY
-  const skips = ctx.netSkips.get(track.id) ?? 0
-  if (skips > 0) score += W_SKIP * Math.min(skips, 2)
-  if (primary && ctx.recentArtistKeys.has(primary)) score += W_RECENT_ARTIST
-  // A matching title with a *different* artist is the classic false-positive
-  // shape (three unrelated songs called "Fearless") — demoted, never boosted.
-  if (
-    ctx.seed.normalizedTitle &&
-    primary !== ctx.seed.primaryArtist &&
-    normalizeTitle(track.title) === ctx.seed.normalizedTitle
-  ) {
-    score += W_TITLE_COLLISION
-  }
-
   return score
 }
 
@@ -305,11 +353,30 @@ export function verifiedSeedContext(candidate: Track, seed: RadioSeed): boolean 
 
 // ---------- batch assembly ----------
 
+/**
+ * One candidate source: a real provider recommendation feed plus how close
+ * its anchor is to the current listening context. The pool's own ordering is
+ * its relevance graph; `weight` scales how strongly that order counts
+ * (1 = current-track feed, W_DRIFT_SOURCE = recent session track,
+ * W_TASTE_SOURCE = liked track).
+ */
+export interface CandidatePool {
+  weight: number
+  tracks: Track[]
+}
+
 export interface RadioBuildOptions {
   limit?: number
   /** Max occurrences of one artist inside any window of tracks. */
   maxPerArtistInWindow?: number
+  /**
+   * Identity counts already present in the autoplay list, so per-identity caps
+   * hold across successive refills instead of resetting every batch.
+   */
+  seededIdentityCounts?: ReadonlyMap<string, number>
   windowSize?: number
+  /** Per-batch cap for a single identity; artist radio raises this. */
+  identityCap?: number
   /** Identities already queued at the tail of the autoplay list. */
   queueTailArtists?: string[]
   /** Where the candidates came from; 'provider' preserves recommendation order. */
@@ -323,52 +390,147 @@ export interface RadioBuildOptions {
   verifiedOnly?: boolean
 }
 
+/** Diversity profile per radio kind. Song radio mixes; artist radio leans in. */
+export interface DiversityProfile {
+  windowSize: number
+  maxPerArtistInWindow: number
+  identityCapFor: (limit: number) => number
+}
+
+export const DIVERSITY: Record<RadioKind, DiversityProfile> = {
+  // Song radio: no identity may take more than half the batch, and never more
+  // than 2 of any 5 consecutive tracks — a healthy mix around the anchor.
+  track: {
+    windowSize: 5,
+    maxPerArtistInWindow: 2,
+    identityCapFor: (limit) => Math.max(2, Math.ceil(limit / 2)),
+  },
+  // Artist radio is *legitimately* artist-heavy: allow up to 3 in a wider
+  // window and 70% of the batch — related artists still get real room.
+  artist: {
+    windowSize: 7,
+    maxPerArtistInWindow: 3,
+    identityCapFor: (limit) => Math.max(3, Math.ceil(limit * 0.7)),
+  },
+  // Album radio behaves like song radio with an album-context bonus.
+  album: {
+    windowSize: 5,
+    maxPerArtistInWindow: 2,
+    identityCapFor: (limit) => Math.max(2, Math.ceil(limit / 2)),
+  },
+}
+
+/**
+ * Measures how dominated a candidate pool is by one artist-or-channel
+ * identity. The controller uses this to decide when to generate *broader*
+ * candidates (drift/taste anchors) instead of accepting a one-artist radio.
+ */
+export function poolConcentration(tracks: Track[]): { share: number; distinct: number } {
+  if (tracks.length === 0) return { share: 0, distinct: 0 }
+  const counts = new Map<string, number>()
+  for (const t of tracks) {
+    const identity = identityKeyOf(t)
+    if (!identity) continue
+    counts.set(identity, (counts.get(identity) ?? 0) + 1)
+  }
+  const total = [...counts.values()].reduce((a, b) => a + b, 0)
+  const top = Math.max(0, ...counts.values())
+  return { share: total > 0 ? top / total : 0, distinct: counts.size }
+}
+
+interface PoolEntry {
+  track: Track
+  /** Best provider-relevance score across the pools that offered the track. */
+  providerScore: number
+  /** Stable tiebreak: (pool index, rank in pool), best first. */
+  order: number
+  score: number
+}
+
 /**
  * Builds the autoplay batch: filter → score → sort → diversity → bound.
- * Candidates keep their source order as the stable tiebreak, so the output is
- * deterministic for a given input (no randomness in the radio).
+ *
+ * `candidates` is either a plain list (one source — the last-resort verified
+ * search path, or a single feed) or several weighted candidate pools. Every
+ * pool's own ordering is preserved as relevance; when a track appears in
+ * several pools its best (closest anchor, highest rank) provider score wins.
+ * The output is deterministic for a given input (no randomness in the radio).
  */
 export function buildRadioBatch(
-  candidates: Track[],
+  candidates: Track[] | CandidatePool[],
   ctx: RadioContext,
   opts: RadioBuildOptions = {},
 ): Track[] {
+  // A plain Track[] and a CandidatePool[] are both arrays — discriminate on
+  // the elements (pools carry a numeric `weight` and a `tracks` array), never
+  // on Array.isArray.
+  const isPoolList = (c: Track[] | CandidatePool[]): c is CandidatePool[] =>
+    c.length > 0 && typeof (c[0] as CandidatePool).weight === 'number' && Array.isArray((c[0] as CandidatePool).tracks)
+  const pools: CandidatePool[] = (isPoolList(candidates) ? candidates : [{ weight: 1, tracks: candidates as Track[] }]).filter(
+    (p) => p && p.tracks && p.tracks.length > 0,
+  )
   const limit = Math.max(1, opts.limit ?? 20)
   const windowSize = Math.max(2, opts.windowSize ?? 5)
   const maxInWindow = Math.max(1, opts.maxPerArtistInWindow ?? 2)
   const source: RadioSourceKind = opts.source ?? 'search'
 
-  // 1) hard filters
+  // 1) hard filters + per-pool provider scoring (best pool wins per track)
   const seenIds = new Set<string>(ctx.blockedIds)
   const seenKeys = new Set<string>(ctx.blockedKeys)
-  const eligible: ScoredCandidate[] = []
-  for (const track of candidates) {
-    if (!track?.id || seenIds.has(track.id)) continue
-    if (ctx.dislikedIds.has(track.id)) continue
-    if (ctx.veryRecentIds.has(track.id)) continue
-    if (track.duration > MAX_RADIO_DURATION || (track.duration > 0 && track.duration < MIN_RADIO_DURATION)) {
-      continue
+  const byId = new Map<string, PoolEntry>()
+  pools.forEach((pool, poolIndex) => {
+    const size = pool.tracks.length
+    const rankOf = new Map<string, number>()
+    let order = 0
+    for (const track of pool.tracks) {
+      if (!track?.id) continue
+      if (rankOf.has(track.id)) continue // same upload twice in one feed
+      rankOf.set(track.id, rankOf.size)
+      if (ctx.dislikedIds.has(track.id)) continue
+      if (ctx.veryRecentIds.has(track.id)) continue
+      if (track.duration > MAX_RADIO_DURATION || (track.duration > 0 && track.duration < MIN_RADIO_DURATION)) {
+        continue
+      }
+      // Text-search results must prove they belong to the seed's context.
+      if (opts.verifiedOnly && !verifiedSeedContext(track, ctx.seed)) continue
+      const key = canonicalSongKey(track)
+      if (!key || seenKeys.has(key)) continue
+      const rank = rankOf.get(track.id) ?? 0
+      const providerScore =
+        source === 'provider' ? W_PROVIDER_ORDER * pool.weight * (1 - rank / size) : 0
+      const tieOrder = poolIndex * 1000 + order
+      order += 1
+      const existing = byId.get(track.id)
+      if (existing) {
+        if (providerScore > existing.providerScore) {
+          existing.providerScore = providerScore
+          existing.order = Math.min(existing.order, tieOrder)
+        }
+        continue
+      }
+      seenIds.add(track.id)
+      seenKeys.add(key)
+      byId.set(track.id, { track, providerScore, order: tieOrder, score: 0 })
     }
-    // Text-search results must prove they belong to the seed's context.
-    if (opts.verifiedOnly && !verifiedSeedContext(track, ctx.seed)) continue
-    const key = canonicalSongKey(track)
-    if (!key || seenKeys.has(key)) continue
-    seenIds.add(track.id) // collapse duplicate ids inside the batch too
-    seenKeys.add(key)
-    eligible.push({ track, score: 0 })
-  }
+  })
+  const eligible: PoolEntry[] = [...byId.values()]
 
-  // 2) scoring (ranked against the eligible pool, preserving source order)
+  // 2) scoring: the provider relationship dominates; taste/session/feedback
+  //    signals only personalize around it.
+  const searchScale = source === 'provider' ? 0 : W_PROVIDER_RANK_MAX
   eligible.forEach((entry, i) => {
-    entry.score = scoreCandidate(entry.track, ctx, i, eligible.length, source)
+    const searchRank = source === 'provider' ? 0 : i
+    const searchTotal = source === 'provider' ? 1 : eligible.length
+    const searchScore =
+      source === 'provider' ? 0 : searchScale * (1 - searchRank / searchTotal)
+    entry.score = entry.providerScore + searchScore + tasteScore(entry.track, ctx)
   })
 
-  // 3) sort by score, source order as tiebreak. In provider mode the
-  //    recommendation feed's own order dominates every other signal.
+  // 3) sort by score, best (pool, rank) as the stable tiebreak.
   const ranked = eligible
-    .map((entry, order) => ({ entry, order }))
-    .sort((a, b) => b.entry.score - a.entry.score || a.order - b.order)
-    .map((e) => e.entry.track)
+    .slice()
+    .sort((a, b) => b.score - a.score || a.order - b.order)
+    .map((e) => e.track)
 
   // 4) diversity-aware assembly, keyed on artist-or-uploader identity. The
   // window starts on the tail of the existing autoplay list so a new batch
@@ -376,8 +538,8 @@ export function buildRadioBatch(
   // are deferred and retried in further passes as the window refreshes —
   // deferral, not rejection.
   const window: string[] = [...(opts.queueTailArtists ?? [])].slice(-(windowSize - 1))
-  const perIdentity = new Map<string, number>()
-  const identityCap = Math.max(2, Math.ceil(limit / 2))
+  const perIdentity = new Map<string, number>(opts.seededIdentityCounts ?? [])
+  const identityCap = opts.identityCap ?? Math.max(2, Math.ceil(limit / 2))
   const picked: Track[] = []
 
   const violatesWindow = (identity: string): boolean => {
@@ -415,11 +577,58 @@ export function buildRadioBatch(
     pending = deferred
   }
 
-  // Final relaxation: a homogeneous pool (a legitimate artist radio) still
-  // fills the batch with deferred tracks once no diverse option is left.
+  // Relaxation 1: cap-blind but window-aware — keep interleaving while the
+  // window allows, ignoring the per-identity cap.
+  const capBlind: Track[] = []
   for (const track of pending) {
     if (picked.length >= limit) break
+    const identity = identityKeyOf(track)
+    if (violatesWindow(identity)) {
+      capBlind.push(track)
+      continue
+    }
     picked.push(track)
+    window.push(identity)
+    if (window.length > windowSize - 1) window.shift()
+  }
+
+  // Relaxation 2: window-blind but cap-aware — fill each identity up to its
+  // cap even if that means short runs. This is the legitimate heaviness of an
+  // explicit artist/album radio; a song radio keeps its window discipline.
+  const windowBlind: Track[] = []
+  if (ctx.seed.kind !== 'track') {
+    for (const track of capBlind) {
+      if (picked.length >= limit) break
+      const identity = identityKeyOf(track)
+      if ((perIdentity.get(identity) ?? 0) >= identityCap) {
+        windowBlind.push(track)
+        continue
+      }
+      picked.push(track)
+      perIdentity.set(identity, (perIdentity.get(identity) ?? 0) + 1)
+    }
+  } else {
+    windowBlind.push(...capBlind)
+  }
+
+  // Relaxation 3: a genuinely homogeneous candidate set (a legitimate artist
+  // feed with no alternative identity to interleave) still fills the batch —
+  // but only for identities the radio is *about*: the seed's own identity, or
+  // anything on an explicit artist/album radio. A foreign identity flooding
+  // the feed (the one-artist-wall failure) must not fill past its cap; the
+  // controller is responsible for broadening candidate generation instead.
+  const seedIdentities = new Set([ctx.seed.identity, ctx.seed.primaryArtist].filter(Boolean))
+  const isSeedIdentity = (identity: string) => ctx.seed.kind !== 'track' || seedIdentities.has(identity)
+  if (new Set(eligible.map((e) => identityKeyOf(e.track))).size <= 2) {
+    for (const track of windowBlind) {
+      if (picked.length >= limit) break
+      const identity = identityKeyOf(track)
+      // Filling past the caps is a last resort for identities the radio is
+      // *about* — or, for any identity, the minimum needed to keep a starved
+      // batch playable (a 4-track feed must not be cut to two).
+      if (!isSeedIdentity(identity) && picked.length >= MIN_BATCH_FLOOR) continue
+      picked.push(track)
+    }
   }
 
   return picked

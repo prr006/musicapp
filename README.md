@@ -88,28 +88,56 @@ the way modern streaming apps do: play one song → get the provider's real
 The priority order is always *current track → user queue → autoplay*; autoplay
 never jumps ahead of an explicit choice.
 
-Candidates come from the provider's **dedicated recommendation feed** — the
-YouTube Music watch-next endpoint, *including the autoplay ("automix")
-continuation* most uploads answer with, with a yt-dlp mix `RD<id>` fallback —
-and the feed's own ordering is preserved as the relevance graph: local taste
-(likes, history, recent skips) only nudges songs a few positions and never
-reorders the radio. **Music identity is strict**: a performing artist is only
-set when the provider identifies one (artist metadata or an official
-`- Topic` channel); channel/uploader names are kept as uploader metadata and
-never become artists, so an upload on a channel called "fearless" can no longer
-turn the radio into songs merely titled "Fearless". Title normalization is
-used for dedupe and version handling only — a shared title is never treated as
-evidence of relatedness (in fact it's slightly demoted). Text search is an
-explicit last resort: it runs only when the feed is unavailable *and* the seed
-has an identified artist, and every result is hard-verified as that artist's
-own material (or the same album for album seeds) before it can enter autoplay
-— otherwise nothing is added rather than something unrelated. Diversity is
-identity-based (artist *or* channel), so no artist or uploader can fill a
-block, while genuine artist radio still works; canonical-song dedupe collapses
-"Believer (Official Video)" onto "Believer" without merging different songs
-that share a title. The autoplay list stays bounded (≤ 20), refills below 8,
-generation guards discard stale responses, and a failed fetch never destroys
-the queued suggestions. **Start radio** (song menu, artist and album pages)
+The radio is built as a real **candidate-pool pipeline**: generate → filter →
+rank → diversify → autoplay → observe (play/skip/like) → update context →
+next batch.
+
+* **Candidate generation (multi-anchor pools).** The current track's
+  **dedicated recommendation feed** — the YouTube Music watch-next endpoint,
+  *including the autoplay ("automix") continuation*, with a yt-dlp mix
+  `RD<id>` fallback — is the primary pool (weight 1). Recent **session**
+  tracks contribute *drift* pools (a weaker weight), and **liked** tracks
+  contribute *taste* anchors: so a session that wandered from anime OSTs into
+  phonk keeps recommending phonk — the transition emerges from the
+  recommendation graph, never from a hard-coded genre table. A feed that is
+  thin *or dominated by one artist/channel identity* triggers **broader
+  generation** (more anchors are fetched, bounded to a couple of extra calls
+  per refill) instead of being accepted as the queue.
+* **Ranking.** The provider's recommendation relationship is the strongest
+  signal (its order dominates); taste — completion-weighted artist affinity,
+  likes, session familiarity, album context — personalizes without destroying
+  that order. Negative signals: recently heard, net skips, frequently skipped
+  artists (gentle, never a blacklist), odd durations, and title collisions
+  (a matching title with a different artist is the classic false-positive
+  shape and is demoted).
+* **Diversity as a property of the final queue.** Assembly enforces per-window
+  identity limits (max 2 of one artist in any 5 songs for song radio) and
+  per-batch identity caps that carry across refills via the live queue
+  counts. Song radio, artist radio (legitimately artist-heavy: wider windows,
+  70% cap) and album radio use different profiles. Relaxation is staged and
+  conservative: interleaving first, cap-aware fills for artist/album radios,
+  and a homogeneous last-resort fill only for identities the radio is *about*
+  (or the minimum needed to keep a starved batch playable).
+* **Music identity is strict.** A performing artist is only set when the
+  provider identifies one (artist metadata or an official `- Topic` channel);
+  channel/uploader names stay as uploader metadata and never become artists.
+  Shared title words are never evidence of relatedness. Text search is an
+  explicit last resort: it runs only when no feed answered *and* the seed has
+  an identified artist, and every result is hard-verified as that artist's
+  own material (or the same album for album seeds) — otherwise nothing is
+  added rather than something unrelated. Canonical-song dedupe collapses
+  "Believer (Official Video)" onto "Believer" without merging different songs
+  that share a title.
+* **Continuous, bounded.** The autoplay list stays ≤ 20, refills below 8 with
+  generation guards discarding stale responses; a failed fetch never destroys
+  queued suggestions. The autoplay header labels the source contextually —
+  "Based on this song" or "Based on your session" when several pools
+  contributed.
+* **Feedback loop.** started < meaningful play < completion weight the taste
+  snapshot; skips count against a song, dislikes exclude it (and purge it from
+  the visible list) immediately.
+
+**Start radio** (song menu, artist and album pages)
 rebuilds the session around one seed; a 👎 *don't recommend* excludes a song
 from autoplay immediately.
 

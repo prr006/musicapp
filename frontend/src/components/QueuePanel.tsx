@@ -12,8 +12,9 @@ import { EmptyState } from './States'
 const AUTOPLAY_VISIBLE = 10
 
 const RADIO_SOURCE_LABELS: Record<string, string> = {
-  'ytmusic-next': 'YouTube Music radio',
-  'yt-dlp-mix': 'YouTube mix radio',
+  'ytmusic-next': 'Based on this song',
+  'yt-dlp-mix': 'Based on this song',
+  'session-mix': 'Based on your session',
   'seed-artist': 'More from this artist',
   'fixture-radio': 'Fixture radio',
 }
