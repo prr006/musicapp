@@ -1,6 +1,7 @@
 import { CloseIcon, SearchIcon } from '../components/Icons'
 import { MediaCard } from '../components/MediaCard'
 import { EmptyState, ErrorState, LoadingCards, LoadingRows } from '../components/States'
+import { albumKey } from '../lib/derive'
 import { TrackRow } from '../components/TrackRow'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback } from '../state/playback'
@@ -190,7 +191,16 @@ export function SearchView() {
                     title={album.title}
                     subtitle={[album.artist, album.year].filter(Boolean).join(' · ')}
                     artwork={album.artwork}
-                    onOpen={() => ui.navigate({ name: 'album', key: album.id })}
+                    // Navigate with the SAME key the library-derived album
+                    // pages use, so a provider album card opens the real
+                    // album page when the library knows it (and the honest
+                    // empty state when it does not) — never a dead id.
+                    onOpen={() =>
+                      ui.navigate({
+                        name: 'album',
+                        key: albumKey({ album: album.title, artist: album.artist }),
+                      })
+                    }
                   />
                 ))}
               </div>

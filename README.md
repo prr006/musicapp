@@ -329,5 +329,11 @@ looks at.
   never applies to `wails dev`, `wails build` or any production bundle.
 - No local-file library, no gapless/crossfade, no equalizer, no offline caching of
   streams, no account or cloud sync.
-- Album and artist pages cover what is in your library; MELO does not browse a
+- Album and artist pages are polished catalog pages built strictly from the
+  metadata your library actually has: large artwork, kind/title/facts header,
+  Play / Shuffle / Add to queue / Radio actions on the global queue, canonical
+  track lists (duplicate video versions collapse to one row), a Popular
+  section from your real play counts (omitted without stats), an Appears On
+  section from genuine feature credits, and honest empty states. Sections
+  without data are omitted rather than fabricated; MELO does not browse a
   catalogue it hasn't got metadata for.

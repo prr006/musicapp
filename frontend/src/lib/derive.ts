@@ -1,4 +1,5 @@
 import type { Album, Artist, PlayRecord, PlayStats, Track } from '../bridge/types'
+import { canonicalSongKey, splitArtists } from './radio'
 
 /**
  * Albums and artists are derived from the metadata the provider actually gave
@@ -6,7 +7,7 @@ import type { Album, Artist, PlayRecord, PlayStats, Track } from '../bridge/type
  * invented to make the page look fuller.
  */
 
-export function albumKey(track: Track): string {
+export function albumKey(track: Pick<Track, 'album' | 'artist'>): string {
   return `${track.album.toLowerCase()}|${primaryArtist(track.artist).toLowerCase()}`
 }
 
@@ -92,4 +93,60 @@ export function mostPlayedTracks(
       a.track.title.localeCompare(b.track.title),
   )
   return out.slice(0, limit)
+}
+
+/**
+ * Collapses duplicate video versions of one song (official video, Topic
+ * channel upload, lyric video…) into a single entry — the first occurrence
+ * wins, later uploads of the same canonical song are dropped. Used by the
+ * album/artist pages so a library that saved two versions of a track shows
+ * one row, not two.
+ */
+export function dedupeCanonical(tracks: Track[]): Track[] {
+  const seen = new Set<string>()
+  const out: Track[] = []
+  for (const track of tracks) {
+    const key = canonicalSongKey(track)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(track)
+  }
+  return out
+}
+
+/**
+ * The artist's most-played tracks from the persisted play statistics —
+ * plays desc, then recency, then title. Deterministic, nothing recomputed;
+ * tracks with no plays never appear (an artist without listening stats has
+ * no Popular section rather than a fabricated one).
+ */
+export function popularTracks(
+  tracks: Track[],
+  stats: Record<string, PlayStats>,
+  limit = 5,
+): Track[] {
+  const withPlays = tracks.filter((t) => (stats[t.id]?.playCount ?? 0) > 0)
+  return withPlays
+    .sort(
+      (a, b) =>
+        (stats[b.id]?.playCount ?? 0) - (stats[a.id]?.playCount ?? 0) ||
+        (stats[b.id]?.lastPlayedAt ?? 0) - (stats[a.id]?.lastPlayedAt ?? 0) ||
+        a.title.localeCompare(b.title),
+    )
+    .slice(0, limit)
+}
+
+/**
+ * Albums on which the artist appears as a FEATURED (non-primary) artist —
+ * derived strictly from the tracks' own artist lists, so nothing is invented.
+ * Empty when the library has no such tracks (the section is then omitted).
+ */
+export function appearsOnAlbums(artistId: string, allTracks: Track[]): Album[] {
+  const name = artistId.toLowerCase()
+  const featured = allTracks.filter((t) => {
+    const parts = splitArtists(t.artist)
+    const primary = (parts[0] ?? '').toLowerCase()
+    return primary !== '' && primary !== name && parts.some((a) => a.toLowerCase() === name)
+  })
+  return deriveAlbums(dedupeCanonical(featured))
 }

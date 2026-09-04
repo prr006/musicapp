@@ -4,7 +4,7 @@ import { AlbumIcon, ArtistIcon, MusicIcon, RadioIcon } from '../components/Icons
 import { MediaCard } from '../components/MediaCard'
 import { EmptyState } from '../components/States'
 import { TrackRow } from '../components/TrackRow'
-import { findAlbum, findArtist } from '../lib/derive'
+import { appearsOnAlbums, dedupeCanonical, findAlbum, findArtist, popularTracks } from '../lib/derive'
 import { formatCount, formatLongDuration, totalDuration } from '../lib/format'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback } from '../state/playback'
@@ -43,7 +43,9 @@ export function AlbumView({ albumKey }: { albumKey: string }) {
     )
   }
 
-  const list = album.tracks ?? []
+  // One row per canonical song: two saved uploads of the same track are the
+  // same album entry, in the order the library came to know them.
+  const list = dedupeCanonical(album.tracks ?? [])
 
   return (
     <div className="page">
@@ -53,9 +55,13 @@ export function AlbumView({ albumKey }: { albumKey: string }) {
           <div className="kind">Album</div>
           <h1>{album.title}</h1>
           <div className="facts">
-            <button type="button" onClick={() => ui.navigate({ name: 'artist', artist: album.artist })}>
-              <strong>{album.artist}</strong>
-            </button>
+            {album.artist ? (
+              <button type="button" onClick={() => ui.navigate({ name: 'artist', artist: album.artist })}>
+                <strong>{album.artist}</strong>
+              </button>
+            ) : (
+              <span className="muted">Unknown artist</span>
+            )}
             <span className="dot-sep" />
             <span>{formatCount(list.length, 'song')}</span>
             {totalDuration(list) > 0 && (
@@ -106,6 +112,7 @@ export function AlbumView({ albumKey }: { albumKey: string }) {
 
 export function ArtistView({ name }: { name: string }) {
   const tracks = useLibraryTracks()
+  const stats = useLibraryStore((s) => s.stats)
   const artist = useMemo(() => findArtist(tracks, name), [tracks, name])
 
   if (!artist) {
@@ -120,7 +127,12 @@ export function ArtistView({ name }: { name: string }) {
     )
   }
 
-  const list = artist.tracks ?? []
+  const list = dedupeCanonical(artist.tracks ?? [])
+  // Sections built only from real data: Popular needs listening stats, and
+  // Appears On needs feature credits on other artists' tracks. Without data
+  // the section is omitted entirely — nothing is fabricated.
+  const popular = useMemo(() => popularTracks(list, stats), [list, stats])
+  const appearsOn = useMemo(() => appearsOnAlbums(artist.id, tracks), [artist.id, tracks])
 
   return (
     <div className="page">
@@ -159,6 +171,24 @@ export function ArtistView({ name }: { name: string }) {
         )}
       </div>
 
+      {popular.length > 0 && (
+        <section className="section">
+          <div className="section-head">
+            <h2>Popular</h2>
+          </div>
+          <div className="track-list">
+            {popular.map((track, i) => (
+              <TrackRow
+                key={track.id}
+                track={track}
+                index={i}
+                onPlay={() => void playback.play(track, { tracks: popular, index: i, label: `${artist.name} · Popular` })}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="section">
         <div className="section-head">
           <h2>Songs</h2>
@@ -186,6 +216,26 @@ export function ArtistView({ name }: { name: string }) {
                 key={album.id}
                 title={album.title}
                 subtitle={formatCount(album.tracks?.length ?? 0, 'song')}
+                artwork={album.artwork}
+                onOpen={() => ui.navigate({ name: 'album', key: album.id })}
+                onPlay={() => void playback.playAll(album.tracks ?? [], album.title)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {appearsOn.length > 0 && (
+        <section className="section">
+          <div className="section-head">
+            <h2>Appears on</h2>
+          </div>
+          <div className="card-grid">
+            {appearsOn.map((album) => (
+              <MediaCard
+                key={album.id}
+                title={album.title}
+                subtitle={album.artist}
                 artwork={album.artwork}
                 onOpen={() => ui.navigate({ name: 'album', key: album.id })}
                 onPlay={() => void playback.playAll(album.tracks ?? [], album.title)}
