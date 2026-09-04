@@ -3,6 +3,15 @@ import type { RepeatMode, Track } from '../bridge/types'
 
 export type PlayerStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
 
+export interface SleepTimerState {
+  /** Wall-clock countdown, or a one-shot flag that waits for natural track end. */
+  mode: 'duration' | 'endOfTrack'
+  /** Epoch-ms expiry for duration mode; null for endOfTrack. */
+  endsAt: number | null
+  /** The chosen preset (minutes) — kept for UI display; null for endOfTrack. */
+  minutes: number | null
+}
+
 export interface PlayerState {
   /** The explicit queue: tracks the user chose. */
   queue: Track[]
@@ -17,6 +26,8 @@ export interface PlayerState {
   volume: number
   muted: boolean
   speed: number
+  /** Active sleep timer, or null. The countdown display lives on timerChannel. */
+  sleepTimer: SleepTimerState | null
   /** Source of the current playback: the explicit queue or autoplay. */
   playingFrom: 'queue' | 'autoplay'
   contextLabel: string
@@ -36,6 +47,7 @@ export const usePlayerStore = create<PlayerState>(() => ({
   volume: 0.9,
   muted: false,
   speed: 1,
+  sleepTimer: null,
   playingFrom: 'queue',
   contextLabel: '',
   radioSource: '',

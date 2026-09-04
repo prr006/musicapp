@@ -237,6 +237,12 @@ export const SpeedIcon = (p: Props) => (
   </Icon>
 )
 
+export const MoonIcon = (p: Props) => (
+  <Icon {...p}>
+    <path d="M20 13.5A8.5 8.5 0 0 1 10.5 4a7 7 0 1 0 9.5 9.5Z" />
+  </Icon>
+)
+
 export const AlertIcon = (p: Props) => (
   <Icon {...p}>
     <circle cx="12" cy="12" r="8.4" />

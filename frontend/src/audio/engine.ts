@@ -58,6 +58,8 @@ export class PlaybackEngine {
   private error: string | null = null
   private timer: ReturnType<typeof setInterval> | null = null
   private lastPosition = -1
+  /** The chosen playback rate, reapplied on every load so next tracks inherit it. */
+  private rate = 1
 
   constructor(el?: HTMLAudioElement) {
     this.el = el ?? new Audio()
@@ -186,6 +188,10 @@ export class PlaybackEngine {
     const el = this.el
     el.src = url
     el.load()
+    // Browsers normally keep playbackRate across source changes, but the rate
+    // is a player setting, not a property of the stream — reapply it so every
+    // track inherits the chosen speed deterministically.
+    el.playbackRate = this.rate
     if (startAt > 0) {
       const seek = () => {
         if (token !== this.generation) return
@@ -298,7 +304,8 @@ export class PlaybackEngine {
   }
 
   setRate(rate: number): void {
-    this.el.playbackRate = Math.max(0.25, Math.min(3, rate))
+    this.rate = Math.max(0.25, Math.min(3, rate))
+    this.el.playbackRate = this.rate
     this.emitState()
   }
 

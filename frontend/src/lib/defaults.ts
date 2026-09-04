@@ -42,4 +42,4 @@ export const ACCENTS: Record<string, { label: string; value: string; contrast: s
   rose: { label: 'Rose', value: '#f0568b', contrast: '#1c060f' },
 }
 
-export const SPEEDS = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 2]
+export const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]

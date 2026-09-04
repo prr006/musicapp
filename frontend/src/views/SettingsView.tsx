@@ -145,6 +145,12 @@ export function SettingsView() {
             <option value="low">Low — save bandwidth</option>
           </select>
         </Row>
+        <p className="muted" style={{ fontSize: 12.5, lineHeight: 1.7, margin: '2px 0 0' }}>
+          Gapless playback, crossfade and loudness normalization are not
+          supported by MELO’s single-stream audio pipeline — they are left out
+          honestly rather than approximated. Transitions are kept fast by
+          resolving the next track’s stream in advance.
+        </p>
       </div>
 
       <div className="settings-group">

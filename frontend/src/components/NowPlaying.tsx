@@ -1,12 +1,27 @@
 import { SPEEDS } from '../lib/defaults'
-import { displayArtist } from '../lib/format'
+import { displayArtist, formatTime } from '../lib/format'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback, usePlayer } from '../state/playback'
+import { useSleepTimerRemaining } from '../state/timerChannel'
 import { ui, useUIStore } from '../state/uiStore'
 import { Artwork } from './Artwork'
-import { ChevronDown, HeartIcon, LyricsIcon, QueueIcon, SpeedIcon, ThumbDownIcon } from './Icons'
+import { ChevronDown, HeartIcon, LyricsIcon, MoonIcon, QueueIcon, SpeedIcon, ThumbDownIcon } from './Icons'
 import { LyricsPane } from './LyricsPane'
 import { ProgressRow, TransportButtons, VolumeControl } from './MiniPlayer'
+
+const SLEEP_PRESETS = [15, 30, 45, 60]
+
+/** Live countdown readout. Isolated on timerChannel so its per-second updates
+ *  never re-render the expanded player — mirroring the position channel. */
+function SleepTimerStatus() {
+  const remaining = useSleepTimerRemaining()
+  if (remaining === null) return null
+  return (
+    <span className="muted" style={{ fontSize: 11.5, fontVariantNumeric: 'tabular-nums', minWidth: 38 }} aria-label="Sleep timer remaining">
+      {formatTime(Math.ceil(remaining / 1000))}
+    </span>
+  )
+}
 
 export function NowPlaying() {
   const current = usePlayer((s) => s.current)
@@ -18,6 +33,7 @@ export function NowPlaying() {
   const liked = useLibraryStore((s) => (current ? s.liked.some((t) => t.id === current.id) : false))
   const disliked = useLibraryStore((s) => (current ? s.disliked.some((t) => t.id === current.id) : false))
   const showLyrics = useLibraryStore((s) => s.settings.showLyrics)
+  const sleepTimer = usePlayer((s) => s.sleepTimer)
 
   const withLyrics = lyricsOpen && showLyrics
 
@@ -121,7 +137,7 @@ export function NowPlaying() {
                     <ThumbDownIcon size={18} filled={disliked} />
                   </button>
                   <TransportButtons />
-                  <div className="row" style={{ position: 'relative' }}>
+                  <div className={`np-aux ${speed !== 1 ? 'active' : ''}`}>
                     <SpeedIcon size={16} />
                     <select
                       className="input"
@@ -136,6 +152,28 @@ export function NowPlaying() {
                         </option>
                       ))}
                     </select>
+                  </div>
+                  <div className={`np-aux ${sleepTimer ? 'active' : ''}`}>
+                    <MoonIcon size={16} />
+                    <select
+                      className="input"
+                      style={{ width: 108, height: 32 }}
+                      value={sleepTimer ? (sleepTimer.mode === 'endOfTrack' ? 'end' : String(sleepTimer.minutes)) : 'off'}
+                      aria-label="Sleep timer"
+                      onChange={(e) => {
+                        const v = e.target.value
+                        playback.setSleepTimer(v === 'off' ? null : v === 'end' ? 'endOfTrack' : Number(v))
+                      }}
+                    >
+                      <option value="off">Sleep · Off</option>
+                      {SLEEP_PRESETS.map((m) => (
+                        <option key={m} value={m}>
+                          {m} min
+                        </option>
+                      ))}
+                      <option value="end">End of track</option>
+                    </select>
+                    <SleepTimerStatus />
                   </div>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'center' }}>

@@ -13,7 +13,7 @@
  */
 import { PlaybackEngine } from '../audio/engine'
 import { backend } from '../bridge/backend'
-import type { RepeatMode, Track } from '../bridge/types'
+import type { PlayableSource, RepeatMode, Track } from '../bridge/types'
 import {
   buildRadioBatch, canonicalSongKey, DIVERSITY, identityKeyOf,
   MAX_RADIO_DURATION, MIN_RADIO_DURATION, poolConcentration, radioSeedFromTrack,
@@ -26,6 +26,7 @@ import { library, useLibraryStore } from './libraryStore'
 import { lyrics } from './lyricsStore'
 import { playerState, setPlayerState, usePlayerStore } from './playerStore'
 import { positionChannel } from './positionChannel'
+import { timerChannel } from './timerChannel'
 import { ui } from './uiStore'
 
 export interface PlayContext {
@@ -35,6 +36,15 @@ export interface PlayContext {
 }
 
 const SESSION_SAVE_DEBOUNCE = 1500
+/**
+ * Pre-resolution bounds: a resolver answer may be reused for a few minutes
+ * (streams expire), at most a couple of entries are kept, and the prefetch
+ * itself waits until the current track is actually listenable. Audio bytes
+ * are never pre-downloaded — only the URL is obtained early.
+ */
+const PLAYABLE_TTL_MS = 5 * 60_000
+const PLAYABLE_CACHE_MAX = 3
+const PREFETCH_DELAY_MS = 1500
 const PREVIOUS_RESTART_THRESHOLD = 3
 
 /** Discovery (autoplay) keeps at least this many upcoming tracks ready. */
@@ -87,6 +97,17 @@ function significantAt(track: Track): number {
 export class PlaybackController {
   readonly engine: PlaybackEngine
   private sessionTimer: ReturnType<typeof setTimeout> | null = null
+  /** Wall-clock sleep timer tick (1 Hz). Owned here so it survives rerenders. */
+  private sleepTimerTick: ReturnType<typeof setInterval> | null = null
+  /**
+   * Resolver answers for the IMMEDIATE next track, keyed by track id. This is
+   * pre-resolution only (a URL obtained early); audio bytes are never
+   * pre-downloaded. Bounded to a couple of entries and a short TTL.
+   */
+  private playableCache = new Map<string, { source: PlayableSource; at: number }>()
+  /** Track ids with a prefetch in flight, so the same URL is never resolved twice. */
+  private prefetchInFlight = new Set<string>()
+  private prefetchTimer: ReturnType<typeof setTimeout> | null = null
   private recordedForToken = new Set<number>()
   /** Tokens whose listen crossed the "significant" threshold. */
   private significantForToken = new Set<number>()
@@ -164,6 +185,8 @@ export class PlaybackController {
             }
             void this.refillDiscovery(isTransition)
           }
+          // Warm the immediate next track (URL + artwork) in the background.
+          this.scheduleNextPrefetch()
         }
         this.queueSessionSave()
         break
@@ -186,6 +209,17 @@ export class PlaybackController {
     const state = playerState()
     if (!state.current || state.current.id !== trackId) return
     this.recordConclusion('completed')
+    // Sleep timer "end of track": the natural completion IS the deadline. The
+    // completed event above is the real, ladder-earned history entry — no
+    // fabricated one — and playback simply does not advance.
+    if (state.sleepTimer?.mode === 'endOfTrack') {
+      this.clearSleepTimer()
+      positionChannel.setPosition(0)
+      this.seek(0)
+      this.engine.pause()
+      this.queueSessionSave()
+      return
+    }
     if (state.repeat === 'one') {
       positionChannel.setPosition(0)
       this.engine.restart()
@@ -359,7 +393,9 @@ export class PlaybackController {
     this.mirrorToDesktop(track.title, track.artist)
 
     try {
-      const source = await backend().getPlayable(track)
+      // Pre-resolution: if the immediate-next prefetch already answered for
+      // this exact track, use it and skip the resolver round trip.
+      const source = this.takePlayable(track) ?? (await backend().getPlayable(track))
       if (!this.engine.isCurrent(token)) return // a newer track won the race
       if (source.duration > 0) positionChannel.setDuration(source.duration)
       await this.engine.load(token, source.url, startAt)
@@ -400,6 +436,10 @@ export class PlaybackController {
     this.significantForToken.clear()
     this.concludedForToken.clear()
     this.resetSessionContext()
+    // An explicit stop ends the listening session — a sleep timer that would
+    // "pause" nothing later would be a lie in the UI.
+    this.clearSleepTimer()
+    this.clearPrefetch()
     positionChannel.reset()
     setPlayerState({ current: null, status: 'idle', error: null, index: -1 })
     lyrics.clear()
@@ -490,6 +530,9 @@ export class PlaybackController {
   /** Reached the end of everything: stop cleanly without clearing the queue. */
   private finish(): void {
     this.engine.stop()
+    // Nothing is playing any more, so an end-of-track deadline can never fire;
+    // wall-clock timers stay armed for the next listen by design.
+    if (playerState().sleepTimer?.mode === 'endOfTrack') this.clearSleepTimer()
     setPlayerState({ status: 'idle' })
     positionChannel.setPosition(0)
     this.queueSessionSave()
@@ -532,6 +575,126 @@ export class PlaybackController {
   setSpeed(speed: number): void {
     this.engine.setRate(speed)
     setPlayerState({ speed })
+    // The chosen speed is a persistent player setting, not a per-track whim:
+    // it survives restarts (main.tsx re-applies defaultSpeed).
+    void library.saveSettings({ defaultSpeed: speed })
+  }
+
+  /**
+   * SLEEP TIMER. `preset` is minutes (15/30/45/60), 'endOfTrack', or null to
+   * cancel. The tick lives in the controller (so it survives rerenders), its
+   * state mirrors into the player store (one source of truth) and only the
+   * small countdown readout subscribes to the per-second timerChannel. The
+   * timer only ever PAUSES playback: the user queue, autoplay, the radio seed
+   * and the history ladder are untouched, and expiry while already paused is
+   * a no-op. Starting a new timer always replaces the previous one.
+   */
+  setSleepTimer(preset: number | 'endOfTrack' | null): void {
+    this.stopSleepTick()
+    if (preset === null) {
+      this.clearSleepTimer()
+      return
+    }
+    if (preset === 'endOfTrack') {
+      // No wall clock: handleEnded() treats natural completion as the deadline.
+      setPlayerState({ sleepTimer: { mode: 'endOfTrack', endsAt: null, minutes: null } })
+      timerChannel.setRemaining(null)
+      return
+    }
+    const minutes = Math.max(1, Math.min(600, Math.round(Number(preset) || 0)))
+    const endsAt = Date.now() + minutes * 60_000
+    setPlayerState({ sleepTimer: { mode: 'duration', endsAt, minutes } })
+    timerChannel.setRemaining(endsAt - Date.now())
+    this.sleepTimerTick = setInterval(() => {
+      const remaining = endsAt - Date.now()
+      if (remaining <= 0) {
+        this.clearSleepTimer()
+        if (playerState().current) this.engine.pause()
+        return
+      }
+      timerChannel.setRemaining(remaining)
+    }, 1000)
+  }
+
+  private clearSleepTimer(): void {
+    this.stopSleepTick()
+    setPlayerState({ sleepTimer: null })
+    timerChannel.setRemaining(null)
+  }
+
+  private stopSleepTick(): void {
+    if (this.sleepTimerTick) {
+      clearInterval(this.sleepTimerTick)
+      this.sleepTimerTick = null
+    }
+  }
+
+  // ---------- next-track pre-resolution ----------
+
+  /** A cached resolver answer for exactly this track, single-use, TTL-bounded. */
+  private takePlayable(track: Track): PlayableSource | null {
+    const hit = this.playableCache.get(track.id)
+    if (!hit) return null
+    this.playableCache.delete(track.id)
+    if (Date.now() - hit.at > PLAYABLE_TTL_MS) return null
+    if (hit.source.trackId !== track.id) return null
+    return hit.source
+  }
+
+  /**
+   * Debounced: while the user actually listens, resolve the stream URL of the
+   * IMMEDIATE next track (the same one advance() would pick — user queue
+   * first, then autoplay) and warm its artwork. One track, one request, best
+   * effort: a failed prefetch is silent and the real start() resolves again.
+   * The next click on Next/EOF therefore skips a resolver round trip.
+   */
+  private scheduleNextPrefetch(): void {
+    if (this.prefetchTimer) clearTimeout(this.prefetchTimer)
+    this.prefetchTimer = setTimeout(() => {
+      this.prefetchTimer = null
+      const state = playerState()
+      if (state.status !== 'playing') return
+      const next = state.queue[state.index + 1] ?? state.autoQueue[0]
+      if (!next || next.id === state.current?.id) return
+      this.prefetchArtwork(next)
+      if (this.playableCache.has(next.id) || this.prefetchInFlight.has(next.id)) return
+      this.prefetchInFlight.add(next.id)
+      void backend()
+        .getPlayable(next)
+        .then((source) => {
+          if (source.trackId !== next.id) return
+          this.playableCache.set(next.id, { source, at: Date.now() })
+          while (this.playableCache.size > PLAYABLE_CACHE_MAX) {
+            const oldest = this.playableCache.keys().next().value
+            if (oldest === undefined) break
+            this.playableCache.delete(oldest)
+          }
+        })
+        .catch(() => {
+          /* prefetch is best-effort; start() resolves again when needed */
+        })
+        .finally(() => this.prefetchInFlight.delete(next.id))
+    }, PREFETCH_DELAY_MS)
+  }
+
+  /** Metadata/artwork early: let the browser cache the next cover image. */
+  private prefetchArtwork(track: Track): void {
+    if (!track.artwork) return
+    try {
+      const img = new Image()
+      img.src = track.artwork
+    } catch {
+      /* cosmetic only */
+    }
+  }
+
+  private clearPrefetch(): void {
+    if (this.prefetchTimer) {
+      clearTimeout(this.prefetchTimer)
+      this.prefetchTimer = null
+    }
+    this.playableCache.clear()
+    this.prefetchInFlight.clear()
   }
 
   // ---------- queue management ----------
@@ -1203,13 +1366,15 @@ export class PlaybackController {
   }, autoResume: boolean): Promise<void> {
     const queue = session.queue ?? []
     const index = Math.min(Math.max(session.index, -1), queue.length - 1)
+    const speed = session.speed || 1
+    this.engine.setRate(speed)
     setPlayerState({
       queue,
       autoQueue: session.autoQueue ?? [],
       index,
       shuffle: !!session.shuffle,
       repeat: session.repeat ?? 'off',
-      speed: session.speed || 1,
+      speed,
       current: index >= 0 ? queue[index] ?? null : null,
     })
     if (index >= 0 && queue[index]) {

@@ -246,6 +246,22 @@ The progress readout can flip between total duration and time remaining, and a
 focused scrubber owns its arrow keys (a global shortcut never double-applies
 them).
 
+**Playback quality of life** — a sleep timer (15/30/45/60 min or "end of
+track": wall-clock timers pause playback at expiry, end-of-track waits for
+natural completion; the countdown lives on its own channel so per-second
+updates never re-render the player, and the timer never touches the queue,
+autoplay, the radio seed or the history ladder) and a persistent playback
+speed (0.5×–2×, applied to the current track immediately, inherited by every
+next track, restored across restarts and sessions). Track transitions are
+kept fast by pre-resolving the immediate next stream (user queue first, then
+autoplay) and warming its artwork while the current track plays — one track,
+one request, bounded cache, audio bytes never pre-downloaded. Gapless
+playback, crossfade and loudness normalization are **not supported** by the
+single-`HTMLAudioElement` pipeline (no pre-schedulable decoded buffers, no
+second audible voice, no LUFS/ReplayGain metadata) and are deliberately left
+out rather than approximated — `src/lib/audioCapabilities.ts` states these
+verdicts explicitly and is test-asserted.
+
 Keyboard: `Ctrl/⌘+K` search · `Space` play/pause · `←/→` seek 5 s ·
 `Ctrl+←/→` prev/next · `↑/↓` volume · `M` mute · `S` shuffle · `R` repeat ·
 `L` like · `Q` queue · `Y` lyrics · `Esc` close panel.
