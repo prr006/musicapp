@@ -47,6 +47,13 @@ const DISCOVERY_BATCH = 20
 const SIGNIFICANT_LISTEN_SECONDS = 30
 /** How much of the listening session feeds the radio context. */
 const SESSION_WINDOW = 12
+/**
+ * How much of the autoplay list survives a track transition before a fresh,
+ * newly-anchored batch is appended: the listener's visible upcoming list
+ * stays stable while the deep, never-heard tail makes room for candidates
+ * generated from the NEW current track and session.
+ */
+const DISCOVERY_KEEP_ON_TRANSITION = 8
 /** Broadening fetch budget per refill: session drift anchors + taste anchors. */
 const MAX_DRIFT_ANCHORS_PER_REFILL = 2
 const MAX_TASTE_ANCHORS_PER_REFILL = 1
@@ -70,6 +77,12 @@ export class PlaybackController {
   private discoveryWarned = false
   /** Engine generation that has already kicked off a discovery refill. */
   private discoveryRefillGen = 0
+  /**
+   * The track id the last discovery generation was anchored on. A refill
+   * only re-anchors when the current track differs — re-starting the same
+   * track (seek, repeat-one) is not a meaningful transition.
+   */
+  private discoveryAnchorId: string | null = null
   /** An explicit artist/album seed from Start Radio; holds until playback moves on. */
   private explicitSeed: RadioSeed | null = null
   /**
@@ -111,10 +124,15 @@ export class PlaybackController {
           this.markPlayed()
           // Refill discovery once per track (generation), not on every state
           // emission — otherwise duration/buffered updates would keep
-          // re-searching the same anchor query.
+          // re-searching the same anchor query. When the track that started
+          // playing is a NEW anchor (a different song became current), the
+          // radio re-anchors: the next few upcoming tracks are kept and a
+          // fresh batch is generated from the new current track + session.
           if (this.discoveryRefillGen !== this.engine.currentGeneration) {
             this.discoveryRefillGen = this.engine.currentGeneration
-            void this.refillDiscovery()
+            const current = playerState().current
+            const isTransition = !!current && current.id !== this.discoveryAnchorId
+            void this.refillDiscovery(isTransition)
           }
         }
         this.queueSessionSave()
@@ -165,6 +183,7 @@ export class PlaybackController {
     const current = playerState().current
     if (!current) return
     this.recordedForToken.add(token)
+    if (import.meta.env.DEV) console.debug('[radio] PLAY CURRENT=', current.id)
     this.rememberInSession(current)
     void library.recordPlayEvent(current, 'play_started').catch(() => {
       /* history is best-effort; the error surfaces through the store */
@@ -593,22 +612,42 @@ export class PlaybackController {
   // ---------- autoplay / radio ----------
 
   /**
-   * Keeps several upcoming discovery tracks ahead of the listener. It is the
-   * background continuation that makes playback endless: when the discovery
-   * count drops below DISCOVERY_TARGET it fetches more, anchored on the track
-   * that is currently playing — never on a search-results list — so the radio
-   * drifts naturally as playback moves on.
+   * Keeps several upcoming discovery tracks ahead of the listener — the
+   * background continuation that makes playback endless, anchored on the
+   * track that is currently playing (never on a search-results list).
+   *
+   * Two triggers, both meaningful (never duration/buffer/state noise):
+   *  - a track TRANSITION (a different song became current): the radio
+   *    re-anchors on it. The visible upcoming list is preserved up to
+   *    DISCOVERY_KEEP_ON_TRANSITION tracks; only the deep, never-heard tail
+   *    is dropped to make room for a fresh, newly-anchored batch, so the
+   *    queue evolves with the session instead of remaining anchored to the
+   *    first song for the whole session;
+   *  - a QUANTITY shortfall (the autoplay list dropped below
+   *    DISCOVERY_TARGET): plain top-up.
    *
    * Concurrency and staleness are guarded: only one fetch runs at a time
    * (discoveryPromise) and every response is validated against discoveryGen, so
    * a slow response — or one superseded by an intentional track change — can
-   * never pollute the new track's discovery queue.
+   * never pollute the new track's discovery queue. If a fetch is already in
+   * flight when a transition happens, that transition is simply picked up by
+   * the next one — never queued behind the media element.
    */
-  private refillDiscovery(): Promise<void> {
+  private refillDiscovery(onTransition = false): Promise<void> {
     if (!useLibraryStore.getState().settings.autoplay) return Promise.resolve()
     const state = playerState()
     if (!state.current) return Promise.resolve()
-    if (state.autoQueue.length >= DISCOVERY_TARGET) return Promise.resolve()
+    const freshAnchor = state.current.id !== this.discoveryAnchorId
+    if (onTransition || freshAnchor) {
+      this.discoveryAnchorId = state.current.id
+      if (state.autoQueue.length > DISCOVERY_KEEP_ON_TRANSITION) {
+        // Bounded evolution: keep what the listener is about to hear, drop
+        // only the never-heard tail, and generate fresh candidates.
+        setPlayerState({ autoQueue: state.autoQueue.slice(0, DISCOVERY_KEEP_ON_TRANSITION) })
+      }
+    } else if (state.autoQueue.length >= DISCOVERY_TARGET) {
+      return Promise.resolve()
+    }
     if (this.discoveryPromise) return this.discoveryPromise
     let promise: Promise<void>
     promise = this.doDiscoveryFetch().finally(() => {
@@ -828,11 +867,10 @@ export class PlaybackController {
     }
     if (gen !== this.discoveryGen) return
     if (import.meta.env.DEV) {
-      // Candidate provenance for this generation: which surfaces and anchors
-      // contributed. Dev builds only — never recorded in production.
+      // Lifecycle provenance, dev builds only: one line per generation.
       console.debug(
-        '[radio] gen', gen, 'anchor', playerState().current?.id,
-        'shelves', primaryShelves, 'pools', pools.map((p) => p.tracks.length),
+        '[radio] DISCOVERY GENERATION=', gen, 'ANCHOR=', playerState().current?.id,
+        'shelves=', primaryShelves, 'pools=', pools.map((p) => p.tracks.length),
       )
     }
 
@@ -878,6 +916,9 @@ export class PlaybackController {
         : contributors.some((c) => c.endsWith('+drift'))
           ? 'session-mix' // the listening session itself redirected the radio
           : primarySource
+      if (import.meta.env.DEV) {
+        console.debug('[radio] SOURCE=', source || primarySource, 'CANDIDATE=', fresh.map((t) => t.id))
+      }
       setPlayerState({
         autoQueue: dedupeTracks([...playerState().autoQueue, ...fresh]).slice(0, DISCOVERY_MAX),
         radioSource: source || playerState().radioSource,
@@ -963,6 +1004,7 @@ export class PlaybackController {
     this.discoveryGen += 1
     this.discoveryWarned = false
     this.discoveryPromise = null
+    this.discoveryAnchorId = null
     setPlayerState({ autoQueue: [], radioSource: '' })
   }
 

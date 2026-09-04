@@ -152,9 +152,18 @@ next batch.
   added rather than something unrelated. Canonical-song dedupe collapses
   "Believer (Official Video)" onto "Believer" without merging different songs
   that share a title.
-* **Continuous, bounded.** The autoplay list stays ≤ 20, refills below 8 with
-  generation guards discarding stale responses; a failed fetch never destroys
-  queued suggestions. The autoplay header labels the source contextually —
+* **Continuous, bounded, re-anchoring.** The autoplay list stays ≤ 20 and
+  refills below 8 — and, crucially, EVERY track transition (a different song
+  becoming current) triggers a new generation anchored on that song: the
+  visible next ~8 upcoming tracks are preserved, only the never-heard tail
+  makes room for the fresh batch, so Song A → gen 1, Song B → gen 2, Song C →
+  gen 3 and the queue evolves with the session instead of playing through one
+  static batch. Ordinary state/duration/buffer emissions never trigger
+  requests (one refill per media generation, and only when the anchor track
+  actually changed); Artist/Album radios re-anchor the same way but keep
+  their explicit seed for ranking, staying artist/album-centered. Generation
+  guards discard stale responses; a failed fetch never destroys queued
+  suggestions. The autoplay header labels the source contextually —
   "Based on this song" or "Based on your session" when several pools
   contributed.
 * **Feedback loop.** started < meaningful play < completion weight the taste

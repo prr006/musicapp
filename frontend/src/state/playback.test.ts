@@ -1069,6 +1069,120 @@ describe('radio engine', () => {
     )
     for (let i = 1; i <= 4; i += 1) expect(anchors).toContain(`yt:t${i}`)
   })
+
+  // ---------- re-anchoring lifecycle (song radio evolves per transition) ----------
+
+  it('re-anchors on every track transition even while the queue is full, keeping the visible upcoming list', async () => {
+    const h = harness()
+    const feed = (prefix: string, n: number): Track[] =>
+      Array.from({ length: n }, (_, i) =>
+        track(`${prefix}${i}`, { title: `${prefix.toUpperCase()} Song ${i}`, artist: `${prefix} Artist ${i}` }),
+      )
+    const related = new Map<string, { tracks: Track[]; source: string }>([
+      ['yt:a', { tracks: feed('p', 20), source: 'ytmusic-next' }],
+      ['yt:p0', { tracks: feed('q', 10), source: 'ytmusic-next' }],
+      ['yt:p1', { tracks: feed('r', 10), source: 'ytmusic-next' }],
+    ])
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockImplementation(
+      async (t: Track) => related.get(t.id) ?? { tracks: [], source: '' },
+    )
+    const anchorsOf = () =>
+      (h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as Track).id)
+
+    // Song A: generation 1 fills the queue to the bound with one anchor.
+    const a = track('a', { title: 'Song A', artist: 'A Artist' })
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThanOrEqual(20))
+    expect(anchorsOf()).toEqual(['yt:a'])
+
+    // Song B (first autoplay track) becomes current: even with 19 tracks
+    // still queued, a NEW generation must run anchored on B.
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe('yt:p0'))
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toContain('yt:q0'))
+    expect(anchorsOf()).toEqual(['yt:a', 'yt:p0'])
+    // The visible upcoming list is preserved (not discarded): the tracks the
+    // listener was about to hear still lead the queue, in order…
+    expect(state().autoQueue.slice(0, 8).map((t) => t.id)).toEqual(
+      Array.from({ length: 8 }, (_, i) => `yt:p${i + 1}`),
+    )
+    // …fresh candidates were appended behind them, and the queue stays bounded.
+    expect(state().autoQueue.length).toBeLessThanOrEqual(20)
+    const afterB = state().autoQueue.length
+
+    // Song C: generation 3, anchored on C — the radio keeps evolving.
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe('yt:p1'))
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toContain('yt:r0'))
+    expect(anchorsOf()).toEqual(['yt:a', 'yt:p0', 'yt:p1'])
+    expect(state().autoQueue.length).toBeLessThanOrEqual(20)
+    expect(state().autoQueue.length).toBeGreaterThan(0)
+    void afterB
+
+    // The play/session ladder recorded every consumed song (session context
+    // updates as autoplay tracks become current).
+    const played = h.recorded.filter((r) => r.event === 'play_started').map((r) => r.track.id)
+    expect(played).toContain('yt:p0')
+    expect(played).toContain('yt:p1')
+  })
+
+  it('ordinary playback state updates never trigger discovery requests', async () => {
+    const h = harness()
+    const feed = Array.from({ length: 12 }, (_, i) =>
+      track(`s${i}`, { title: `Steady ${i}`, artist: `Steady Artist ${i}` }),
+    )
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      tracks: feed, source: 'ytmusic-next',
+    })
+    const a = track('a', { title: 'Song A', artist: 'A Artist' })
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThanOrEqual(8))
+    const callsBefore = (h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.length
+
+    // Pause/resume, seek and volume changes are state noise, not track
+    // transitions: no media reload, no new generation.
+    await h.controller.pause()
+    await h.controller.resume()
+    h.controller.seek(30)
+    h.controller.setVolume(0.5)
+    await new Promise((r) => setTimeout(r, 80))
+    expect((h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore)
+
+    // But the next real transition does trigger one.
+    h.media.endNaturally()
+    await vi.waitFor(() => {
+      const anchors = (h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c) => (c[0] as Track).id,
+      )
+      expect(anchors).toContain('yt:s0')
+    })
+  })
+
+  it('keeps a short autoplay list intact across a transition (no unnecessary discards)', async () => {
+    const h = harness()
+    const small = Array.from({ length: 9 }, (_, i) =>
+      track(`x${i}`, { title: `Small ${i}`, artist: `Small Artist ${i}` }),
+    )
+    const related = new Map<string, { tracks: Track[]; source: string }>([
+      ['yt:a', { tracks: small, source: 'ytmusic-next' }],
+      ['yt:x0', { tracks: small.slice(1), source: 'ytmusic-next' }],
+      ['yt:a2', { tracks: [], source: '' }],
+    ])
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockImplementation(
+      async (t: Track) => related.get(t.id) ?? { tracks: [], source: '' },
+    )
+    const a = track('a', { title: 'Song A', artist: 'A Artist' })
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThanOrEqual(9))
+
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe('yt:x0'))
+    await new Promise((r) => setTimeout(r, 80))
+    const ids = state().autoQueue.map((t) => t.id)
+    // Nothing queued was thrown away: the remaining small list survives the
+    // transition in order (fresh candidates may only extend it).
+    expect(ids.slice(0, 8)).toEqual(['yt:x1', 'yt:x2', 'yt:x3', 'yt:x4', 'yt:x5', 'yt:x6', 'yt:x7', 'yt:x8'])
+  })
 })
 
 describe('library feedback', () => {
