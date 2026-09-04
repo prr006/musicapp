@@ -328,9 +328,9 @@ describe('queue editing', () => {
     const h = harness()
     const a = track('a')
     const extra = track('z')
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: [extra], videos: [], albums: [], artists: [], provider: 'test',
-    })
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+  tracks: [extra], source: 'test',
+})
     await h.controller.play(a, { tracks: [a], index: 0 })
     await vi.waitFor(() => expect(state().autoQueue).toHaveLength(1))
     const autoplayBefore = state().autoQueue.map((t) => t.id)
@@ -345,9 +345,9 @@ describe('queue editing', () => {
     const h = harness()
     const a = track('a')
     const extra = track('z')
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: [extra], videos: [], albums: [], artists: [], provider: 'test',
-    })
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+  tracks: [extra], source: 'test',
+})
     await h.controller.play(a, { tracks: [a], index: 0 })
     await vi.waitFor(() => expect(state().autoQueue).toHaveLength(1))
     const autoplayBefore = state().autoQueue.map((t) => t.id)
@@ -407,9 +407,9 @@ describe('autoplay', () => {
     const h = harness()
     const a = track('a')
     const extra = track('z')
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: [extra], videos: [], albums: [], artists: [], provider: 'test',
-    })
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+  tracks: [extra], source: 'test',
+})
 
     await h.controller.play(a, { tracks: [a], index: 0 })
     await vi.waitFor(() => expect(state().autoQueue).toHaveLength(1))
@@ -439,8 +439,8 @@ describe('discovery (endless queue)', () => {
     const h = harness()
     const a = track('a')
     const pool = Array.from({ length: 10 }, (_, i) => track(`d${i}`))
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: pool, videos: [], albums: [], artists: [], provider: 'test',
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      tracks: pool, source: 'test',
     })
 
     await h.controller.play(a, { tracks: [a], index: 0 })
@@ -460,9 +460,9 @@ describe('discovery (endless queue)', () => {
       stats: {},
       disliked: [],
     })
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: [a, b, dup, fresh], videos: [], albums: [], artists: [], provider: 'test',
-    })
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+  tracks: [a, b, dup, fresh], source: 'test',
+})
 
     await h.controller.play(a, { tracks: [a, b], index: 0 })
     await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
@@ -473,9 +473,9 @@ describe('discovery (endless queue)', () => {
     const h = harness()
     const a = track('a')
     const extra = track('z')
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: [extra], videos: [], albums: [], artists: [], provider: 'test',
-    })
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+  tracks: [extra], source: 'test',
+})
 
     await h.controller.play(a, { tracks: [a], index: 0 })
     await vi.waitFor(() => expect(state().autoQueue).toHaveLength(1))
@@ -499,12 +499,12 @@ describe('discovery (endless queue)', () => {
     const three = track('three')
 
     let mode: 'seed' | 'fail' | 'recover' = 'seed'
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockImplementation(async () => {
       if (mode === 'fail') throw new Error('network down')
       if (mode === 'recover') {
-        return { query: '', songs: [three], videos: [], albums: [], artists: [], provider: 'test' }
+        return { tracks: [three], source: 'test' }
       }
-      return { query: '', songs: [one, two], videos: [], albums: [], artists: [], provider: 'test' }
+      return { tracks: [one, two], source: 'test' }
     })
 
     await h.controller.play(a, { tracks: [a], index: 0 })
@@ -534,9 +534,9 @@ describe('discovery (endless queue)', () => {
   it('stopping autoplay empties discovery without touching the explicit queue', async () => {
     const h = harness()
     const a = track('a')
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: [track('z')], videos: [], albums: [], artists: [], provider: 'test',
-    })
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+  tracks: [track('z')], source: 'test',
+})
     await h.controller.play(a, { tracks: [a], index: 0 })
     await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
 
@@ -550,8 +550,8 @@ describe('discovery (endless queue)', () => {
     const h = harness()
     const chosen = track('chosen')
     const siblings = [track('s1'), track('s2'), track('s3')]
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: siblings, videos: [], albums: [], artists: [], provider: 'test',
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      tracks: siblings, source: 'test',
     })
 
     // Mirrors the SearchView single-click: no `tracks` context at all.
@@ -568,9 +568,9 @@ describe('discovery (endless queue)', () => {
     const a = track('a', { title: 'Radioactive', artist: 'Imagine Dragons' })
     const upload1 = track('u1', { title: 'Believer', artist: 'Imagine Dragons' })
     const upload2 = track('u2', { title: 'Believer (Official Video)', artist: 'Imagine Dragons' })
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: [upload1, upload2], videos: [], albums: [], artists: [], provider: 'test',
-    })
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+  tracks: [upload1, upload2], source: 'test',
+})
     await h.controller.play(a, { tracks: [a], index: 0 })
     await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
     expect(state().autoQueue.map((t) => t.id)).toEqual([upload1.id])
@@ -580,8 +580,8 @@ describe('discovery (endless queue)', () => {
     const h = harness()
     const a = track('a')
     const pool = Array.from({ length: 40 }, (_, i) => track(`d${i}`))
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: pool, videos: [], albums: [], artists: [], provider: 'test',
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      tracks: pool, source: 'test',
     })
     await h.controller.play(a, { tracks: [a], index: 0 })
     await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThanOrEqual(8))
@@ -598,10 +598,12 @@ describe('discovery (endless queue)', () => {
   it('keeps playing indefinitely while autoplay is on, without immediate repeats', async () => {
     const h = harness()
     const a = track('a')
-    const pool = Array.from({ length: 30 }, (_, i) => track(`d${i}`))
+    const pool = Array.from({ length: 60 }, (_, i) =>
+      track(`d${i}`, { title: `Pool Song ${i}`, artist: `Pool Artist ${i}` }),
+    )
     const played: { track: Track; playedAt: number }[] = []
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: pool, videos: [], albums: [], artists: [], provider: 'test',
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      tracks: pool, source: 'test',
     })
     ;(h.backend.recordPlayEvent as ReturnType<typeof vi.fn>).mockImplementation(async (t: Track) => {
       played.unshift({ track: t, playedAt: Date.now() })
@@ -629,14 +631,14 @@ describe('discovery (endless queue)', () => {
     const fresh = track('fresh')
 
     let call = 0
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockImplementation(async () => {
       call += 1
       if (call === 1) {
         // Track A's discovery request resolves long after B has taken over.
         await new Promise((r) => setTimeout(r, 60))
-        return { query: '', songs: [stale], videos: [], albums: [], artists: [], provider: 'test' }
+        return { tracks: [stale], source: 'test' }
       }
-      return { query: '', songs: [fresh], videos: [], albums: [], artists: [], provider: 'test' }
+      return { tracks: [fresh], source: 'test' }
     })
 
     await h.controller.play(a, { tracks: [a], index: 0 })
@@ -667,27 +669,28 @@ describe('radio engine', () => {
     expect(h.backend.search).not.toHaveBeenCalled()
   })
 
-  it('falls back to identity-verified artist searches only when the related feed is empty', async () => {
+  it('song radio never falls back to artist search when the related feed is empty', async () => {
     const h = harness()
-    const a = track('a', { title: 'Nightfall', artist: 'Halcyon' })
-    mockRelated(h, [])
-    const same = track('m1', { title: 'Other Halcyon Song', artist: 'Halcyon' })
-    // Songs that merely share a title with the seed must not survive the
-    // fallback, no matter how prominently text search returns them.
-    const sameTitle = track('t1', { title: 'Nightfall', artist: 'Taylor Swift' })
-    const sameTitle2 = track('t2', { title: 'Nightfall', artist: 'Pink Floyd' })
+    const a = track('a', { title: 'Nightfall', artist: 'Halcyon', album: 'Blue Hours' })
+    const sameTitle = track('m0', { title: 'Nightfall', artist: 'Someone Else' })
+    const same = track('m1', { title: 'Another Halcyon Song', artist: 'Halcyon' })
+    // The provider answers nothing usable (the self-echo case: filtered upstream).
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({ tracks: [], source: '' })
     ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: [sameTitle, sameTitle2, same], videos: [], albums: [], artists: [], provider: 'test',
+      query: '', songs: [sameTitle, same], videos: [], albums: [], artists: [], provider: 'test',
     })
+
     await h.controller.play(a, { tracks: [a], index: 0 })
-    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:m1']))
-    const queries = (h.backend.search as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]))
-    // Artist-anchored queries only — never the song title, never a channel name.
-    expect(queries.every((q) => q.toLowerCase().includes('halcyon'))).toBe(true)
-    expect(queries.some((q) => q.toLowerCase().includes('nightfall'))).toBe(false)
-    // Song radio never claims to be "more from this artist" — only Artist
-    // Radio gets that label.
-    expect(state().radioSource).toBe('seed-song')
+    await new Promise((r) => setTimeout(r, 60))
+    // NO artist text search: a Song Radio prefers an empty radio over
+    // fabricating an Artist Radio from search("Halcyon").
+    expect(h.backend.search).not.toHaveBeenCalled()
+    expect(state().autoQueue).toHaveLength(0)
+    expect(state().radioSource).toBe('')
+
+    // And playback stops honestly when the explicit queue ends.
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().status).toBe('idle'))
   })
 
   it('never text-searches for a channel-only seed (uploader is not an artist)', async () => {
@@ -1020,25 +1023,52 @@ describe('radio engine', () => {
     expect(state().autoQueue.filter((t) => t.artist === 'Funk Artist').length).toBeLessThanOrEqual(4)
   })
 
-  it('only Artist Radio is labelled \u201cmore from this artist\u201d; the song fallback says \u201cbased on this song\u201d', async () => {
+  it('Artist Radio may fall back to identity-verified artist search; Song Radio never does', async () => {
     const h = harness()
     ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({ tracks: [], source: '' })
     // The fallback text search answers with the searched artist's own songs
-    // (identity verification would reject anything else anyway).
+    // plus an unrelated same-title impostor (which verification must reject).
     ;(h.backend.search as ReturnType<typeof vi.fn>).mockImplementation(async (q: string) => ({
-      query: q, songs: [track('a1', { title: `Song of ${q}`, artist: String(q).split(' ')[0] })],
+      query: q,
+      songs: [
+        track('a1', { title: `Song of ${q}`, artist: String(q).split(' ')[0] }),
+        track('impostor', { title: 'Let Down', artist: 'Somebody Else' }),
+      ],
       videos: [], albums: [], artists: [], provider: 'test',
     }))
 
-    // Song radio (plain play → track seed): song-context label.
+    // Song radio (plain play -> track seed): NO fallback, empty radio.
     const song = track('s', { title: 'Nightfall', artist: 'Halcyon' })
     await h.controller.play(song, { tracks: [song], index: 0 })
-    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
-    expect(state().radioSource).toBe('seed-song')
+    await new Promise((r) => setTimeout(r, 50))
+    expect(h.backend.search).not.toHaveBeenCalled()
+    expect(state().autoQueue).toHaveLength(0)
 
-    // Artist radio: the artist label is legitimate.
+    // Artist radio: the artist search fallback is legitimate, identity-verified.
     await h.controller.startRadio(track('x', { title: 'Einaudi Song', artist: 'Einaudi' }), { kind: 'artist' })
-    await vi.waitFor(() => expect(state().radioSource).toBe('seed-artist'))
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
+    expect(state().radioSource).toBe('seed-artist')
+    expect(state().autoQueue.some((t) => t.id === 'yt:impostor')).toBe(false)
+    expect(state().autoQueue.some((t) => t.artist === 'Einaudi')).toBe(true)
+  })
+
+  it('Album Radio keeps its album-context fallback (same-album rows verified, unrelated rejected)', async () => {
+    const h = harness()
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({ tracks: [], source: '' })
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockImplementation(async (q: string) => ({
+      query: q,
+      songs: [
+        track('in-album', { title: 'Orchestral Reprise', artist: 'Other Artist', album: 'Orchestral EP' }),
+        track('out', { title: 'Unrelated', artist: 'Other Artist', album: 'Different Album' }),
+      ],
+      videos: [], albums: [], artists: [], provider: 'test',
+    }))
+    const seed = track('alb', { title: 'Let Down (Orchestral Version)', artist: 'Alessandro Veloz', album: 'Orchestral EP' })
+    await h.controller.startRadio(seed, { kind: 'album' })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
+    const ids = state().autoQueue.map((t) => t.id)
+    expect(ids).toContain('yt:in-album') // same-album context verified
+    expect(ids).not.toContain('yt:out') // different album AND different artist: rejected
   })
 
   it('refills continuously: every consumed anchor becomes the next primary as the queue drains', async () => {
@@ -1186,44 +1216,47 @@ describe('radio engine', () => {
 
   // ---------- same-anchor invariant (the SLAVA FUNK! regression) ----------
 
-  it('seed-song provenance: the artist text-search path is traceable end to end', async () => {
+  it('the ABBA regression: a seed-echo-only feed yields an empty Song Radio and backend.search is NEVER called', async () => {
     const h = harness()
-    // The Let Down (Orchestral Version) shape: /next answers only the seed
-    // echo (filtered by the backend) => zero provider candidates, so the
-    // last-resort artist search defines the radio.
-    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({ tracks: [], source: '' })
-    const artistSong = (id: string, title: string): Track =>
-      track(id, { title, artist: 'Alessandro Veloz', album: 'Orchestral EP', via: 'search:song', artistSrc: 'browse' })
-    const impostor = track('impostor', { title: 'Let Down', artist: 'Someone Else' })
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockImplementation(async (q: string) => ({
-      query: q,
-      songs: q.includes('Orchestral')
-        ? [artistSong('ov1', 'Let Down (Orchestral Reprise)'), impostor]
-        : [artistSong('av1', 'Veloz Song One'), artistSong('av2', 'Veloz Song Two')],
-      videos: [], albums: [], artists: [], provider: 'test',
-    }))
+    // Exact live case: The Winner Takes It All — ABBA (WbnG3eAGb6Y). The
+    // provider's /next answers ONLY the seed echo row; whether the backend
+    // filters it or passes it through, zero usable candidates remain.
+    const seed = track('WbnG3eAGb6Y', { title: 'The Winner Takes It All', artist: 'ABBA', album: 'Super Trouper' })
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      tracks: [seed], source: 'ytmusic-next', // the raw self-echo shape
+    })
 
-    const seed = track('atvX', {
+    await h.controller.play(seed, { tracks: [seed], index: 0 })
+    await new Promise((r) => setTimeout(r, 60))
+
+    // The actual search request has disappeared from Song Radio entirely.
+    expect(h.backend.search).not.toHaveBeenCalled()
+    // No fabricated Artist Radio: empty autoplay, no seed-song label.
+    expect(state().autoQueue).toHaveLength(0)
+    expect(state().radioSource).not.toBe('seed-song')
+    expect(state().radioSource).toBe('')
+    // Honest stop when the explicit queue ends.
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().status).toBe('idle'))
+  })
+
+  it('the Let Down regression: a self-echo provider answer yields an empty Song Radio, never artist search', async () => {
+    const h = harness()
+    // Exact discovered case: /next answers ONLY the seed echo (videoId
+    // atvXFUzaOK0), which the backend filters -> zero usable candidates. The
+    // seed HAS an identified artist and an album, so the old fallback would
+    // have run search("Alessandro Veloz") -> 15 same-artist tracks.
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({ tracks: [], source: '' })
+    const seed = track('atvXFUzaOK0', {
       title: 'Let Down (Orchestral Version)', artist: 'Alessandro Veloz', album: 'Orchestral EP',
     })
     await h.controller.play(seed, { tracks: [seed], index: 0 })
-    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
-
-    // The exact queries: the seed's raw artist, then artist + album.
-    const queries = (h.backend.search as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]))
-    expect(queries).toEqual(['Alessandro Veloz', 'Alessandro Veloz Orchestral EP'])
-    // Song radio labels itself seed-song, never "more from this artist".
-    expect(state().radioSource).toBe('seed-song')
-    // Only identity-verified rows survived (the same-title impostor is out)…
-    expect(state().autoQueue.some((t) => t.id === 'yt:impostor')).toBe(false)
-    // …and the provider's own provenance fields ride along into the queue,
-    // so SEED-SOURCE CANDIDATE lines can be matched against real data.
-    const withProvenance = state().autoQueue.filter((t) => t.artist === 'Alessandro Veloz')
-    expect(withProvenance.length).toBeGreaterThanOrEqual(3)
-    for (const t of withProvenance) {
-      expect(t.via).toBe('search:song')
-      expect(t.artistSrc).toBe('browse')
-    }
+    await new Promise((r) => setTimeout(r, 60))
+    expect(h.backend.search).not.toHaveBeenCalled() // NO fabricated Artist Radio
+    expect(state().autoQueue).toHaveLength(0)
+    expect(state().radioSource).toBe('')
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().status).toBe('idle')) // honest stop
   })
 
   it('does not re-fetch the same anchor when the queue is empty: a completed generation is final', async () => {
@@ -1254,9 +1287,6 @@ describe('radio engine', () => {
   it('bounds same-anchor retries after provider failures (no infinite loop)', async () => {
     const h = harness()
     ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network down'))
-    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
-      query: '', songs: [], videos: [], albums: [], artists: [], provider: 'test',
-    })
     const seed = track('a', { title: 'Song A', artist: 'A Artist' })
     await h.controller.play(seed, { tracks: [seed], index: 0 })
     // Initial attempt fails, the song ends, one legitimate retry is allowed,
@@ -1264,6 +1294,7 @@ describe('radio engine', () => {
     await vi.waitFor(() =>
       expect((h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(1),
     )
+    await new Promise((r) => setTimeout(r, 30)) // let generation 1 settle (failed, retryable)
     h.media.endNaturally()
     await vi.waitFor(() =>
       expect((h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2),

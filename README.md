@@ -124,9 +124,14 @@ next batch.
   generation**: drift/taste anchors first, then *adjacent* anchors — the
   distinct-identity rows of the feed itself (featured artists inside a
   same-artist wall), whose own feeds are broader graph neighborhoods. All of
-  it is real recommendation data; artist text search remains the verified
-  last resort, and it can never label a Song Radio "more from this artist"
-  (only Artist Radio says that).
+  it is real recommendation data. A provider feed that answers with only the
+  seed's own echo counts as **unavailable** (the ladder continues through
+  automix/RDAMVM/the mix), and **Song Radio never falls back to artist text
+  search**: if no genuine recommendation source answers, its autoplay stays
+  honestly empty rather than fabricating an Artist Radio from
+  search("artist"). That catalog fallback exists only for Artist and Album
+  radios — compiler-enforced via the `CatalogRadioSeed` type — and only
+  Artist Radio is ever labelled "More from this artist".
 * **Ranking.** The provider's recommendation relationship is the strongest
   signal (its order dominates); taste — completion-weighted artist affinity,
   likes, session familiarity, album context — personalizes without destroying
@@ -145,11 +150,12 @@ next batch.
 * **Music identity is strict.** A performing artist is only set when the
   provider identifies one (artist metadata or an official `- Topic` channel);
   channel/uploader names stay as uploader metadata and never become artists.
-  Shared title words are never evidence of relatedness. Text search is an
-  explicit last resort: it runs only when no feed answered *and* the seed has
-  an identified artist, and every result is hard-verified as that artist's
-  own material (or the same album for album seeds) — otherwise nothing is
-  added rather than something unrelated. Canonical-song dedupe collapses
+  Shared title words are never evidence of relatedness. Catalog text search
+  is an explicit last resort for Artist/Album radios only (never Song Radio):
+  it runs when no feed answered *and* the radio is catalog-centered, and
+  every result is hard-verified as that artist's own material (or the same
+  album for album seeds) — otherwise nothing is added rather than something
+  unrelated. Canonical-song dedupe collapses
   "Believer (Official Video)" onto "Believer" without merging different songs
   that share a title.
 * **Continuous, bounded, re-anchoring.** The autoplay list stays ≤ 20 and

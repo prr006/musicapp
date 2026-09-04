@@ -42,6 +42,12 @@ function stubBackend(): Backend {
       resolverBinary: '', mediaKeys: 'off', tray: 'on',
     })),
     search: vi.fn(async () => ({ query: 'night', songs: [a, b], videos: [], albums: [], artists: [], provider: 'ytmusic' })),
+    // The genuine recommendation feed — autoplay must come from here, never
+    // from search (the song-radio artist fallback is gone by design).
+    relatedTracks: vi.fn(async (t: Track) => ({
+      tracks: t.id === a.id ? [b] : [a], source: 'ytmusic-next',
+    })),
+    logRadio: vi.fn(async () => {}),
     getPlayable: vi.fn(async (t: Track) => ({
       trackId: t.id, url: `http://local/${t.sourceId}`, mimeType: 'audio/mp4', duration: 120, bitrate: 128, expiresAt: 0,
     })),

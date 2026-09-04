@@ -21,6 +21,10 @@ function stub(overrides: Partial<Backend> = {}): Backend {
   const be = {
     isNative: false,
     search: vi.fn(async () => ({ query: 'q', songs: [song], videos: [], albums: [], artists: [], provider: 'ytmusic' })),
+    relatedTracks: vi.fn(async () => ({
+      tracks: [{ ...song, id: 'yt:b', sourceId: 'b', title: 'Paper Lanterns' }], source: 'ytmusic-next',
+    })),
+    logRadio: vi.fn(async () => {}),
     setLiked: vi.fn(async () => [song]),
     addSearchTerm: vi.fn(async () => ['q']),
     getPlayable: vi.fn(async () => ({ trackId: song.id, url: 'http://local/a', mimeType: 'audio/mp4', duration: 200, bitrate: 128, expiresAt: 0 })),

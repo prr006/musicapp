@@ -553,12 +553,14 @@ func (c *Client) Related(ctx context.Context, videoID string) (model.RadioRespon
 		// Last network rung: the auto-generated mix playlist RD<videoID>
 		// dumped flat via yt-dlp — fetched only when InnerTube answered
 		// nothing usable, or when every InnerTube stage is artist-heavy.
-		if mix, ferr := c.relatedYTDLP(ctx, videoID); ferr == nil && len(mix.Tracks) > 0 {
-			stages = append(stages, RadioStage{
-				Kind:     "ytdlp-mix",
-				Endpoint: "yt-dlp playlist RD" + videoID,
-				Tracks:   mix.Tracks,
-			})
+		if mix, ferr := c.relatedYTDLP(ctx, videoID); ferr == nil {
+			if tracks := withoutSeed(mix.Tracks, videoID); len(tracks) > 0 {
+				stages = append(stages, RadioStage{
+					Kind:     "ytdlp-mix",
+					Endpoint: "yt-dlp playlist RD" + videoID,
+					Tracks:   tracks,
+				})
+			}
 		}
 	}
 	if len(flattenStages(stages)) == 0 {
@@ -751,7 +753,7 @@ func (c *Client) innerTubeStages(ctx context.Context, videoID string, diag bool)
 	}
 	var stages []RadioStage
 	for _, kind := range nextSurfaceOrder {
-		if tracks := surfaces[kind]; len(tracks) > 0 {
+		if tracks := withoutSeed(surfaces[kind], videoID); len(tracks) > 0 {
 			stages = append(stages, RadioStage{Kind: kind, Endpoint: "next(videoId " + videoID + ")", Tracks: tracks})
 		}
 	}
@@ -784,6 +786,7 @@ func (c *Client) innerTubeStages(ctx context.Context, videoID string, diag bool)
 		for _, kind := range nextSurfaceOrder {
 			mixTracks = append(mixTracks, mixSurfaces[kind]...)
 		}
+		mixTracks = withoutSeed(mixTracks, videoID)
 		if len(mixTracks) > 0 {
 			stages = append(stages, RadioStage{Kind: "automix", Endpoint: "next(automix continuation)", Tracks: mixTracks})
 			if !diag && !NeedsBroaderSources(stages) {
@@ -803,6 +806,7 @@ func (c *Client) innerTubeStages(ctx context.Context, videoID string, diag bool)
 			for _, kind := range nextSurfaceOrder {
 				radioTracks = append(radioTracks, radioSurfaces[kind]...)
 			}
+			radioTracks = withoutSeed(radioTracks, videoID)
 			if len(radioTracks) > 0 {
 				stages = append(stages, RadioStage{
 					Kind:     "radio",
@@ -895,6 +899,24 @@ func sourceForStage(kind string) string {
 		return "yt-dlp-mix"
 	}
 	return "ytmusic-next"
+}
+
+// withoutSeed removes the seed's own rows — the watch feed echoing the very
+// video it was asked about. A self-echo is never a usable recommendation: a
+// queue that contains only the seed must read as "source unavailable" so the
+// ladder continues (automix, RDAMVM, mix) instead of returning a
+// successful-looking one-row answer that collapses into artist search.
+func withoutSeed(tracks []model.Track, videoID string) []model.Track {
+	if videoID == "" {
+		return tracks
+	}
+	out := make([]model.Track, 0, len(tracks))
+	for _, t := range tracks {
+		if t.SourceID != videoID {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func flattenStages(stages []RadioStage) []model.Track {

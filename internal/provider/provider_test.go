@@ -305,8 +305,15 @@ func TestRelatedInnerTubeSuccessAndSeedEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Source != "ytmusic-next" || len(res.Tracks) != 3 {
+	if res.Source != "ytmusic-next" || len(res.Tracks) != 2 {
 		t.Fatalf("unexpected radio response: %+v", res)
+	}
+	// The seed echo is stripped by the provider itself: a self-echo is never
+	// a usable recommendation candidate.
+	for _, tr := range res.Tracks {
+		if tr.SourceID == "seed111" {
+			t.Fatalf("seed echo must not be delivered: %+v", tr)
+		}
 	}
 }
 
@@ -1064,10 +1071,10 @@ func TestRelatedInnerTubeFallsThroughToRadioPlaylist(t *testing.T) {
 	if gotPlaylistID != "RDAMVMseed111" {
 		t.Fatalf("expected the RDAMVM song-radio request, got %q", gotPlaylistID)
 	}
-	if len(res.Tracks) != 3 {
-		t.Fatalf("expected the radio playlist's 3 tracks, got %d", len(res.Tracks))
+	if len(res.Tracks) != 2 {
+		t.Fatalf("expected the radio playlist's 2 usable tracks (seed echo stripped), got %d", len(res.Tracks))
 	}
-	if !shelfCounts(res, "radio", 3) {
+	if !shelfCounts(res, "radio", 2) {
 		t.Fatalf("radio stage must be recorded in provenance: %+v", res.Shelves)
 	}
 }
@@ -1108,13 +1115,13 @@ func TestRelatedMergesRadioWhenQueueArtistDominated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !artistDominated(res.Tracks[:8]) || len(res.Tracks) != 11 {
-		t.Fatalf("expected 8 queue tracks + 3 merged radio tracks, got %d", len(res.Tracks))
+	if !artistDominated(res.Tracks[:8]) || len(res.Tracks) != 10 {
+		t.Fatalf("expected 8 queue tracks + 2 merged radio tracks (seed echo stripped), got %d", len(res.Tracks))
 	}
-	if res.Tracks[8].SourceID != "seed111" {
+	if res.Tracks[8].SourceID != "rel222" {
 		t.Fatalf("merged radio tracks follow the queue, got %+v", res.Tracks[8])
 	}
-	if !shelfCounts(res, "queue", 8) || !shelfCounts(res, "radio", 3) {
+	if !shelfCounts(res, "queue", 8) || !shelfCounts(res, "radio", 2) {
 		t.Fatalf("provenance must record both stages: %+v", res.Shelves)
 	}
 }
@@ -1422,4 +1429,95 @@ func stageKinds(stages []RadioStage) []string {
 		out = append(out, st.Kind)
 	}
 	return out
+}
+
+// ---------- self-echo is not a source (the Let Down / SLAVA FUNK fix) ----------
+
+// A /next queue containing ONLY the seed echo must read as "source
+// unavailable": the ladder continues to the RDAMVM song radio instead of
+// returning a successful-looking one-row answer.
+func TestSelfEchoQueueContinuesLadderToRadio(t *testing.T) {
+	var requests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case body["videoId"] != nil:
+			requests = append(requests, "videoId")
+			_, _ = w.Write([]byte(selfEchoFixture("seed111")))
+		case body["playlistId"] != nil:
+			requests = append(requests, "radio")
+			_, _ = w.Write([]byte(nextFixture))
+		default:
+			requests = append(requests, "other")
+			_, _ = w.Write([]byte(`{"contents": {}}`))
+		}
+	}))
+	defer srv.Close()
+	c := New(&fakeRunner{err: fmt.Errorf("no yt-dlp")})
+	c.NextEndpoint = srv.URL
+	res, err := c.Related(context.Background(), "seed111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Tracks) == 0 {
+		t.Fatalf("the ladder must continue past a self-echo queue to the radio playlist")
+	}
+	for _, tr := range res.Tracks {
+		if tr.SourceID == "seed111" {
+			t.Fatalf("seed echo must never be delivered: %+v", tr)
+		}
+	}
+	// The automix preview is absent in the fixture, so the continuation went
+	// straight to the RDAMVM request.
+	if !containsStr(requests, "radio") {
+		t.Fatalf("RDAMVM song radio must be requested after a self-echo queue: %v", requests)
+	}
+}
+
+// When EVERY recommendation source only echoes the seed, the provider
+// honestly returns zero tracks — the frontend then prefers an empty Song
+// Radio over fabricating one from artist search.
+func TestSelfEchoEverywhereReturnsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(selfEchoFixture("seed111")))
+	}))
+	defer srv.Close()
+	c := New(&fakeRunner{err: fmt.Errorf("no yt-dlp")})
+	c.NextEndpoint = srv.URL
+	res, err := c.Related(context.Background(), "seed111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Tracks) != 0 {
+		t.Fatalf("a seed-only answer everywhere must yield zero usable tracks, got %+v", res.Tracks)
+	}
+}
+
+func selfEchoFixture(videoID string) string {
+	raw, _ := json.Marshal(map[string]any{
+		"contents": map[string]any{"singleColumnMusicWatchNextResultsRenderer": map[string]any{
+			"playlist": map[string]any{"playlist": map[string]any{"contents": []map[string]any{
+				{"playlistPanelVideoRenderer": map[string]any{
+					"videoId": videoID,
+					"title":   map[string]any{"runs": []map[string]any{{"text": "The Seed Itself"}}},
+					"longBylineText": map[string]any{"runs": []map[string]any{
+						{"text": "Some Channel", "navigationEndpoint": map[string]any{
+							"browseEndpoint": map[string]any{"browseId": "UCsomechannel"}}}}},
+				}},
+			}}}},
+		},
+	})
+	return string(raw)
+}
+
+func containsStr(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }

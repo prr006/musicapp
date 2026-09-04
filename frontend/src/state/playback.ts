@@ -45,6 +45,18 @@ const DISCOVERY_MAX = 20
 const DISCOVERY_BATCH = 20
 /** A listen counts as "significant" after this many seconds (or half the song). */
 const SIGNIFICANT_LISTEN_SECONDS = 30
+/**
+ * A radio whose identity is a catalog (an artist or an album): the only
+ * radios allowed to use artist/album text search as a fallback. Song Radio
+ * (`kind: 'track'`) is deliberately excluded — see catalogFallbackQueries.
+ */
+export type CatalogRadioSeed = RadioSeed & { kind: 'artist' } | RadioSeed & { kind: 'album' }
+
+/** Narrows a seed to the catalog radios (compiler-enforced at the call site). */
+function isCatalogRadio(seed: RadioSeed): seed is CatalogRadioSeed {
+  return seed.kind === 'artist' || seed.kind === 'album'
+}
+
 /** How much of the listening session feeds the radio context. */
 const SESSION_WINDOW = 12
 /**
@@ -785,7 +797,14 @@ export class PlaybackController {
    * *identified* performing artist (never the uploader/channel, never title
    * words — searching "fearless" is title-keyword matching in disguise).
    */
-  private fallbackArtistQueries(seed: RadioSeed): string[] {
+  /**
+   * Catalog fallback queries for ARTIST and ALBUM radios only — the seed's
+   * identified performing artist (and artist + album). The parameter type
+   * deliberately excludes song-radio seeds (`kind: 'track'`): a Song Radio
+   * must never fabricate itself from the artist's search results; if no
+   * genuine recommendation source answers, its autoplay stays empty.
+   */
+  private catalogFallbackQueries(seed: CatalogRadioSeed): string[] {
     if (!seed.primaryArtist || !seed.rawArtist) return []
     const queries = [seed.rawArtist]
     if (seed.album) queries.push(`${seed.rawArtist} ${seed.album}`)
@@ -839,6 +858,11 @@ export class PlaybackController {
     if (primary.length > 0) {
       pools.push({ weight: 1, tracks: primary })
       contributors.push(primarySource)
+      this.radioDebug(
+        `SOURCE ${primarySource || 'provider'} raw=${primary.length} usable=${this.freshCandidateCount(primary)} accepted`,
+      )
+    } else {
+      this.radioDebug(`SOURCE ${primarySource || 'provider'} raw=0 usable=0 REJECTED: no usable candidates`)
     }
 
     // 2) Broader generation when the primary pool is thin or one-sided.
@@ -905,14 +929,16 @@ export class PlaybackController {
       }
     }
 
-    // 3) Explicit last resort, only when no feed answered AND the seed has an
-    //    identified performing artist: text-search the artist's own material,
-    //    then hard-verify every candidate's identity. Songs that merely share
-    //    a title, bare channel matches and artist-less uploads are rejected.
-    //    Uploader-only seeds never generate text queries at all.
+    // 3) Explicit last resort for ARTIST and ALBUM radios only, never for
+    //    Song Radio: text-search the seed artist's own material (album radio
+    //    additionally accepts same-album rows), then hard-verify every
+    //    candidate's identity. A Song Radio with no trustworthy
+    //    recommendation source prefers an EMPTY radio over silently becoming
+    //    Artist Radio via search("artist") — that fabrication was the
+    //    confirmed root cause of the artist-only autoplay queues.
     let fallbackCandidates: Track[] | null = null
-    if (pools.length === 0) {
-      const queries = this.fallbackArtistQueries(seed)
+    if (pools.length === 0 && isCatalogRadio(seed)) {
+      const queries = this.catalogFallbackQueries(seed)
       this.radioDebug(
         `SEED-SOURCE START anchor=${seed.id} kind=${seed.kind} artist=${JSON.stringify(seed.rawArtist)} ` +
         `queries=[${queries.map((q) => JSON.stringify(q)).join(', ')}]`,
@@ -950,6 +976,11 @@ export class PlaybackController {
         )
       })
       if (candidates.length > 0) fallbackCandidates = candidates
+    } else if (pools.length === 0) {
+      this.radioDebug(
+        'SOURCE artist-search SKIPPED: Song Radio does not permit an artist-search fallback ' +
+        '(preferring an empty radio over fabricated Artist Radio)',
+      )
     }
     if (gen !== this.discoveryGen) return
     // Lifecycle provenance: one line per generation.
@@ -1017,6 +1048,11 @@ export class PlaybackController {
         this.discoveryWarned = true
         ui.toast("Couldn't load more suggestions — will retry", 'error')
       }
+    } else if (pools.length === 0 && seed.kind === 'track') {
+      this.radioDebug(
+        'SOURCE OUTCOME song-radio empty: no genuine recommendation source answered ' +
+        '(seed-only/empty feeds); artist text search is not permitted for Song Radio',
+      )
     }
 
     // Anchor accounting (the same-anchor invariant): a generation that ran to
