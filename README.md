@@ -163,7 +163,15 @@ next batch.
   actually changed); Artist/Album radios re-anchor the same way but keep
   their explicit seed for ranking, staying artist/album-centered. Generation
   guards discard stale responses; a failed fetch never destroys queued
-  suggestions. The autoplay header labels the source contextually —
+  suggestions. The same-anchor invariant holds throughout: a generation that
+  COMPLETED for the current track — even yielding nothing (a provider feed
+  that only echoes the seed) — is final for that anchor; an empty or low
+  autoplay list never re-requests identical recommendations, and only a
+  genuinely failed generation may retry (once). Radio lifecycle lines
+  (`PLAY CURRENT`, `ON TRACK TRANSITION`, `ON REFILL`, `BEFORE DISCOVERY`,
+  `AFTER DISCOVERY RESPONSE`, `DISCOVERY GENERATION`, `SOURCE`, `CANDIDATE`)
+  join the REQUEST/SEED/SOURCE blocks in the terminal with
+  `MELO_RADIO_DEBUG=1`. The autoplay header labels the source contextually —
   "Based on this song" or "Based on your session" when several pools
   contributed.
 * **Feedback loop.** started < meaningful play < completion weight the taste

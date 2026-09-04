@@ -42,6 +42,11 @@ export interface Backend {
   installResolver(): Promise<ResolverStatus>
   /** Mirrors the current track to the desktop (tray tooltip + notification). */
   setNowPlaying(title: string, artist: string): Promise<void>
+  /**
+   * Radio-lifecycle diagnostics, forwarded to the backend log when the app
+   * runs with MELO_RADIO_DEBUG=1. Optional: older test doubles omit it.
+   */
+  logRadio?(line: string): Promise<void>
   on(event: string, cb: (...args: unknown[]) => void): () => void
   isNative: boolean
 }
@@ -78,6 +83,7 @@ const nativeBackend: Backend = {
   getDiagnostics: () => call('GetDiagnostics'),
   search: (query, filter) => call('Search', query, filter),
   relatedTracks: (track) => call('RelatedTracks', track),
+  logRadio: (line) => call('LogRadio', line),
   getPlayable: (track) => call('GetPlayable', track),
   getLyrics: (query) => call('GetLyrics', query),
   saveSettings: (settings) => call('SaveSettings', settings),
@@ -149,6 +155,7 @@ const unavailableBackend: Backend = {
   getDiagnostics: backendDown('Diagnostics unavailable'),
   search: backendDown('Search is unavailable'),
   relatedTracks: backendDown('Radio is unavailable'),
+  logRadio: async () => {},
   getPlayable: backendDown('Playback engine unavailable'),
   getLyrics: backendDown('Lyrics unavailable'),
   saveSettings: backendDown('Couldn\u2019t save settings'),

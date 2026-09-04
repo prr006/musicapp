@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -266,6 +267,18 @@ func (a *App) beforeClose(ctx context.Context) bool {
 // SetNowPlaying updates the tray tooltip and, when enabled, raises a track
 // change notification. Called by the renderer whenever the current track
 // changes, so the desktop surfaces always match the real player.
+// LogRadio forwards a frontend radio-lifecycle line (PLAY CURRENT / ON TRACK
+// TRANSITION / ON REFILL / BEFORE DISCOVERY / AFTER DISCOVERY RESPONSE /
+// DISCOVERY GENERATION / SOURCE / CANDIDATE) to the standard log when the app
+// runs with MELO_RADIO_DEBUG=1 — the same terminal channel as the REQUEST/
+// SEED/SOURCE blocks below, so queue-state transitions and provider calls can
+// be read together. Diagnostics only.
+func (a *App) LogRadio(line string) {
+	if os.Getenv("MELO_RADIO_DEBUG") != "" {
+		log.Printf("[radio-life] %s", strings.TrimRight(line, "\n"))
+	}
+}
+
 func (a *App) SetNowPlaying(title, artist string) {
 	if a.tray == nil {
 		return

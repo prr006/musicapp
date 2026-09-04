@@ -1183,6 +1183,109 @@ describe('radio engine', () => {
     // transition in order (fresh candidates may only extend it).
     expect(ids.slice(0, 8)).toEqual(['yt:x1', 'yt:x2', 'yt:x3', 'yt:x4', 'yt:x5', 'yt:x6', 'yt:x7', 'yt:x8'])
   })
+
+  // ---------- same-anchor invariant (the SLAVA FUNK! regression) ----------
+
+  it('does not re-fetch the same anchor when the queue is empty: a completed generation is final', async () => {
+    const h = harness()
+    // The Windows shape: the provider answers only the seed echo, which the
+    // backend filters -> the frontend sees ZERO candidates. Channel-only
+    // seed, so no artist text fallback can fire either.
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({ tracks: [], source: '' })
+    const callsFor = (id: string) =>
+      (h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (c) => (c[0] as Track).id === id,
+      ).length
+
+    const seed = track('slava', { title: 'SLAVA FUNK! - (Slowed)', artist: '', uploader: 'Slowed Channel' })
+    await h.controller.play(seed, { tracks: [seed], index: 0 })
+    await new Promise((r) => setTimeout(r, 60))
+    expect(callsFor('yt:slava')).toBe(1) // generation 1 ran…
+    expect(state().autoQueue).toHaveLength(0) // …and honestly completed with nothing
+
+    // The song ends ~2 minutes later: the empty queue must NOT produce a
+    // second request for the SAME anchor. Playback simply stops.
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().status).toBe('idle'))
+    expect(callsFor('yt:slava')).toBe(1)
+    expect(state().autoQueue).toHaveLength(0)
+  })
+
+  it('bounds same-anchor retries after provider failures (no infinite loop)', async () => {
+    const h = harness()
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network down'))
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: '', songs: [], videos: [], albums: [], artists: [], provider: 'test',
+    })
+    const seed = track('a', { title: 'Song A', artist: 'A Artist' })
+    await h.controller.play(seed, { tracks: [seed], index: 0 })
+    // Initial attempt fails, the song ends, one legitimate retry is allowed,
+    // then the anchor is exhausted forever.
+    await vi.waitFor(() =>
+      expect((h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(1),
+    )
+    h.media.endNaturally()
+    await vi.waitFor(() =>
+      expect((h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2),
+    )
+    await vi.waitFor(() => expect(state().status).toBe('idle'))
+    h.media.endNaturally()
+    await new Promise((r) => setTimeout(r, 80))
+    expect((h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2) // hard bound
+  })
+
+  it('a failed generation on a NEW anchor preserves the kept autoplay head', async () => {
+    const h = harness()
+    const feed = Array.from({ length: 20 }, (_, i) =>
+      track(`p${i}`, { title: `P Song ${i}`, artist: `P Artist ${i}` }),
+    )
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockImplementation(async (t: Track) => {
+      if (t.id === 'yt:a') return { tracks: feed, source: 'ytmusic-next' }
+      throw new Error('provider down for this anchor')
+    })
+    const a = track('a', { title: 'Song A', artist: 'A Artist' })
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThanOrEqual(20))
+
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe('yt:p0'))
+    await new Promise((r) => setTimeout(r, 60))
+    // The transition generation for p0 failed, but the visible head kept at
+    // the transition is intact and usable — nothing was cleared.
+    expect(state().autoQueue.map((t) => t.id).slice(0, 8)).toEqual(
+      Array.from({ length: 8 }, (_, i) => `yt:p${i + 1}`),
+    )
+    // And the failed anchor is not hammered: playback can continue into the
+    // kept queue (next transition anchors on p1).
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe('yt:p1'))
+    const p0Calls = (h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) => (c[0] as Track).id === 'yt:p0',
+    ).length
+    expect(p0Calls).toBe(1) // initial attempt only; queue was never empty, so no retry even fired
+  })
+
+  it('the autoplay queue stays usable while a discovery generation is pending', async () => {
+    const h = harness()
+    const feed = Array.from({ length: 12 }, (_, i) =>
+      track(`p${i}`, { title: `P Song ${i}`, artist: `P Artist ${i}` }),
+    )
+    const pending = new Promise<never>(() => {}) // never settles within the test
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockImplementation(async (t: Track) => {
+      if (t.id === 'yt:a') return { tracks: feed, source: 'ytmusic-next' }
+      return pending as never
+    })
+    const a = track('a', { title: 'Song A', artist: 'A Artist' })
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThanOrEqual(12))
+
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe('yt:p0')) // its generation now pends
+    // The queue still advances immediately — discovery never blocks playback.
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe('yt:p1'))
+    expect(state().autoQueue.length).toBeGreaterThan(0)
+  })
 })
 
 describe('library feedback', () => {

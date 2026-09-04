@@ -227,6 +227,7 @@ export function createMockBackend(): Backend {
         expiresAt: Date.now() + 3600_000,
       }, 320)
     },
+    logRadio: async (): Promise<void> => {},
     relatedTracks: (track: Track): Promise<RadioResponse> => {
       // A deterministic fixture radio: other songs by the same artist first,
       // then songs from the same album, then everything else. Never the seed.

@@ -54,6 +54,14 @@ const SESSION_WINDOW = 12
  * generated from the NEW current track and session.
  */
 const DISCOVERY_KEEP_ON_TRANSITION = 8
+/**
+ * Bounded same-anchor retry budget, counted in FAILED generations: with 2,
+ * an anchor gets its initial attempt plus exactly one automatic retry when
+ * the provider genuinely failed. A generation that COMPLETED — even with
+ * zero candidates — never re-fetches the same anchor: an empty or low
+ * autoplay list is not a reason to request identical recommendations again.
+ */
+const MAX_ANCHOR_RETRIES = 2
 /** Broadening fetch budget per refill: session drift anchors + taste anchors. */
 const MAX_DRIFT_ANCHORS_PER_REFILL = 2
 const MAX_TASTE_ANCHORS_PER_REFILL = 1
@@ -83,6 +91,10 @@ export class PlaybackController {
    * track (seek, repeat-one) is not a meaningful transition.
    */
   private discoveryAnchorId: string | null = null
+  /** Anchor ids whose discovery generation COMPLETED (any yield, incl. empty). */
+  private discoveryAnchorsDone = new Set<string>()
+  /** Failed attempts per anchor id — a failed generation may retry, bounded. */
+  private discoveryAnchorRetries = new Map<string, number>()
   /** An explicit artist/album seed from Start Radio; holds until playback moves on. */
   private explicitSeed: RadioSeed | null = null
   /**
@@ -132,6 +144,12 @@ export class PlaybackController {
             this.discoveryRefillGen = this.engine.currentGeneration
             const current = playerState().current
             const isTransition = !!current && current.id !== this.discoveryAnchorId
+            if (isTransition) {
+              this.radioDebug(
+                `ON TRACK TRANSITION old=${this.discoveryAnchorId ?? 'none'} new=${current?.id} ` +
+                `reason=${playerState().playingFrom === 'autoplay' ? 'autoplay' : 'user queue/manual'}`,
+              )
+            }
             void this.refillDiscovery(isTransition)
           }
         }
@@ -183,7 +201,7 @@ export class PlaybackController {
     const current = playerState().current
     if (!current) return
     this.recordedForToken.add(token)
-    if (import.meta.env.DEV) console.debug('[radio] PLAY CURRENT=', current.id)
+    this.radioDebug(`PLAY CURRENT=${current.id}`)
     this.rememberInSession(current)
     void library.recordPlayEvent(current, 'play_started').catch(() => {
       /* history is best-effort; the error surfaces through the store */
@@ -637,24 +655,63 @@ export class PlaybackController {
     if (!useLibraryStore.getState().settings.autoplay) return Promise.resolve()
     const state = playerState()
     if (!state.current) return Promise.resolve()
-    const freshAnchor = state.current.id !== this.discoveryAnchorId
-    if (onTransition || freshAnchor) {
-      this.discoveryAnchorId = state.current.id
+    const anchorId = state.current.id
+    const freshAnchor = anchorId !== this.discoveryAnchorId
+    if (freshAnchor || onTransition) {
+      this.radioDebug(
+        `ON REFILL current=${anchorId} lastAnchor=${this.discoveryAnchorId ?? 'none'} ` +
+        `why=${onTransition ? 'track transition' : 'new anchor'} autoQueue=${state.autoQueue.length}`,
+      )
+      this.discoveryAnchorId = anchorId
       if (state.autoQueue.length > DISCOVERY_KEEP_ON_TRANSITION) {
         // Bounded evolution: keep what the listener is about to hear, drop
-        // only the never-heard tail, and generate fresh candidates.
+        // only the never-heard tail, and generate fresh candidates. The
+        // visible list is never emptied — the kept head stays usable while
+        // the fresh generation is fetched.
         setPlayerState({ autoQueue: state.autoQueue.slice(0, DISCOVERY_KEEP_ON_TRANSITION) })
       }
-    } else if (state.autoQueue.length >= DISCOVERY_TARGET) {
-      return Promise.resolve()
+    } else {
+      // INVARIANT: the same current track never gets a second generation
+      // merely because the autoplay list is empty or low. A COMPLETED
+      // generation (even one that yielded nothing) is final for its anchor;
+      // only a FAILED generation may retry, at most MAX_ANCHOR_RETRIES times.
+      if (this.discoveryAnchorsDone.has(anchorId)) {
+        this.radioDebug(
+          `ON REFILL current=${anchorId} lastAnchor=${anchorId} why=quantity(low queue ${state.autoQueue.length}) -> SKIPPED (anchor already generated)`,
+        )
+        return Promise.resolve()
+      }
+      const retries = this.discoveryAnchorRetries.get(anchorId) ?? 0
+      if (retries >= MAX_ANCHOR_RETRIES) {
+        this.radioDebug(
+          `ON REFILL current=${anchorId} lastAnchor=${anchorId} why=retry -> SKIPPED (retry budget exhausted: ${retries})`,
+        )
+        return Promise.resolve()
+      }
+      this.radioDebug(
+        `ON REFILL current=${anchorId} lastAnchor=${anchorId} why=legitimate retry after failure (attempt ${retries + 1}) autoQueue=${state.autoQueue.length}`,
+      )
     }
     if (this.discoveryPromise) return this.discoveryPromise
     let promise: Promise<void>
-    promise = this.doDiscoveryFetch().finally(() => {
+    promise = this.doDiscoveryFetch(anchorId).finally(() => {
       if (this.discoveryPromise === promise) this.discoveryPromise = null
     })
     this.discoveryPromise = promise
     return promise
+  }
+
+  /**
+   * Forwards a radio-lifecycle line to the backend log (visible in the same
+   * terminal channel as the Go REQUEST/SEED/SOURCE blocks when the app runs
+   * with MELO_RADIO_DEBUG=1). Diagnostics only; failures are swallowed.
+   */
+  private radioDebug(line: string): void {
+    try {
+      void backend().logRadio?.(line)
+    } catch {
+      /* diagnostics must never affect playback */
+    }
   }
 
   /**
@@ -751,8 +808,13 @@ export class PlaybackController {
    * artist/channel identity (the "FUNK CRIMINAL → FUNK TAKA → …" failure).
    * Text search remains the explicit last resort with identity verification.
    */
-  private async doDiscoveryFetch(): Promise<void> {
+  private async doDiscoveryFetch(anchorId: string): Promise<void> {
     const gen = ++this.discoveryGen
+    const before = playerState()
+    this.radioDebug(
+      `BEFORE DISCOVERY current=${before.current?.id} autoQueue=${before.autoQueue.length} ` +
+      `queueIndex=${before.index} playingFrom=${before.playingFrom} gen=${gen} lastAnchor=${this.discoveryAnchorId ?? 'none'}`,
+    )
     const seed = this.currentSeed()
     if (!seed) return
 
@@ -866,13 +928,11 @@ export class PlaybackController {
       if (candidates.length > 0) fallbackCandidates = candidates
     }
     if (gen !== this.discoveryGen) return
-    if (import.meta.env.DEV) {
-      // Lifecycle provenance, dev builds only: one line per generation.
-      console.debug(
-        '[radio] DISCOVERY GENERATION=', gen, 'ANCHOR=', playerState().current?.id,
-        'shelves=', primaryShelves, 'pools=', pools.map((p) => p.tracks.length),
-      )
-    }
+    // Lifecycle provenance: one line per generation.
+    this.radioDebug(
+      `DISCOVERY GENERATION=${gen} ANCHOR=${playerState().current?.id} ` +
+      `shelves=${JSON.stringify(primaryShelves ?? [])} pools=${pools.map((p) => p.tracks.length).join('/')}`,
+    )
 
     // ---- rank → dedupe → diversify → append, bounded ----
     // The taste snapshot is taken at decision time (after the awaits) so the
@@ -906,6 +966,23 @@ export class PlaybackController {
           seededIdentityCounts: seeded,
           queueTailArtists: auto.slice(-4).map(identityKeyOf),
         })
+    // Anchor accounting (the same-anchor invariant): a generation that ran to
+    // completion is final for its anchor — even with zero candidates. Only a
+    // generation whose fetches FAILED may retry, bounded. Stale generations
+    // (superseded mid-flight) mark nothing.
+    if (gen === this.discoveryGen) {
+      if (failed && fresh.length === 0) {
+        this.discoveryAnchorRetries.set(anchorId, (this.discoveryAnchorRetries.get(anchorId) ?? 0) + 1)
+      } else {
+        this.discoveryAnchorsDone.add(anchorId)
+        this.discoveryAnchorRetries.delete(anchorId)
+      }
+      const after = playerState()
+      this.radioDebug(
+        `AFTER DISCOVERY RESPONSE current=${after.current?.id} autoQueue=${after.autoQueue.length} ` +
+        `gen=${gen} anchor=${anchorId} fresh=${fresh.length} outcome=${failed && fresh.length === 0 ? 'failed (retryable)' : 'complete'}`,
+      )
+    }
     if (fresh.length > 0) {
       // Contextual source label: a single feed is "based on this song";
       // several contributing sources make it a session-driven radio.
@@ -916,9 +993,7 @@ export class PlaybackController {
         : contributors.some((c) => c.endsWith('+drift'))
           ? 'session-mix' // the listening session itself redirected the radio
           : primarySource
-      if (import.meta.env.DEV) {
-        console.debug('[radio] SOURCE=', source || primarySource, 'CANDIDATE=', fresh.map((t) => t.id))
-      }
+      this.radioDebug(`SOURCE=${source || primarySource} CANDIDATE=${fresh.map((t) => t.id).join(',')}`)
       setPlayerState({
         autoQueue: dedupeTracks([...playerState().autoQueue, ...fresh]).slice(0, DISCOVERY_MAX),
         radioSource: source || playerState().radioSource,
@@ -1005,12 +1080,18 @@ export class PlaybackController {
     this.discoveryWarned = false
     this.discoveryPromise = null
     this.discoveryAnchorId = null
+    this.discoveryAnchorsDone = new Set()
+    this.discoveryAnchorRetries = new Map()
     setPlayerState({ autoQueue: [], radioSource: '' })
   }
 
   /** Called when the autoplay setting changes. */
   setAutoplay(enabled: boolean): void {
     if (enabled) {
+      // Explicit user action: re-open the fetch budget for the current
+      // anchor (bounded by the user's own toggles, never by queue level).
+      this.discoveryAnchorsDone = new Set()
+      this.discoveryAnchorRetries = new Map()
       void this.refillDiscovery()
     } else {
       this.clearAutoplay()
