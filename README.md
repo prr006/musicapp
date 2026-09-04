@@ -93,16 +93,29 @@ rank → diversify → autoplay → observe (play/skip/like) → update context 
 next batch.
 
 * **Candidate generation (multi-anchor pools).** The current track's
-  **dedicated recommendation feed** — the YouTube Music watch-next endpoint,
-  *including the autoplay ("automix") continuation*, with a yt-dlp mix
-  `RD<id>` fallback — is the primary pool (weight 1). Recent **session**
-  tracks contribute *drift* pools (a weaker weight), and **liked** tracks
-  contribute *taste* anchors: so a session that wandered from anime OSTs into
-  phonk keeps recommending phonk — the transition emerges from the
-  recommendation graph, never from a hard-coded genre table. A feed that is
-  thin *or dominated by one artist/channel identity* triggers **broader
-  generation** (more anchors are fetched, bounded to a couple of extra calls
-  per refill) instead of being accepted as the queue.
+  **dedicated recommendation feed** is the primary pool (weight 1). The Go
+  provider harvests *every* watch-next recommendation surface the InnerTube
+  `/next` response offers: the radio **queue panel**, the autoplay
+  ("**automix**") continuation, regular-YouTube **related-video shelves**
+  (which answer for uploads outside the music catalog — slowed edits, remixes,
+  BGM rips), **music shelves** and video tiles, and — when the queue is empty
+  or >60% one artist — the **RDAMVM song-radio playlist** itself, merged in as
+  a genuinely broader source. A yt-dlp `RD<id>` mix remains the last network
+  rung. Every response records per-surface provenance (`shelves`), logged in
+  dev builds; `go run ./tools/radiodiag "<song>"` replays the whole ladder
+  against the live endpoints and prints every candidate with its identity —
+  the diagnosis tool for "why does radio look like artist radio?".
+  Recent **session** tracks contribute *drift* pools (a weaker weight), and
+  **liked** tracks contribute *taste* anchors: so a session that wandered from
+  anime OSTs into phonk keeps recommending phonk — the transition emerges from
+  the recommendation graph, never from a hard-coded genre table. A feed that
+  is thin *or dominated by one artist/channel identity* triggers **broader
+  generation**: drift/taste anchors first, then *adjacent* anchors — the
+  distinct-identity rows of the feed itself (featured artists inside a
+  same-artist wall), whose own feeds are broader graph neighborhoods. All of
+  it is real recommendation data; artist text search remains the verified
+  last resort, and it can never label a Song Radio "more from this artist"
+  (only Artist Radio says that).
 * **Ranking.** The provider's recommendation relationship is the strongest
   signal (its order dominates); taste — completion-weighted artist affinity,
   likes, session familiarity, album context — personalizes without destroying

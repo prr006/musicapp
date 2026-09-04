@@ -109,6 +109,18 @@ type Taste struct {
 type RadioResponse struct {
 	Tracks []Track `json:"tracks"`
 	Source string  `json:"source"`
+	// Shelves records which recommendation surfaces of the watch-next page
+	// contributed how many candidates (queue panel, related-video shelves,
+	// music shelves, the automix continuation, the RDAMVM song-radio playlist).
+	// Pure diagnostics: it explains, per real response, where candidates came
+	// from — the frontend logs it in dev builds.
+	Shelves []RadioShelf `json:"shelves,omitempty"`
+}
+
+// RadioShelf is one recommendation surface's contribution to a RadioResponse.
+type RadioShelf struct {
+	Kind  string `json:"kind"`
+	Count int    `json:"count"`
 }
 
 type Settings struct {

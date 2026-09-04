@@ -725,11 +725,13 @@ export class PlaybackController {
     // 1) Primary anchor: the current track's real recommendation feed.
     let primary: Track[] = []
     let primarySource = ''
+    let primaryShelves: { kind: string; count: number }[] | undefined
     try {
       const res = await backend().relatedTracks(playerState().current!)
       if (gen !== this.discoveryGen) return // superseded by a newer request
       primary = res?.tracks ?? []
       primarySource = res?.source ?? ''
+      primaryShelves = res?.shelves
     } catch {
       failed = true
     }
@@ -747,9 +749,21 @@ export class PlaybackController {
     const dominated = primary.length >= 6 && concentration.share >= 0.6
     const needsBroader = primary.length === 0 || yieldSoFar < DISCOVERY_TARGET || dominated
     if (needsBroader && gen === this.discoveryGen) {
-      const driftAnchors = this.driftAnchors()
+      // Anchor priority: recent session tracks (the listener's actual
+      // direction) first, then *adjacent* tracks from the provider's own
+      // feed — rows the recommendation graph itself surfaced for a DIFFERENT
+      // identity than the dominant one (the featured artists in a
+      // same-artist wall). Their feeds are genuinely broader graph
+      // neighborhoods, so even a cold first-song session diversifies through
+      // the graph instead of collapsing into artist search.
+      const anchors: { track: Track; kind: 'drift' | 'adjacent' }[] = [
+        ...this.driftAnchors().map((track) => ({ track, kind: 'drift' as const })),
+        ...this.adjacentAnchors(primary, concentration.topIdentity, seed.identity).map(
+          (track) => ({ track, kind: 'adjacent' as const }),
+        ),
+      ]
       let driftFetches = 0
-      for (const anchor of driftAnchors) {
+      for (const { track: anchor, kind } of anchors) {
         if (driftFetches >= MAX_DRIFT_ANCHORS_PER_REFILL) break
         if (this.sessionAnchorsTried.has(anchor.id)) continue
         this.sessionAnchorsTried.add(anchor.id)
@@ -759,13 +773,14 @@ export class PlaybackController {
           if (gen !== this.discoveryGen) return
           if ((res?.tracks ?? []).length > 0) {
             pools.push({ weight: W_DRIFT_SOURCE, tracks: res!.tracks })
-            contributors.push(`${primarySource || 'session'}+drift`)
+            contributors.push(`${primarySource || 'radio'}+${kind}`)
           }
         } catch {
           /* a failing drift anchor is never fatal */
         }
       }
-      // Taste anchors only when drift could not contribute (keeps requests low).
+      // Taste anchors only when neither drift nor adjacent feeds could
+      // contribute (keeps requests low).
       if (pools.length === 1) {
         const lib = useLibraryStore.getState()
         let tasteFetches = 0
@@ -812,6 +827,14 @@ export class PlaybackController {
       if (candidates.length > 0) fallbackCandidates = candidates
     }
     if (gen !== this.discoveryGen) return
+    if (import.meta.env.DEV) {
+      // Candidate provenance for this generation: which surfaces and anchors
+      // contributed. Dev builds only — never recorded in production.
+      console.debug(
+        '[radio] gen', gen, 'anchor', playerState().current?.id,
+        'shelves', primaryShelves, 'pools', pools.map((p) => p.tracks.length),
+      )
+    }
 
     // ---- rank → dedupe → diversify → append, bounded ----
     // The taste snapshot is taken at decision time (after the awaits) so the
@@ -849,9 +872,11 @@ export class PlaybackController {
       // Contextual source label: a single feed is "based on this song";
       // several contributing sources make it a session-driven radio.
       const source = fallbackCandidates
-        ? 'seed-artist'
-        : pools.length > 1 && contributors.some((c) => c.includes('+'))
-          ? 'session-mix'
+        ? seed.kind === 'artist'
+          ? 'seed-artist'
+          : 'seed-song'
+        : contributors.some((c) => c.endsWith('+drift'))
+          ? 'session-mix' // the listening session itself redirected the radio
           : primarySource
       setPlayerState({
         autoQueue: dedupeTracks([...playerState().autoQueue, ...fresh]).slice(0, DISCOVERY_MAX),
@@ -902,6 +927,30 @@ export class PlaybackController {
     return this.sessionRecent.filter(
       (t) => t.id !== currentId && t.sourceId && !this.sessionAnchorsTried.has(t.id),
     )
+  }
+
+  /**
+   * Adjacent anchors: the first few DISTINCT-identity tracks of the primary
+   * feed itself (skipping the dominant identity and the seed's own). These
+   * rows came out of the provider's recommendation graph for the current
+   * song — following their feeds broadens the candidate pool through real
+   * recommendations, never through title search or uploader names.
+   */
+  private adjacentAnchors(pool: Track[], dominantIdentity: string, seedIdentity: string): Track[] {
+    const currentId = playerState().current?.id
+    const takenIdentities = new Set<string>()
+    const out: Track[] = []
+    for (const track of pool) {
+      if (out.length >= MAX_DRIFT_ANCHORS_PER_REFILL) break
+      if (!track?.sourceId || track.id === currentId) continue
+      if (this.sessionAnchorsTried.has(track.id)) continue
+      const identity = identityKeyOf(track)
+      if (!identity || identity === dominantIdentity || identity === seedIdentity) continue
+      if (takenIdentities.has(identity)) continue
+      takenIdentities.add(identity)
+      out.push(track)
+    }
+    return out
   }
 
 

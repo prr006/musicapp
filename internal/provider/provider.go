@@ -563,17 +563,20 @@ func (c *Client) relatedInnerTube(ctx context.Context, videoID string) (model.Ra
 	if err != nil {
 		return model.RadioResponse{}, err
 	}
-	if len(parsed.Tracks) > 0 {
+	if len(parsed.Tracks) > 0 && !artistDominated(parsed.Tracks) {
 		return parsed, nil
 	}
 
-	// No direct queue: follow the autoplay ("automix") preview continuation.
+	// No usable queue (or an artist-dominated one): follow the autoplay
+	// ("automix") preview continuation — exactly the request YouTube Music
+	// itself makes to expand the radio.
 	var root any
 	if err := json.Unmarshal(raw, &root); err != nil {
 		return model.RadioResponse{}, fmt.Errorf("%w: malformed JSON", ErrProvider)
 	}
 	previews := []map[string]any{}
 	collect(root, "automixPreviewVideoRenderer", &previews)
+	base := parsed
 	for _, preview := range previews {
 		token := continuationToken(preview)
 		if token == "" {
@@ -588,10 +591,98 @@ func (c *Client) relatedInnerTube(ctx context.Context, videoID string) (model.Ra
 			continue
 		}
 		if len(mix.Tracks) > 0 {
-			return mix, nil
+			base = mergeRadio(base, mix, "automix")
+			if !artistDominated(base.Tracks) {
+				return base, nil
+			}
+			break
 		}
 	}
-	return parsed, nil // empty: the caller decides the next ladder step
+
+	// The last real recommendation surface: the song-radio playlist itself
+	// (RDAMVM<videoID> — what YouTube Music plays for "Start radio"). Used
+	// when nothing above answered OR when the feed is artist-dominated: a
+	// queue that is >60% one artist is not a radio batch, and this playlist
+	// is a genuinely broader source, unlike artist text search.
+	radio, err := c.postNext(ctx, mergeMaps(clientCtx, map[string]any{"playlistId": "RDAMVM" + videoID}))
+	if err != nil {
+		if len(base.Tracks) > 0 {
+			return base, nil
+		}
+		return model.RadioResponse{}, err
+	}
+	radioParsed, err := ParseNextResponse(radio)
+	if err != nil || len(radioParsed.Tracks) == 0 {
+		if len(base.Tracks) > 0 {
+			return base, nil
+		}
+		if err != nil {
+			return model.RadioResponse{}, err
+		}
+		return radioParsed, nil
+	}
+	merged := mergeRadio(base, radioParsed, "radio")
+	if len(merged.Tracks) == 0 {
+		return radioParsed, nil
+	}
+	return merged, nil
+}
+
+// mergeRadio merges a secondary surface's candidates into a base response,
+// keeping the base's order first and appending only unseen videos.
+func mergeRadio(base, extra model.RadioResponse, stage string) model.RadioResponse {
+	if len(extra.Tracks) == 0 {
+		return base
+	}
+	seen := map[string]bool{}
+	for _, t := range base.Tracks {
+		seen[t.SourceID] = true
+	}
+	out := model.RadioResponse{
+		Source:  base.Source,
+		Tracks:  append([]model.Track{}, base.Tracks...),
+		Shelves: append([]model.RadioShelf{}, base.Shelves...),
+	}
+	added := 0
+	for _, t := range extra.Tracks {
+		if seen[t.SourceID] {
+			continue
+		}
+		seen[t.SourceID] = true
+		out.Tracks = append(out.Tracks, t)
+		added++
+	}
+	if added > 0 {
+		out.Shelves = append(out.Shelves, model.RadioShelf{Kind: stage, Count: added})
+	}
+	return out
+}
+
+// artistDominated reports whether one artist/channel identity holds ≥60% of a
+// feed of at least six tracks — the "every row is the same artist" shape that
+// must trigger broader candidate generation instead of being accepted.
+func artistDominated(tracks []model.Track) bool {
+	if len(tracks) < 6 {
+		return false
+	}
+	counts := map[string]int{}
+	for _, t := range tracks {
+		id := strings.ToLower(strings.TrimSpace(t.Artist))
+		if id == "" {
+			id = strings.ToLower(strings.TrimSpace(t.Uploader))
+		}
+		if id == "" {
+			continue
+		}
+		counts[id]++
+	}
+	top := 0
+	for _, n := range counts {
+		if n > top {
+			top = n
+		}
+	}
+	return float64(top)/float64(len(tracks)) >= 0.6
 }
 
 // postNext performs one InnerTube /next request and returns the raw body.
@@ -672,75 +763,333 @@ func (c *Client) relatedYTDLP(ctx context.Context, videoID string) (model.RadioR
 }
 
 // ParseNextResponse walks an InnerTube /next payload defensively and collects
-// the watch-next queue items ("playlistPanelVideoRenderer"): the panel YouTube
-// Music shows as "Up next" while a song plays.
+// candidates from EVERY recommendation surface of the watch-next page, not
+// just the queue:
+//
+//   - "queue": playlistPanelVideoRenderer items — the "Up next" radio panel;
+//   - "related-videos": compactVideoRenderer items — the regular YouTube
+//     related feed that answers for uploads outside the music catalog
+//     (slowed/fonk edits, remixes, BGM rips). Skipping these made such seeds
+//     look "related-less" and dropped the radio into artist text search;
+//   - "music-shelves": musicResponsiveListItemRenderer items with a watch
+//     endpoint — the music shelves below the queue (related, mixes,
+//     recommendations);
+//   - "tiles": musicTwoRowItemRenderer video tiles.
+//
+// Queue items come first (their order is the provider's own relevance ranking
+// for the radio); shelf items follow in document order. Items are deduped by
+// videoId across surfaces. Identity rules follow e105a1f: browse-identified
+// artists on music surfaces, "- Topic" channel promotion everywhere, and bare
+// channel names on video surfaces stay uploader metadata — never artists.
 func ParseNextResponse(raw []byte) (model.RadioResponse, error) {
 	var root any
 	if err := json.Unmarshal(raw, &root); err != nil {
 		return model.RadioResponse{}, fmt.Errorf("%w: malformed JSON", ErrProvider)
 	}
-	items := []map[string]any{}
-	collect(root, "playlistPanelVideoRenderer", &items)
 	out := model.RadioResponse{Source: "ytmusic-next", Tracks: []model.Track{}}
 	seen := map[string]bool{}
-	for _, it := range items {
-		videoID := firstString(it, "videoId")
-		titleRuns := runsOfValue(it["title"])
-		if videoID == "" || len(titleRuns) == 0 || titleRuns[0].Text == "" || seen[videoID] {
-			continue
+	add := func(t model.Track, ok bool) bool {
+		if !ok || t.SourceID == "" || t.Title == "" || seen[t.SourceID] {
+			return false
 		}
-		seen[videoID] = true
-		t := model.Track{
-			ID:       "yt:" + videoID,
-			SourceID: videoID,
-			Source:   "youtube",
-			URL:      "https://music.youtube.com/watch?v=" + videoID,
-			Title:    titleRuns[0].Text,
-			Artwork:  bestThumbnail(it),
-			Explicit: hasExplicitBadge(it),
-		}
-		if length := panelLength(it); length > 0 {
-			t.Duration = length
-		}
-		byline := panelBylineRuns(it)
-		var artistParts []string
-		var channel string
-		for _, r := range byline {
-			switch {
-			case durationRe.MatchString(r.Text):
-				if t.Duration == 0 {
-					t.Duration = parseClock(r.Text)
-				}
-			case strings.HasPrefix(r.BrowseID, "MPRE"):
-				if t.Album == "" {
-					t.Album = r.Text
-				}
-			case strings.HasPrefix(r.BrowseID, "UC"):
-				// A browse endpoint into an artist channel is the provider
-				// explicitly identifying the performing artist.
-				artistParts = append(artistParts, r.Text)
-			}
-		}
-		if len(artistParts) == 0 {
-			// Video-style panels carry a bare channel/uploader name. It is NOT
-			// the performing artist unless the channel is an official
-			// "<Artist> - Topic" artist channel.
-			for _, r := range byline {
-				if isTypeLabel(r.Text) || durationRe.MatchString(r.Text) || viewsRe.MatchString(r.Text) {
-					continue
-				}
-				channel = r.Text
-				break
-			}
-			if artist, ok := artistFromChannel(channel); ok {
-				artistParts = append(artistParts, artist)
-			}
-		}
-		t.Artist = strings.Join(uniqueStrings(artistParts), ", ")
-		t.Uploader = channel
+		seen[t.SourceID] = true
 		out.Tracks = append(out.Tracks, t)
+		return true
+	}
+
+	queue := []map[string]any{}
+	collect(root, "playlistPanelVideoRenderer", &queue)
+	panels := 0
+	for _, it := range queue {
+		if add(trackFromPanel(it), true) {
+			panels++
+		}
+	}
+	compact := []map[string]any{}
+	collect(root, "compactVideoRenderer", &compact)
+	compactCount := 0
+	for _, it := range compact {
+		if add(trackFromCompactVideo(it)) {
+			compactCount++
+		}
+	}
+	listItems := []map[string]any{}
+	collect(root, "musicResponsiveListItemRenderer", &listItems)
+	shelfCount := 0
+	for _, it := range listItems {
+		if add(trackFromWatchListItem(it)) {
+			shelfCount++
+		}
+	}
+	tiles := []map[string]any{}
+	collect(root, "musicTwoRowItemRenderer", &tiles)
+	tileCount := 0
+	for _, it := range tiles {
+		if add(trackFromTile(it)) {
+			tileCount++
+		}
+	}
+	for _, sh := range []struct {
+		kind  string
+		count int
+	}{{"queue", panels}, {"related-videos", compactCount}, {"music-shelves", shelfCount}, {"tiles", tileCount}} {
+		if sh.count > 0 {
+			out.Shelves = append(out.Shelves, model.RadioShelf{Kind: sh.kind, Count: sh.count})
+		}
 	}
 	return out, nil
+}
+
+// trackFromPanel builds a track from a queue panel item (the previous,
+// panel-only parser, unchanged in behaviour).
+func trackFromPanel(it map[string]any) model.Track {
+	videoID := firstString(it, "videoId")
+	titleRuns := runsOfValue(it["title"])
+	t := model.Track{
+		ID:       "yt:" + videoID,
+		SourceID: videoID,
+		Source:   "youtube",
+		URL:      "https://music.youtube.com/watch?v=" + videoID,
+		Artwork:  bestThumbnail(it),
+		Explicit: hasExplicitBadge(it),
+	}
+	if len(titleRuns) > 0 {
+		t.Title = titleRuns[0].Text
+	}
+	if length := panelLength(it); length > 0 {
+		t.Duration = length
+	}
+	byline := panelBylineRuns(it)
+	var artistParts []string
+	var channel string
+	for _, r := range byline {
+		switch {
+		case durationRe.MatchString(r.Text):
+			if t.Duration == 0 {
+				t.Duration = parseClock(r.Text)
+			}
+		case strings.HasPrefix(r.BrowseID, "MPRE"):
+			if t.Album == "" {
+				t.Album = r.Text
+			}
+		case strings.HasPrefix(r.BrowseID, "UC"):
+			// A browse endpoint into an artist channel is the provider
+			// explicitly identifying the performing artist.
+			artistParts = append(artistParts, r.Text)
+		}
+	}
+	if len(artistParts) == 0 {
+		// Video-style panels carry a bare channel/uploader name. It is NOT
+		// the performing artist unless the channel is an official
+		// "<Artist> - Topic" artist channel.
+		for _, r := range byline {
+			if isTypeLabel(r.Text) || durationRe.MatchString(r.Text) || viewsRe.MatchString(r.Text) {
+				continue
+			}
+			channel = r.Text
+			break
+		}
+		if artist, ok := artistFromChannel(channel); ok {
+			artistParts = append(artistParts, artist)
+		}
+	}
+	t.Artist = strings.Join(uniqueStrings(artistParts), ", ")
+	t.Uploader = channel
+	return t
+}
+
+// trackFromCompactVideo builds a track from a regular YouTube related-video
+// row. These answer for uploads outside the music catalog (slowed edits,
+// remixes): their byline is the uploading CHANNEL, so it is kept as uploader
+// metadata and only an official "<Artist> - Topic" channel is promoted to an
+// artist — a channel name is never musical identity.
+func trackFromCompactVideo(it map[string]any) (model.Track, bool) {
+	videoID := firstString(it, "videoId")
+	if videoID == "" {
+		return model.Track{}, false
+	}
+	t := model.Track{
+		ID:       "yt:" + videoID,
+		SourceID: videoID,
+		Source:   "youtube",
+		URL:      "https://music.youtube.com/watch?v=" + videoID,
+		Artwork:  bestThumbnail(it),
+	}
+	titleRuns := runsOfValue(it["title"])
+	if len(titleRuns) == 0 || titleRuns[0].Text == "" {
+		return model.Track{}, false
+	}
+	t.Title = titleRuns[0].Text
+	if length := simpleOrRunsLength(it["lengthText"]); length > 0 {
+		t.Duration = length
+	}
+	byline := panelBylineRuns(it)
+	channel := ""
+	for _, r := range byline {
+		if isTypeLabel(r.Text) || durationRe.MatchString(r.Text) || viewsRe.MatchString(r.Text) {
+			continue
+		}
+		channel = r.Text
+		break
+	}
+	if artist, ok := artistFromChannel(channel); ok {
+		t.Artist = artist
+	}
+	t.Uploader = channel
+	return t, true
+}
+
+// trackFromWatchListItem builds a track from a music-shelf row of the
+// watch-next page (related/recommendation shelves). Only rows that actually
+// watch a video become candidates; album/artist browse rows are skipped.
+// Identity follows the music-search rules: browse-identified artists are
+// artists, bare channels stay uploaders unless "- Topic".
+func trackFromWatchListItem(it map[string]any) (model.Track, bool) {
+	videoID := watchVideoID(it)
+	if videoID == "" {
+		return model.Track{}, false
+	}
+	title, runs := columns(it)
+	if title == "" {
+		return model.Track{}, false
+	}
+	t := model.Track{
+		ID:       "yt:" + videoID,
+		SourceID: videoID,
+		Source:   "youtube",
+		URL:      "https://music.youtube.com/watch?v=" + videoID,
+		Title:    title,
+		Artwork:  bestThumbnail(it),
+		Explicit: hasExplicitBadge(it),
+	}
+	var artistParts []string
+	var channel string
+	for _, r := range runs {
+		switch {
+		case durationRe.MatchString(r.Text):
+			if t.Duration == 0 {
+				t.Duration = parseClock(r.Text)
+			}
+		case strings.HasPrefix(r.BrowseID, "MPRE"):
+			if t.Album == "" {
+				t.Album = r.Text
+			}
+		case strings.HasPrefix(r.BrowseID, "UC"):
+			artistParts = append(artistParts, r.Text)
+		}
+	}
+	if len(artistParts) == 0 {
+		for _, r := range runs {
+			if isTypeLabel(r.Text) || durationRe.MatchString(r.Text) || viewsRe.MatchString(r.Text) {
+				continue
+			}
+			channel = r.Text
+			break
+		}
+		if artist, ok := artistFromChannel(channel); ok {
+			artistParts = append(artistParts, artist)
+		}
+	}
+	t.Artist = strings.Join(uniqueStrings(artistParts), ", ")
+	t.Uploader = channel
+	return t, true
+}
+
+// trackFromTile builds a track from a musicTwoRowItemRenderer video tile
+// (shelf entries like "Related tracks"). Tiles without a video watch endpoint
+// (albums, artists, playlists) are skipped. The subtitle is a channel byline:
+// uploader metadata unless it is an official "- Topic" artist channel.
+func trackFromTile(it map[string]any) (model.Track, bool) {
+	videoID := watchVideoID(it)
+	if videoID == "" {
+		return model.Track{}, false
+	}
+	titleRuns := runsOfValue(it["title"])
+	if len(titleRuns) == 0 || titleRuns[0].Text == "" {
+		return model.Track{}, false
+	}
+	t := model.Track{
+		ID:       "yt:" + videoID,
+		SourceID: videoID,
+		Source:   "youtube",
+		URL:      "https://music.youtube.com/watch?v=" + videoID,
+		Title:    titleRuns[0].Text,
+		Artwork:  bestThumbnail(it),
+	}
+	subtitle := runsOfValue(it["subtitle"])
+	channel := ""
+	for _, r := range subtitle {
+		if isTypeLabel(r.Text) || durationRe.MatchString(r.Text) || viewsRe.MatchString(r.Text) {
+			continue
+		}
+		if channel == "" {
+			channel = r.Text
+			continue
+		}
+		if t.Album == "" && !strings.Contains(r.Text, "view") && !strings.Contains(r.Text, "subscriber") {
+			t.Album = r.Text
+		}
+		break
+	}
+	if artist, ok := artistFromChannel(channel); ok {
+		t.Artist = artist
+	}
+	t.Uploader = channel
+	return t, true
+}
+
+// watchVideoID finds the video a list item or tile actually plays: the
+// top-level videoId, or the first watchEndpoint.videoId in its navigation /
+// overlay endpoints.
+func watchVideoID(item map[string]any) string {
+	if id := firstString(item, "videoId"); id != "" {
+		return id
+	}
+	for _, key := range []string{"navigationEndpoint", "overlay", "menu"} {
+		var endpoint string
+		findWatchVideoID(item[key], &endpoint)
+		if endpoint != "" {
+			return endpoint
+		}
+	}
+	return ""
+}
+
+func findWatchVideoID(v any, out *string) {
+	if *out != "" {
+		return
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		if watch, ok := t["watchEndpoint"].(map[string]any); ok {
+			if id, _ := watch["videoId"].(string); id != "" {
+				*out = id
+				return
+			}
+		}
+		for _, v2 := range t {
+			findWatchVideoID(v2, out)
+		}
+	case []any:
+		for _, v2 := range t {
+			findWatchVideoID(v2, out)
+		}
+	}
+}
+
+// simpleOrRunsLength reads a lengthText that may be a plain string or runs.
+func simpleOrRunsLength(v any) float64 {
+	if m, ok := v.(map[string]any); ok {
+		if s, _ := m["simpleText"].(string); s != "" && durationRe.MatchString(s) {
+			return parseClock(s)
+		}
+		for _, r := range runsOfValue(v) {
+			if durationRe.MatchString(r.Text) {
+				return parseClock(r.Text)
+			}
+		}
+	}
+	return 0
 }
 
 // panelBylineRuns returns the "Artist • Album • duration" runs of a watch-next

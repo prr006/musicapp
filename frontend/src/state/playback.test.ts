@@ -685,7 +685,9 @@ describe('radio engine', () => {
     // Artist-anchored queries only — never the song title, never a channel name.
     expect(queries.every((q) => q.toLowerCase().includes('halcyon'))).toBe(true)
     expect(queries.some((q) => q.toLowerCase().includes('nightfall'))).toBe(false)
-    expect(state().radioSource).toBe('seed-artist')
+    // Song radio never claims to be "more from this artist" — only Artist
+    // Radio gets that label.
+    expect(state().radioSource).toBe('seed-song')
   })
 
   it('never text-searches for a channel-only seed (uploader is not an artist)', async () => {
@@ -975,6 +977,68 @@ describe('radio engine', () => {
     const otherCount = state().autoQueue.filter((t) => t.artist !== 'Funk Artist').length
     expect(otherCount).toBeGreaterThanOrEqual(2)
     expect(funkCount).toBeLessThanOrEqual(4)
+  })
+
+  it('a cold session broadens through adjacent artists from the provider\u2019s own feed', async () => {
+    const h = harness()
+    // The reported Windows shape: the seed's feed is an artist wall with a
+    // couple of featured/related artists at the tail.
+    const wall = Array.from({ length: 6 }, (_, i) =>
+      track(`f${i}`, { title: `FUNK ${i}`, artist: 'Funk Artist' }),
+    )
+    const featured1 = track('feat1', { title: 'Collab One', artist: 'Other Artist' })
+    const featured2 = track('feat2', { title: 'Collab Two', artist: 'Second Artist' })
+    // The adjacent anchor's own feed is genuinely broader: four new artists.
+    const broader = Array.from({ length: 4 }, (_, i) =>
+      track(`d${i}`, { title: `Broader ${i}`, artist: `Broader Artist ${i}` }),
+    )
+    const related = new Map<string, { tracks: Track[]; source: string }>([
+      ['yt:s', { tracks: [...wall, featured1, featured2], source: 'ytmusic-next' }],
+      ['yt:feat1', { tracks: broader, source: 'ytmusic-next' }],
+    ])
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockImplementation(
+      async (t: Track) => related.get(t.id) ?? { tracks: [], source: '' },
+    )
+
+    // Cold session: no history, no likes — first song ever.
+    const s = track('s', { title: 'Seed Song', artist: 'Seed Artist' })
+    await h.controller.play(s, { tracks: [s], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(4))
+
+    // The graph itself was followed: the featured artist's feed was fetched.
+    const anchors = (h.backend.relatedTracks as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => (c[0] as Track).id,
+    )
+    expect(anchors).toContain('yt:feat1')
+    // The broader candidates actually contribute to the batch…
+    const ids = state().autoQueue.map((t) => t.id)
+    for (const d of broader) expect(ids).toContain(d.id)
+    // …several distinct related artists share the queue…
+    const distinctArtists = new Set(state().autoQueue.map((t) => t.artist))
+    expect(distinctArtists.size).toBeGreaterThanOrEqual(4)
+    // …and the wall stays capped.
+    expect(state().autoQueue.filter((t) => t.artist === 'Funk Artist').length).toBeLessThanOrEqual(4)
+  })
+
+  it('only Artist Radio is labelled \u201cmore from this artist\u201d; the song fallback says \u201cbased on this song\u201d', async () => {
+    const h = harness()
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({ tracks: [], source: '' })
+    // The fallback text search answers with the searched artist's own songs
+    // (identity verification would reject anything else anyway).
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockImplementation(async (q: string) => ({
+      query: q, songs: [track('a1', { title: `Song of ${q}`, artist: String(q).split(' ')[0] })],
+      videos: [], albums: [], artists: [], provider: 'test',
+    }))
+
+    // Song radio (plain play → track seed): song-context label.
+    const song = track('s', { title: 'Nightfall', artist: 'Halcyon' })
+    await h.controller.play(song, { tracks: [song], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
+    expect(state().radioSource).toBe('seed-song')
+
+    // Artist radio: the artist label is legitimate.
+    await h.controller.startRadio(track('x', { title: 'Einaudi Song', artist: 'Einaudi' }), { kind: 'artist' })
+    await vi.waitFor(() => expect(state().radioSource).toBe('seed-artist'))
   })
 
   it('refills continuously: every consumed anchor becomes the next primary as the queue drains', async () => {

@@ -3,10 +3,13 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"melo/internal/model"
 )
 
 // innerTubeFixture mirrors the shape of a YouTube Music search payload: a
@@ -433,4 +436,694 @@ func TestRelatedFollowsAutomixContinuation(t *testing.T) {
 	if len(calls) != 2 || calls[1]["continuation"] != "automix-token-123" {
 		t.Fatalf("the autoplay continuation must be requested: %+v", calls)
 	}
+}
+
+// watchAllSurfacesFixture mirrors a watch-next page for a non-catalog upload
+// (the "LUZ ROJA (Slowed)" shape): an artist-dominated queue panel PLUS a
+// regular-YouTube related feed (compactVideoRenderer), music shelves
+// (musicResponsiveListItemRenderer, including a non-video album row) and a
+// video tile (musicTwoRowItemRenderer).
+const watchAllSurfacesFixture = `{
+ "contents": {
+  "singleColumnMusicWatchNextResultsRenderer": {
+   "playlist": {
+    "playlist": {
+     "contents": [
+      {
+       "playlistPanelVideoRenderer": {
+        "videoId": "f1",
+        "title": {
+         "runs": [
+          {
+           "text": "FUNK CRIMINAL"
+          }
+         ]
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "bxkq",
+           "navigationEndpoint": {
+            "browseEndpoint": {
+             "browseId": "UCbxkq"
+            }
+           }
+          },
+          {
+           "text": " \u2022 "
+          },
+          {
+           "text": "3:12"
+          }
+         ]
+        },
+        "lengthText": {
+         "runs": [
+          {
+           "text": "3:12"
+          }
+         ]
+        }
+       }
+      },
+      {
+       "playlistPanelVideoRenderer": {
+        "videoId": "f2",
+        "title": {
+         "runs": [
+          {
+           "text": "FUNK TAKA"
+          }
+         ]
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "bxkq",
+           "navigationEndpoint": {
+            "browseEndpoint": {
+             "browseId": "UCbxkq"
+            }
+           }
+          },
+          {
+           "text": " \u2022 "
+          },
+          {
+           "text": "2:48"
+          }
+         ]
+        },
+        "lengthText": {
+         "runs": [
+          {
+           "text": "2:48"
+          }
+         ]
+        }
+       }
+      },
+      {
+       "playlistPanelVideoRenderer": {
+        "videoId": "f3",
+        "title": {
+         "runs": [
+          {
+           "text": "FUNK UNICO"
+          }
+         ]
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "bxkq",
+           "navigationEndpoint": {
+            "browseEndpoint": {
+             "browseId": "UCbxkq"
+            }
+           }
+          },
+          {
+           "text": " \u2022 "
+          },
+          {
+           "text": "3:01"
+          }
+         ]
+        },
+        "lengthText": {
+         "runs": [
+          {
+           "text": "3:01"
+          }
+         ]
+        }
+       }
+      },
+      {
+       "playlistPanelVideoRenderer": {
+        "videoId": "f4",
+        "title": {
+         "runs": [
+          {
+           "text": "FUNK SERENO"
+          }
+         ]
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "bxkq",
+           "navigationEndpoint": {
+            "browseEndpoint": {
+             "browseId": "UCbxkq"
+            }
+           }
+          },
+          {
+           "text": " \u2022 "
+          },
+          {
+           "text": "2:59"
+          }
+         ]
+        },
+        "lengthText": {
+         "runs": [
+          {
+           "text": "2:59"
+          }
+         ]
+        }
+       }
+      },
+      {
+       "playlistPanelVideoRenderer": {
+        "videoId": "f5",
+        "title": {
+         "runs": [
+          {
+           "text": "FUNK MADA"
+          }
+         ]
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "bxkq",
+           "navigationEndpoint": {
+            "browseEndpoint": {
+             "browseId": "UCbxkq"
+            }
+           }
+          },
+          {
+           "text": " \u2022 "
+          },
+          {
+           "text": "3:33"
+          }
+         ]
+        },
+        "lengthText": {
+         "runs": [
+          {
+           "text": "3:33"
+          }
+         ]
+        }
+       }
+      },
+      {
+       "playlistPanelVideoRenderer": {
+        "videoId": "f6",
+        "title": {
+         "runs": [
+          {
+           "text": "OTRO FUNK"
+          }
+         ]
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "bxkq",
+           "navigationEndpoint": {
+            "browseEndpoint": {
+             "browseId": "UCbxkq"
+            }
+           }
+          },
+          {
+           "text": " \u2022 "
+          },
+          {
+           "text": "2:44"
+          }
+         ]
+        },
+        "lengthText": {
+         "runs": [
+          {
+           "text": "2:44"
+          }
+         ]
+        }
+       }
+      }
+     ]
+    }
+   },
+   "secondaryResults": {
+    "secondaryResults": {
+     "results": [
+      {
+       "compactVideoRenderer": {
+        "videoId": "r1",
+        "title": {
+         "runs": [
+          {
+           "text": "OTRA NOCHE (Phonk)"
+          }
+         ]
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "DYLAn - Topic"
+          }
+         ]
+        },
+        "lengthText": {
+         "simpleText": "2:31"
+        }
+       }
+      },
+      {
+       "compactVideoRenderer": {
+        "videoId": "r2",
+        "title": {
+         "runs": [
+          {
+           "text": "mucho party (slowed)"
+          }
+         ]
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "Slowed Music Channel"
+          }
+         ]
+        },
+        "lengthText": {
+         "simpleText": "3:05"
+        }
+       }
+      },
+      {
+       "compactVideoRenderer": {
+        "videoId": "f3",
+        "title": {
+         "runs": [
+          {
+           "text": "FUNK UNICO (dup surface)"
+          }
+         ]
+        },
+        "longBylineText": {
+         "runs": [
+          {
+           "text": "bxkq"
+          }
+         ]
+        },
+        "lengthText": {
+         "simpleText": "3:01"
+        }
+       }
+      }
+     ]
+    }
+   },
+   "sectionListRenderer": {
+    "contents": [
+     {
+      "musicShelfRenderer": {
+       "title": {
+        "runs": [
+         {
+          "text": "Related"
+         }
+        ]
+       },
+       "contents": [
+        {
+         "musicResponsiveListItemRenderer": {
+          "flexColumns": [
+           {
+            "musicResponsiveListItemFlexColumnRenderer": {
+             "text": {
+              "runs": [
+               {
+                "text": "Velvet Static"
+               }
+              ]
+             }
+            }
+           },
+           {
+            "musicResponsiveListItemFlexColumnRenderer": {
+             "text": {
+              "runs": [
+               {
+                "text": "Song"
+               },
+               {
+                "text": " \u2022 "
+               },
+               {
+                "text": "Nohidea",
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCnohidea"
+                 }
+                }
+               },
+               {
+                "text": " \u2022 "
+               },
+               {
+                "text": "Late Files",
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPREb_77"
+                 }
+                }
+               },
+               {
+                "text": " \u2022 "
+               },
+               {
+                "text": "4:02"
+               }
+              ]
+             }
+            }
+           }
+          ],
+          "overlay": {
+           "musicItemThumbnailOverlayRenderer": {
+            "content": {
+             "musicPlayButtonRenderer": {
+              "playNavigationEndpoint": {
+               "watchEndpoint": {
+                "videoId": "s1"
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        {
+         "musicResponsiveListItemRenderer": {
+          "flexColumns": [
+           {
+            "musicResponsiveListItemFlexColumnRenderer": {
+             "text": {
+              "runs": [
+               {
+                "text": "Basement Tapes"
+               }
+              ]
+             }
+            }
+           },
+           {
+            "musicResponsiveListItemFlexColumnRenderer": {
+             "text": {
+              "runs": [
+               {
+                "text": "Song"
+               },
+               {
+                "text": " \u2022 "
+               },
+               {
+                "text": "Kupla",
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCkupla"
+                 }
+                }
+               },
+               {
+                "text": " \u2022 "
+               },
+               {
+                "text": "3:18"
+               }
+              ]
+             }
+            }
+           }
+          ],
+          "overlay": {
+           "musicItemThumbnailOverlayRenderer": {
+            "content": {
+             "musicPlayButtonRenderer": {
+              "playNavigationEndpoint": {
+               "watchEndpoint": {
+                "videoId": "s2"
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        {
+         "musicResponsiveListItemRenderer": {
+          "navigationEndpoint": {
+           "browseEndpoint": {
+            "browseId": "MPREb_album9"
+           }
+          },
+          "flexColumns": [
+           {
+            "musicResponsiveListItemFlexColumnRenderer": {
+             "text": {
+              "runs": [
+               {
+                "text": "An Album"
+               }
+              ]
+             }
+            }
+           },
+           {
+            "musicResponsiveListItemFlexColumnRenderer": {
+             "text": {
+              "runs": [
+               {
+                "text": "Album"
+               }
+              ]
+             }
+            }
+           }
+          ]
+         }
+        }
+       ]
+      }
+     },
+     {
+      "musicCarouselShelfRenderer": {
+       "contents": [
+        {
+         "musicTwoRowItemRenderer": {
+          "navigationEndpoint": {
+           "watchEndpoint": {
+            "videoId": "t9"
+           }
+          },
+          "title": {
+           "runs": [
+            {
+             "text": "Rave Dongeon"
+            }
+           ]
+          },
+          "subtitle": {
+           "runs": [
+            {
+             "text": "MYSSER"
+            },
+            {
+             "text": " \u2022 "
+            },
+            {
+             "text": "2.1M views"
+            },
+            {
+             "text": " \u2022 "
+            },
+            {
+             "text": "2:54"
+            }
+           ]
+          }
+         }
+        }
+       ]
+      }
+     }
+    ]
+   }
+  }
+ }
+}`
+
+func TestParseNextResponseCollectsAllSurfaces(t *testing.T) {
+	res, err := ParseNextResponse([]byte(watchAllSurfacesFixture))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// 6 queue + 2 new related videos (the third duplicates f3) + 2 shelf
+	// songs (the album row has no watch endpoint) + 1 tile.
+	if len(res.Tracks) != 11 {
+		t.Fatalf("expected 11 candidates across surfaces, got %d: %+v", len(res.Tracks), res.Tracks)
+	}
+	if res.Tracks[0].SourceID != "f1" || res.Tracks[5].SourceID != "f6" {
+		t.Fatalf("queue panel must come first (provider order), got %s, %s", res.Tracks[0].SourceID, res.Tracks[5].SourceID)
+	}
+	byShelf := map[string]int{}
+	for _, sh := range res.Shelves {
+		byShelf[sh.Kind] = sh.Count
+	}
+	if byShelf["queue"] != 6 || byShelf["related-videos"] != 2 || byShelf["music-shelves"] != 2 || byShelf["tiles"] != 1 {
+		t.Fatalf("bad shelf provenance: %+v", res.Shelves)
+	}
+	// A "- Topic" channel on a video surface is a real artist…
+	var r1 model.Track
+	for _, tr := range res.Tracks {
+		if tr.SourceID == "r1" {
+			r1 = tr
+		}
+	}
+	if r1.Artist != "DYLAn" || r1.Uploader != "DYLAn - Topic" || r1.Duration != 151 {
+		t.Fatalf("topic-channel promotion failed: %+v", r1)
+	}
+	// …but a bare uploading channel NEVER becomes the artist.
+	var r2 model.Track
+	for _, tr := range res.Tracks {
+		if tr.SourceID == "r2" {
+			r2 = tr
+		}
+	}
+	if r2.Artist != "" || r2.Uploader != "Slowed Music Channel" {
+		t.Fatalf("uploader must not leak into artist identity: %+v", r2)
+	}
+	// Shelf songs keep the music-surface identity rules.
+	var s1 model.Track
+	for _, tr := range res.Tracks {
+		if tr.SourceID == "s1" {
+			s1 = tr
+		}
+	}
+	if s1.Artist != "Nohidea" || s1.Album != "Late Files" || s1.Duration != 242 {
+		t.Fatalf("bad shelf item: %+v", s1)
+	}
+	if artistDominated(res.Tracks) {
+		t.Fatalf("a mixed-surface feed must not read as artist-dominated")
+	}
+}
+
+func TestParseNextResponseDetectsArtistDominatedQueue(t *testing.T) {
+	if !artistDominated([]model.Track{
+		{Artist: "bxkq"}, {Artist: "bxkq"}, {Artist: "bxkq"},
+		{Artist: "bxkq"}, {Artist: "bxkq"}, {Artist: "bxkq, AAVARU"}, {Artist: "bxkq"},
+	}) {
+		t.Fatalf("6/7 one artist is dominated")
+	}
+	if artistDominated([]model.Track{
+		{Artist: "bxkq"}, {Artist: "bxkq"}, {Artist: "DYLAn"},
+		{Artist: "Nohidea"}, {Artist: "Kupla"}, {Artist: "MYSSER"}, {Artist: "PXLWVYSE"},
+	}) {
+		t.Fatalf("a genuinely mixed feed is not dominated")
+	}
+}
+
+// The full ladder for a non-catalog seed whose videoId /next answer is empty:
+// the RDAMVM song-radio playlist must be requested before giving up.
+func TestRelatedInnerTubeFallsThroughToRadioPlaylist(t *testing.T) {
+	var gotPlaylistID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if pid, _ := body["playlistId"].(string); pid != "" {
+			gotPlaylistID = pid
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(nextFixture))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"contents": {}}`))
+	}))
+	defer srv.Close()
+	c := New(&fakeRunner{})
+	c.NextEndpoint = srv.URL
+	res, err := c.Related(context.Background(), "seed111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPlaylistID != "RDAMVMseed111" {
+		t.Fatalf("expected the RDAMVM song-radio request, got %q", gotPlaylistID)
+	}
+	if len(res.Tracks) != 3 {
+		t.Fatalf("expected the radio playlist's 3 tracks, got %d", len(res.Tracks))
+	}
+	if !shelfCounts(res, "radio", 3) {
+		t.Fatalf("radio stage must be recorded in provenance: %+v", res.Shelves)
+	}
+}
+
+// An artist-dominated queue is not accepted as the radio: the RDAMVM playlist
+// is fetched as a genuinely broader source and merged behind the queue.
+func TestRelatedMergesRadioWhenQueueArtistDominated(t *testing.T) {
+	// Eight queue rows, all bxkq: the artist-dominated shape.
+	items := make([]map[string]any, 8)
+	for i := range items {
+		items[i] = map[string]any{"playlistPanelVideoRenderer": map[string]any{
+			"videoId": fmt.Sprintf("g%d", i),
+			"title":   map[string]any{"runs": []map[string]any{{"text": "FUNK"}}},
+			"longBylineText": map[string]any{"runs": []map[string]any{
+				{"text": "bxkq", "navigationEndpoint": map[string]any{
+					"browseEndpoint": map[string]any{"browseId": "UCbxkq"}}}}},
+		}}
+	}
+	dominatedRaw, _ := json.Marshal(map[string]any{
+		"contents": map[string]any{"singleColumnMusicWatchNextResultsRenderer": map[string]any{
+			"playlist": map[string]any{"playlist": map[string]any{"contents": items}}}},
+	})
+	dominated := string(dominatedRaw)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		if pid, _ := body["playlistId"].(string); pid != "" {
+			_, _ = w.Write([]byte(nextFixture))
+			return
+		}
+		_, _ = w.Write([]byte(dominated))
+	}))
+	defer srv.Close()
+	c := New(&fakeRunner{})
+	c.NextEndpoint = srv.URL
+	res, err := c.Related(context.Background(), "seed111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !artistDominated(res.Tracks[:8]) || len(res.Tracks) != 11 {
+		t.Fatalf("expected 8 queue tracks + 3 merged radio tracks, got %d", len(res.Tracks))
+	}
+	if res.Tracks[8].SourceID != "seed111" {
+		t.Fatalf("merged radio tracks follow the queue, got %+v", res.Tracks[8])
+	}
+	if !shelfCounts(res, "queue", 8) || !shelfCounts(res, "radio", 3) {
+		t.Fatalf("provenance must record both stages: %+v", res.Shelves)
+	}
+}
+
+func shelfCounts(res model.RadioResponse, kind string, n int) bool {
+	for _, sh := range res.Shelves {
+		if sh.Kind == kind && sh.Count == n {
+			return true
+		}
+	}
+	return false
 }

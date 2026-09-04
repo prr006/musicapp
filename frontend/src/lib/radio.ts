@@ -425,8 +425,8 @@ export const DIVERSITY: Record<RadioKind, DiversityProfile> = {
  * identity. The controller uses this to decide when to generate *broader*
  * candidates (drift/taste anchors) instead of accepting a one-artist radio.
  */
-export function poolConcentration(tracks: Track[]): { share: number; distinct: number } {
-  if (tracks.length === 0) return { share: 0, distinct: 0 }
+export function poolConcentration(tracks: Track[]): { share: number; distinct: number; topIdentity: string } {
+  if (tracks.length === 0) return { share: 0, distinct: 0, topIdentity: '' }
   const counts = new Map<string, number>()
   for (const t of tracks) {
     const identity = identityKeyOf(t)
@@ -434,8 +434,15 @@ export function poolConcentration(tracks: Track[]): { share: number; distinct: n
     counts.set(identity, (counts.get(identity) ?? 0) + 1)
   }
   const total = [...counts.values()].reduce((a, b) => a + b, 0)
-  const top = Math.max(0, ...counts.values())
-  return { share: total > 0 ? top / total : 0, distinct: counts.size }
+  let top = 0
+  let topIdentity = ''
+  for (const [identity, n] of counts) {
+    if (n > top) {
+      top = n
+      topIdentity = identity
+    }
+  }
+  return { share: total > 0 ? top / total : 0, distinct: counts.size, topIdentity }
 }
 
 interface PoolEntry {
@@ -541,6 +548,24 @@ export function buildRadioBatch(
   const perIdentity = new Map<string, number>(opts.seededIdentityCounts ?? [])
   const identityCap = opts.identityCap ?? Math.max(2, Math.ceil(limit / 2))
   const picked: Track[] = []
+  const seedIdentities = new Set([ctx.seed.identity, ctx.seed.primaryArtist].filter(Boolean))
+  // Song radio: the seed's own artist may take up to the full cap (you chose
+  // that song), but any OTHER identity is a guest. When the candidate set
+  // genuinely offers alternatives (more than three distinct identities), a
+  // provider feed 80% one foreign artist must not translate into 80% of the
+  // queue — guests are capped at a fifth of the batch. A narrow pool (a
+  // tight two-identity graph, a lone-artist feed) keeps the classic cap so
+  // the batch still fills; broadening generation is the controller's job.
+  // Artist/album radios keep the full cap for every identity by design.
+  const distinctIdentities = new Set(
+    eligible.map((e) => identityKeyOf(e.track)).filter((k) => k !== ''),
+  ).size
+  const foreignCap =
+    ctx.seed.kind === 'track' && distinctIdentities > 3
+      ? Math.max(2, Math.ceil(limit / 5))
+      : identityCap
+  const capFor = (identity: string): number =>
+    !identity || seedIdentities.has(identity) ? identityCap : Math.min(identityCap, foreignCap)
 
   const violatesWindow = (identity: string): boolean => {
     const inWindow = window.filter((a) => a === identity).length
@@ -550,7 +575,7 @@ export function buildRadioBatch(
   const tryPick = (track: Track): boolean => {
     if (picked.length >= limit) return false
     const identity = identityKeyOf(track)
-    if (identity && (violatesWindow(identity) || (perIdentity.get(identity) ?? 0) >= identityCap)) {
+    if (identity && (violatesWindow(identity) || (perIdentity.get(identity) ?? 0) >= capFor(identity))) {
       return false
     }
     picked.push(track)
@@ -578,12 +603,16 @@ export function buildRadioBatch(
   }
 
   // Relaxation 1: cap-blind but window-aware — keep interleaving while the
-  // window allows, ignoring the per-identity cap.
+  // window allows, ignoring the per-identity cap. In a song radio this
+  // latitude belongs to the seed's own identity only ("recommended again"
+  // is meaningful for the artist you are listening to); foreign identities
+  // keep their guest cap.
   const capBlind: Track[] = []
   for (const track of pending) {
     if (picked.length >= limit) break
     const identity = identityKeyOf(track)
-    if (violatesWindow(identity)) {
+    const exempt = ctx.seed.kind !== 'track' || (identity !== '' && seedIdentities.has(identity))
+    if (violatesWindow(identity) || (!exempt && (perIdentity.get(identity) ?? 0) >= capFor(identity))) {
       capBlind.push(track)
       continue
     }
@@ -617,7 +646,6 @@ export function buildRadioBatch(
   // anything on an explicit artist/album radio. A foreign identity flooding
   // the feed (the one-artist-wall failure) must not fill past its cap; the
   // controller is responsible for broadening candidate generation instead.
-  const seedIdentities = new Set([ctx.seed.identity, ctx.seed.primaryArtist].filter(Boolean))
   const isSeedIdentity = (identity: string) => ctx.seed.kind !== 'track' || seedIdentities.has(identity)
   if (new Set(eligible.map((e) => identityKeyOf(e.track))).size <= 2) {
     for (const track of windowBlind) {

@@ -93,6 +93,8 @@ export interface RadioResponse {
   tracks: Track[]
   /** Which pipeline produced the candidates, e.g. "ytmusic-next". */
   source: string
+  /** Which recommendation surfaces contributed how many candidates (diagnostics). */
+  shelves?: { kind: string; count: number }[]
 }
 
 export type ThemeMode = 'dark' | 'light' | 'system'
