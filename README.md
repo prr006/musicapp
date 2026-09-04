@@ -105,6 +105,17 @@ next batch.
   dev builds; `go run ./tools/radiodiag "<song>"` replays the whole ladder
   against the live endpoints and prints every candidate with its identity —
   the diagnosis tool for "why does radio look like artist radio?".
+  The Song Radio **source rule** is enforced in the provider: the stages are
+  kept separate, and when the leading stage (or the merged feed) is
+  >60% one artist identity, the first stage that is itself a genuinely mixed
+  recommendation feed is promoted to lead — an artist-heavy "Up next" queue
+  contributes its rows *behind* it instead of defining the radio. If no
+  source is mixed, the order stands: YouTube offered nothing broader, and
+  nothing is invented. Live-app evidence: run with `MELO_RADIO_DEBUG=1` to
+  log, per real request, the seed's raw metadata (including where its Artist
+  value came from) and every candidate's artist/uploader/renderer/endpoint;
+  `go run ./tools/radiodiag "<song>"` prints the same per-source report
+  (counts, unique artists/uploaders, artist distribution, verdict) directly.
   Recent **session** tracks contribute *drift* pools (a weaker weight), and
   **liked** tracks contribute *taste* anchors: so a session that wandered from
   anime OSTs into phonk keeps recommending phonk — the transition emerges from

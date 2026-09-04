@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -320,7 +321,31 @@ func (a *App) RelatedTracks(track model.Track) (model.RadioResponse, error) {
 	if filtered == nil {
 		filtered = []model.Track{}
 	}
-	return model.RadioResponse{Tracks: filtered, Source: res.Source}, nil
+	if debug := os.Getenv("MELO_RADIO_DEBUG") != ""; debug {
+		// Raw production evidence, printed to the terminal that launched the
+		// app (run `set MELO_RADIO_DEBUG=1 && melo.exe` on Windows, or
+		// MELO_RADIO_DEBUG=1 in a wails dev shell). It answers, per real
+		// request: what metadata the seed carries, where its Artist value
+		// came from, which endpoint/renderer produced every candidate, and
+		// where each candidate's artist was identified.
+		log.Printf("[radio] seed videoID=%s title=%q artist=%q artistSrc=%q uploader=%q album=%q",
+			track.SourceID, track.Title, track.Artist, track.ArtistSrc, track.Uploader, track.Album)
+		for _, sh := range res.Shelves {
+			log.Printf("[radio] source %-12s %d candidates", sh.Kind, sh.Count)
+		}
+		for i, t := range filtered {
+			log.Printf("[radio] cand %02d %-32s artist=%q(%s) uploader=%q via=%s id=%s",
+				i+1, truncate(t.Title, 32), t.Artist, t.ArtistSrc, t.Uploader, t.Via, t.SourceID)
+		}
+	}
+	return model.RadioResponse{Tracks: filtered, Source: res.Source, Shelves: res.Shelves}, nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }
 func (a *App) AddSearchTerm(q string) []string    { return a.store.AddSearchTerm(q) }
 func (a *App) RemoveSearchTerm(q string) []string { return a.store.RemoveSearchTerm(q) }

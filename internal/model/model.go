@@ -19,6 +19,17 @@ type Track struct {
 	Duration float64 `json:"duration"`           // seconds; 0 when unknown
 	Explicit bool    `json:"explicit"`
 	AddedAt  int64   `json:"addedAt,omitempty"`
+
+	// ---- diagnostics (never used for ranking or persistence logic) ----
+	// ArtistSrc records WHERE the Artist value came from, so "uploader leaked
+	// into artist" can be told apart from "the provider identified the
+	// artist": "browse" = a music browse endpoint explicitly named the
+	// artist; "topic" = an official "<Artist> - Topic" channel; "" = no
+	// artist identified (uploader/channel only).
+	ArtistSrc string `json:"artistSrc,omitempty"`
+	// Via records which renderer/endpoint produced the row, e.g.
+	// "playlistPanelVideoRenderer" or "compactVideoRenderer".
+	Via string `json:"via,omitempty"`
 }
 
 // SearchResult groups provider results by kind so the UI can render sections.

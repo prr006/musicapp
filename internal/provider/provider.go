@@ -197,6 +197,7 @@ func ParseSearchResponse(raw []byte) (model.SearchResponse, error) {
 					t.Album = r.Text
 				case strings.HasPrefix(r.BrowseID, "UC"):
 					artistParts = append(artistParts, r.Text)
+					t.ArtistSrc = "browse"
 				}
 			}
 			if len(artistParts) == 0 {
@@ -213,13 +214,16 @@ func ParseSearchResponse(raw []byte) (model.SearchResponse, error) {
 				}
 				if artist, ok := artistFromChannel(channel); ok {
 					artistParts = append(artistParts, artist)
+					t.ArtistSrc = "topic"
 				}
 			}
 			t.Artist = strings.Join(uniqueStrings(artistParts), ", ")
 			t.Uploader = channel
 			if isVideoType(runs) {
+				t.Via = "search:video"
 				out.Videos = append(out.Videos, t)
 			} else {
+				t.Via = "search:song"
 				out.Songs = append(out.Songs, t)
 			}
 		case strings.HasPrefix(browseID, "MPRE"):
@@ -515,36 +519,79 @@ func artistFromChannel(channel string) (artist string, ok bool) {
 //
 // If both fail the error from the primary source is returned; the caller is
 // expected to fall back to its own deterministic metadata queries.
+// RadioStage is one recommendation source, fetched in isolation: which
+// endpoint produced it, and the candidates it yielded (each row carrying
+// provenance in Track.Via and Track.ArtistSrc).
+type RadioStage struct {
+	Kind     string // "queue","automix","radio","ytdlp-mix"
+	Endpoint string // human-readable description of the request
+	Tracks   []model.Track
+}
+
+// Related returns the provider's dedicated related-music list for one video —
+// the input to MELO's autoplay radio. It deliberately does NOT use ordinary
+// search: candidates come from YouTube Music's own recommendation surfaces
+// only. Each stage of the ladder is kept separate until the end, because a
+// stage that is >60% one artist (an artist-heavy "Up next" queue) must not be
+// allowed to define the whole radio when another stage is a genuinely mixed
+// recommendation feed: SelectRadioStages promotes the mixed source to lead.
 func (c *Client) Related(ctx context.Context, videoID string) (model.RadioResponse, error) {
 	videoID = strings.TrimSpace(videoID)
 	if videoID == "" {
 		return model.RadioResponse{}, nil
 	}
-	res, err := c.relatedInnerTube(ctx, videoID)
-	if err == nil && len(res.Tracks) > 0 {
-		return res, nil
+	stages, err := c.innerTubeStages(ctx, videoID, false)
+	if len(stages) == 0 || needsBroaderSources(stages) {
+		// Last network rung: the auto-generated mix playlist RD<videoID>
+		// dumped flat via yt-dlp — fetched only when InnerTube answered
+		// nothing usable, or when every InnerTube stage is artist-heavy.
+		if mix, ferr := c.relatedYTDLP(ctx, videoID); ferr == nil && len(mix.Tracks) > 0 {
+			stages = append(stages, RadioStage{
+				Kind:     "ytdlp-mix",
+				Endpoint: "yt-dlp playlist RD" + videoID,
+				Tracks:   mix.Tracks,
+			})
+		}
 	}
-	fallback, ferr := c.relatedYTDLP(ctx, videoID)
-	if ferr == nil && len(fallback.Tracks) > 0 {
-		return fallback, nil
+	if len(flattenStages(stages)) == 0 {
+		if err != nil {
+			return model.RadioResponse{}, err
+		}
+		return model.RadioResponse{}, nil
 	}
-	if err != nil {
-		return model.RadioResponse{}, err
-	}
-	if ferr != nil {
-		return model.RadioResponse{}, ferr
-	}
-	return res, nil
+	return stageResponse(SelectRadioStages(stages)), nil
 }
 
-// relatedInnerTube asks the YouTube Music watch-next endpoint for the "Up
-// next" queue of a video. For most uploads the first response only contains an
-// autoplay *preview* (automixPreviewVideoRenderer); the actual recommendation
-// queue is then one continuation request away — exactly the request YouTube
-// Music itself makes. Without following it, tracks with no explicit radio
-// panel would appear to have no related data and callers would fall back to
-// text search, which is how unrelated songs used to leak into autoplay.
-func (c *Client) relatedInnerTube(ctx context.Context, videoID string) (model.RadioResponse, error) {
+// DiagnoseRelated fetches every recommendation source for a video SEPARATELY
+// (videoId /next, automix continuation, RDAMVM song radio, yt-dlp mix) and
+// returns the raw stages without any selection — the evidence for debugging
+// "why does song radio look like artist radio?" on a machine with real
+// YouTube access. tools/radiodiag prints the full report.
+func (c *Client) DiagnoseRelated(ctx context.Context, videoID string) ([]RadioStage, error) {
+	stages, err := c.innerTubeStages(ctx, strings.TrimSpace(videoID), true)
+	if mix, ferr := c.relatedYTDLP(ctx, strings.TrimSpace(videoID)); ferr == nil && len(mix.Tracks) > 0 {
+		stages = append(stages, RadioStage{
+			Kind:     "ytdlp-mix",
+			Endpoint: "yt-dlp playlist RD" + videoID,
+			Tracks:   mix.Tracks,
+		})
+	}
+	return stages, err
+}
+
+// innerTubeStages runs the InnerTube ladder, keeping each stage separate:
+//
+//  1. "queue"  — the /next answer for the video (itself split into surfaces:
+//     queue panel, compact related videos, music shelves, tiles);
+//  2. "automix" — the autoplay preview continuation (the request YouTube
+//     Music itself makes to expand the radio);
+//  3. "radio"  — the RDAMVM<videoID> song-radio playlist.
+//
+// In production (diag=false) the ladder stops as soon as the merged stages
+// are a usable, non-artist-dominated feed. In diagnosis mode (diag=true) all
+// stages are fetched regardless, so the report shows what every source
+// returns.
+func (c *Client) innerTubeStages(ctx context.Context, videoID string, diag bool) ([]RadioStage, error) {
 	clientCtx := map[string]any{
 		"context": map[string]any{
 			"client": map[string]any{
@@ -557,26 +604,30 @@ func (c *Client) relatedInnerTube(ctx context.Context, videoID string) (model.Ra
 	}
 	raw, err := c.postNext(ctx, mergeMaps(clientCtx, map[string]any{"videoId": videoID}))
 	if err != nil {
-		return model.RadioResponse{}, err
+		return nil, err
 	}
-	parsed, err := ParseNextResponse(raw)
+	surfaces, err := parseNextSurfaces(raw)
 	if err != nil {
-		return model.RadioResponse{}, err
+		return nil, err
 	}
-	if len(parsed.Tracks) > 0 && !artistDominated(parsed.Tracks) {
-		return parsed, nil
+	var stages []RadioStage
+	for _, kind := range nextSurfaceOrder {
+		if tracks := surfaces[kind]; len(tracks) > 0 {
+			stages = append(stages, RadioStage{Kind: kind, Endpoint: "next(videoId " + videoID + ")", Tracks: tracks})
+		}
+	}
+	if !diag && len(stages) > 0 && !needsBroaderSources(stages) {
+		return stages, nil
 	}
 
-	// No usable queue (or an artist-dominated one): follow the autoplay
-	// ("automix") preview continuation — exactly the request YouTube Music
-	// itself makes to expand the radio.
+	// Nothing usable, or an artist-dominated answer: follow the autoplay
+	// ("automix") preview continuation.
 	var root any
 	if err := json.Unmarshal(raw, &root); err != nil {
-		return model.RadioResponse{}, fmt.Errorf("%w: malformed JSON", ErrProvider)
+		return stages, fmt.Errorf("%w: malformed JSON", ErrProvider)
 	}
 	previews := []map[string]any{}
 	collect(root, "automixPreviewVideoRenderer", &previews)
-	base := parsed
 	for _, preview := range previews {
 		token := continuationToken(preview)
 		if token == "" {
@@ -586,76 +637,155 @@ func (c *Client) relatedInnerTube(ctx context.Context, videoID string) (model.Ra
 		if err != nil {
 			continue
 		}
-		mix, err := ParseNextResponse(next)
+		mixSurfaces, err := parseNextSurfaces(next)
 		if err != nil {
 			continue
 		}
-		if len(mix.Tracks) > 0 {
-			base = mergeRadio(base, mix, "automix")
-			if !artistDominated(base.Tracks) {
-				return base, nil
+		mixTracks := []model.Track{}
+		for _, kind := range nextSurfaceOrder {
+			mixTracks = append(mixTracks, mixSurfaces[kind]...)
+		}
+		if len(mixTracks) > 0 {
+			stages = append(stages, RadioStage{Kind: "automix", Endpoint: "next(automix continuation)", Tracks: mixTracks})
+			if !diag && !needsBroaderSources(stages) {
+				return stages, nil
 			}
 			break
 		}
 	}
 
-	// The last real recommendation surface: the song-radio playlist itself
-	// (RDAMVM<videoID> — what YouTube Music plays for "Start radio"). Used
-	// when nothing above answered OR when the feed is artist-dominated: a
-	// queue that is >60% one artist is not a radio batch, and this playlist
-	// is a genuinely broader source, unlike artist text search.
-	radio, err := c.postNext(ctx, mergeMaps(clientCtx, map[string]any{"playlistId": "RDAMVM" + videoID}))
-	if err != nil {
-		if len(base.Tracks) > 0 {
-			return base, nil
+	// The song-radio playlist itself (RDAMVM<videoID> — what YouTube Music
+	// plays for "Start radio"): a genuinely broader source when the queue is
+	// artist-heavy, unlike artist text search.
+	radio, rerr := c.postNext(ctx, mergeMaps(clientCtx, map[string]any{"playlistId": "RDAMVM" + videoID}))
+	if rerr == nil {
+		if radioSurfaces, perr := parseNextSurfaces(radio); perr == nil {
+			radioTracks := []model.Track{}
+			for _, kind := range nextSurfaceOrder {
+				radioTracks = append(radioTracks, radioSurfaces[kind]...)
+			}
+			if len(radioTracks) > 0 {
+				stages = append(stages, RadioStage{
+					Kind:     "radio",
+					Endpoint: "next(RDAMVM" + videoID + ")",
+					Tracks:   radioTracks,
+				})
+			}
 		}
-		return model.RadioResponse{}, err
 	}
-	radioParsed, err := ParseNextResponse(radio)
-	if err != nil || len(radioParsed.Tracks) == 0 {
-		if len(base.Tracks) > 0 {
-			return base, nil
-		}
-		if err != nil {
-			return model.RadioResponse{}, err
-		}
-		return radioParsed, nil
-	}
-	merged := mergeRadio(base, radioParsed, "radio")
-	if len(merged.Tracks) == 0 {
-		return radioParsed, nil
-	}
-	return merged, nil
+	return stages, nil
 }
 
-// mergeRadio merges a secondary surface's candidates into a base response,
-// keeping the base's order first and appending only unseen videos.
-func mergeRadio(base, extra model.RadioResponse, stage string) model.RadioResponse {
-	if len(extra.Tracks) == 0 {
-		return base
+// needsBroaderSources reports whether the candidate stages fail the Song
+// Radio rule as they stand: nothing usable at all, the LEADING stage (the one
+// that would define the top of the queue) is an artist wall, or the merged
+// feed is artist-dominated. A mixed tail must not mask an artist-heavy lead.
+func needsBroaderSources(stages []RadioStage) bool {
+	if len(stages) == 0 {
+		return true
 	}
-	seen := map[string]bool{}
-	for _, t := range base.Tracks {
-		seen[t.SourceID] = true
+	if artistDominated(stages[0].Tracks) {
+		return true
 	}
-	out := model.RadioResponse{
-		Source:  base.Source,
-		Tracks:  append([]model.Track{}, base.Tracks...),
-		Shelves: append([]model.RadioShelf{}, base.Shelves...),
+	return artistDominated(flattenStages(stages))
+}
+
+// SelectRadioStages implements the Song Radio source rule. The stages are
+// returned unchanged unless the rule is violated (see needsBroaderSources).
+// In that case the artist-heavy stages must not define the radio: the first
+// stage that is itself a genuinely mixed recommendation feed (>=6 rows, not
+// artist-dominated, most distinct identities) is promoted to lead, and the
+// remaining stages follow behind with their internal order untouched. If no
+// stage is mixed, the order stands — YouTube offered nothing broader.
+func SelectRadioStages(stages []RadioStage) []RadioStage {
+	if len(stages) < 2 || !needsBroaderSources(stages) {
+		return stages
 	}
-	added := 0
-	for _, t := range extra.Tracks {
-		if seen[t.SourceID] {
+	best := -1
+	bestDistinct := -1
+	for i, s := range stages {
+		if len(s.Tracks) < 6 || artistDominated(s.Tracks) {
 			continue
 		}
-		seen[t.SourceID] = true
-		out.Tracks = append(out.Tracks, t)
-		added++
+		if d := distinctIdentities(s.Tracks); d > bestDistinct {
+			best, bestDistinct = i, d
+		}
 	}
-	if added > 0 {
-		out.Shelves = append(out.Shelves, model.RadioShelf{Kind: stage, Count: added})
+	if best < 0 {
+		return stages
+	}
+	out := make([]RadioStage, 0, len(stages))
+	out = append(out, stages[best])
+	for i, s := range stages {
+		if i != best {
+			out = append(out, s)
+		}
 	}
 	return out
+}
+
+// stageResponse flattens stages (in order, deduped by video id) into one
+// radio response. Shelves records each stage's deduped contribution in the
+// final order, so provenance shows which source leads the radio.
+func stageResponse(stages []RadioStage) model.RadioResponse {
+	out := model.RadioResponse{Tracks: []model.Track{}}
+	seen := map[string]bool{}
+	for _, s := range stages {
+		added := 0
+		for _, t := range s.Tracks {
+			if t.SourceID == "" || seen[t.SourceID] {
+				continue
+			}
+			seen[t.SourceID] = true
+			out.Tracks = append(out.Tracks, t)
+			added++
+		}
+		if added > 0 {
+			out.Shelves = append(out.Shelves, model.RadioShelf{Kind: s.Kind, Count: added})
+			if out.Source == "" {
+				out.Source = sourceForStage(s.Kind)
+			}
+		}
+	}
+	return out
+}
+
+func sourceForStage(kind string) string {
+	if kind == "ytdlp-mix" {
+		return "yt-dlp-mix"
+	}
+	return "ytmusic-next"
+}
+
+func flattenStages(stages []RadioStage) []model.Track {
+	out := []model.Track{}
+	seen := map[string]bool{}
+	for _, s := range stages {
+		for _, t := range s.Tracks {
+			if t.SourceID == "" || seen[t.SourceID] {
+				continue
+			}
+			seen[t.SourceID] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// distinctIdentities counts unique artist (or, absent that, uploader)
+// identities in a feed.
+func distinctIdentities(tracks []model.Track) int {
+	ids := map[string]bool{}
+	for _, t := range tracks {
+		id := strings.ToLower(strings.TrimSpace(t.Artist))
+		if id == "" {
+			id = strings.ToLower(strings.TrimSpace(t.Uploader))
+		}
+		if id != "" {
+			ids[id] = true
+		}
+	}
+	return len(ids)
 }
 
 // artistDominated reports whether one artist/channel identity holds ≥60% of a
@@ -782,62 +912,82 @@ func (c *Client) relatedYTDLP(ctx context.Context, videoID string) (model.RadioR
 // artists on music surfaces, "- Topic" channel promotion everywhere, and bare
 // channel names on video surfaces stay uploader metadata — never artists.
 func ParseNextResponse(raw []byte) (model.RadioResponse, error) {
-	var root any
-	if err := json.Unmarshal(raw, &root); err != nil {
-		return model.RadioResponse{}, fmt.Errorf("%w: malformed JSON", ErrProvider)
+	surfaces, err := parseNextSurfaces(raw)
+	if err != nil {
+		return model.RadioResponse{}, err
 	}
 	out := model.RadioResponse{Source: "ytmusic-next", Tracks: []model.Track{}}
+	for _, kind := range nextSurfaceOrder {
+		for _, t := range surfaces[kind] {
+			out.Tracks = append(out.Tracks, t)
+		}
+		if n := len(surfaces[kind]); n > 0 {
+			out.Shelves = append(out.Shelves, model.RadioShelf{Kind: kind, Count: n})
+		}
+	}
+	return out, nil
+}
+
+// nextSurfaceOrder is the candidate priority across the surfaces of ONE
+// /next response: the provider's own radio queue first, then the regular
+// related feed, then music shelves and tiles.
+var nextSurfaceOrder = []string{"queue", "related-videos", "music-shelves", "tiles"}
+
+// parseNextSurfaces splits a /next payload into its independent
+// recommendation surfaces. Every row records its renderer (Track.Via) and
+// where the Artist value came from (Track.ArtistSrc) so diagnostics can tell
+// "YouTube Music identified this artist" apart from "this row only has a
+// channel name".
+func parseNextSurfaces(raw []byte) (map[string][]model.Track, error) {
+	var root any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil, fmt.Errorf("%w: malformed JSON", ErrProvider)
+	}
+	surfaces := map[string][]model.Track{}
 	seen := map[string]bool{}
-	add := func(t model.Track, ok bool) bool {
+	add := func(kind string, t model.Track, ok bool) {
 		if !ok || t.SourceID == "" || t.Title == "" || seen[t.SourceID] {
-			return false
+			return
 		}
 		seen[t.SourceID] = true
-		out.Tracks = append(out.Tracks, t)
-		return true
+		t.Via = rendererForSurface[kind]
+		surfaces[kind] = append(surfaces[kind], t)
 	}
 
 	queue := []map[string]any{}
 	collect(root, "playlistPanelVideoRenderer", &queue)
-	panels := 0
 	for _, it := range queue {
-		if add(trackFromPanel(it), true) {
-			panels++
-		}
+		add("queue", trackFromPanel(it), true)
 	}
 	compact := []map[string]any{}
 	collect(root, "compactVideoRenderer", &compact)
-	compactCount := 0
 	for _, it := range compact {
-		if add(trackFromCompactVideo(it)) {
-			compactCount++
+		if t, ok := trackFromCompactVideo(it); ok {
+			add("related-videos", t, true)
 		}
 	}
 	listItems := []map[string]any{}
 	collect(root, "musicResponsiveListItemRenderer", &listItems)
-	shelfCount := 0
 	for _, it := range listItems {
-		if add(trackFromWatchListItem(it)) {
-			shelfCount++
+		if t, ok := trackFromWatchListItem(it); ok {
+			add("music-shelves", t, true)
 		}
 	}
 	tiles := []map[string]any{}
 	collect(root, "musicTwoRowItemRenderer", &tiles)
-	tileCount := 0
 	for _, it := range tiles {
-		if add(trackFromTile(it)) {
-			tileCount++
+		if t, ok := trackFromTile(it); ok {
+			add("tiles", t, true)
 		}
 	}
-	for _, sh := range []struct {
-		kind  string
-		count int
-	}{{"queue", panels}, {"related-videos", compactCount}, {"music-shelves", shelfCount}, {"tiles", tileCount}} {
-		if sh.count > 0 {
-			out.Shelves = append(out.Shelves, model.RadioShelf{Kind: sh.kind, Count: sh.count})
-		}
-	}
-	return out, nil
+	return surfaces, nil
+}
+
+var rendererForSurface = map[string]string{
+	"queue":          "playlistPanelVideoRenderer",
+	"related-videos": "compactVideoRenderer",
+	"music-shelves":  "musicResponsiveListItemRenderer",
+	"tiles":          "musicTwoRowItemRenderer",
 }
 
 // trackFromPanel builds a track from a queue panel item (the previous,
@@ -876,6 +1026,7 @@ func trackFromPanel(it map[string]any) model.Track {
 			// A browse endpoint into an artist channel is the provider
 			// explicitly identifying the performing artist.
 			artistParts = append(artistParts, r.Text)
+			t.ArtistSrc = "browse"
 		}
 	}
 	if len(artistParts) == 0 {
@@ -891,6 +1042,7 @@ func trackFromPanel(it map[string]any) model.Track {
 		}
 		if artist, ok := artistFromChannel(channel); ok {
 			artistParts = append(artistParts, artist)
+			t.ArtistSrc = "topic"
 		}
 	}
 	t.Artist = strings.Join(uniqueStrings(artistParts), ", ")
@@ -934,6 +1086,7 @@ func trackFromCompactVideo(it map[string]any) (model.Track, bool) {
 	}
 	if artist, ok := artistFromChannel(channel); ok {
 		t.Artist = artist
+		t.ArtistSrc = "topic"
 	}
 	t.Uploader = channel
 	return t, true
@@ -976,6 +1129,7 @@ func trackFromWatchListItem(it map[string]any) (model.Track, bool) {
 			}
 		case strings.HasPrefix(r.BrowseID, "UC"):
 			artistParts = append(artistParts, r.Text)
+			t.ArtistSrc = "browse"
 		}
 	}
 	if len(artistParts) == 0 {
@@ -988,6 +1142,7 @@ func trackFromWatchListItem(it map[string]any) (model.Track, bool) {
 		}
 		if artist, ok := artistFromChannel(channel); ok {
 			artistParts = append(artistParts, artist)
+			t.ArtistSrc = "topic"
 		}
 	}
 	t.Artist = strings.Join(uniqueStrings(artistParts), ", ")
@@ -1033,6 +1188,7 @@ func trackFromTile(it map[string]any) (model.Track, bool) {
 	}
 	if artist, ok := artistFromChannel(channel); ok {
 		t.Artist = artist
+		t.ArtistSrc = "topic"
 	}
 	t.Uploader = channel
 	return t, true
@@ -1186,7 +1342,10 @@ func bestEntryThumb(e ytdlpEntry) string {
 }
 
 func TrackFromYTDLP(id, title, artist, album, artwork string, duration float64) model.Track {
-	return model.Track{
+	// The artist here comes from yt-dlp's own metadata extraction (catalog
+	// data), never from the channel name — recorded so diagnostics can tell
+	// them apart on real responses.
+	t := model.Track{
 		ID:       "yt:" + id,
 		SourceID: id,
 		Source:   "youtube",
@@ -1196,7 +1355,12 @@ func TrackFromYTDLP(id, title, artist, album, artwork string, duration float64) 
 		Album:    strings.TrimSpace(album),
 		Artwork:  artwork,
 		Duration: duration,
+		Via:      "ytdlp-mix",
 	}
+	if t.Artist != "" {
+		t.ArtistSrc = "metadata"
+	}
+	return t
 }
 
 func firstNonEmpty(vals ...string) string {

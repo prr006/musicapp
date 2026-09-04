@@ -10,6 +10,10 @@ export interface Track {
   artist: string
   /** Channel/uploader when it is NOT the performing artist (e.g. uploads). */
   uploader?: string
+  /** Diagnostics: where Artist came from ("browse" | "topic" | "metadata" | ""). */
+  artistSrc?: string
+  /** Diagnostics: which renderer/endpoint produced this row. */
+  via?: string
   album: string
   artwork: string
   duration: number

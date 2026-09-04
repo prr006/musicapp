@@ -1127,3 +1127,191 @@ func shelfCounts(res model.RadioResponse, kind string, n int) bool {
 	}
 	return false
 }
+
+// ---------- metadata provenance + song-radio source selection ----------
+
+func TestParseNextResponseRecordsProvenance(t *testing.T) {
+	res, err := ParseNextResponse([]byte(watchAllSurfacesFixture))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	byID := map[string]model.Track{}
+	for _, tr := range res.Tracks {
+		byID[tr.SourceID] = tr
+	}
+	// Queue rows: artist from a music browse endpoint, queue renderer.
+	if q := byID["f1"]; q.ArtistSrc != "browse" || q.Via != "playlistPanelVideoRenderer" {
+		t.Fatalf("queue row provenance wrong: %+v", q)
+	}
+	// compactVideoRenderer with a "- Topic" channel => topic promotion.
+	if r1 := byID["r1"]; r1.ArtistSrc != "topic" || r1.Via != "compactVideoRenderer" {
+		t.Fatalf("topic row provenance wrong: %+v", r1)
+	}
+	// compactVideoRenderer with a bare channel => artist stays EMPTY, the
+	// channel is uploader metadata only.
+	if r2 := byID["r2"]; r2.ArtistSrc != "" || r2.Artist != "" || r2.Uploader != "Slowed Music Channel" {
+		t.Fatalf("uploader-only row must not gain an artist: %+v", r2)
+	}
+	// Music-shelf rows: browse-identified artist + album.
+	if s1 := byID["s1"]; s1.ArtistSrc != "browse" || s1.Via != "musicResponsiveListItemRenderer" {
+		t.Fatalf("shelf row provenance wrong: %+v", s1)
+	}
+	// Tile rows carry the tile renderer; MYSSER is not a "- Topic" channel,
+	// so no artist is inferred from the subtitle.
+	if t9 := byID["t9"]; t9.Via != "musicTwoRowItemRenderer" || t9.Artist != "" || t9.Uploader != "MYSSER" {
+		t.Fatalf("tile row provenance wrong: %+v", t9)
+	}
+}
+
+// mixedRadioFixture: 8 rows, 3 Kordhell + 5 distinct artists — a genuinely
+// mixed recommendation feed (37% top identity).
+func mixedRadioFixture() string {
+	rows := []map[string]any{}
+	identities := []string{"Kordhell", "DYLAn", "Nohidea", "Kupla", "MYSSER", "Kordhell", "PXLWVYSE", "Kordhell"}
+	for i, id := range identities {
+		rows = append(rows, map[string]any{"playlistPanelVideoRenderer": map[string]any{
+			"videoId": fmt.Sprintf("m%d", i),
+			"title":   map[string]any{"runs": []map[string]any{{"text": fmt.Sprintf("Radio Song %d", i)}}},
+			"longBylineText": map[string]any{"runs": []map[string]any{
+				{"text": id, "navigationEndpoint": map[string]any{
+					"browseEndpoint": map[string]any{"browseId": "UC" + id}}}}},
+		}})
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"contents": map[string]any{"singleColumnMusicWatchNextResultsRenderer": map[string]any{
+			"playlist": map[string]any{"playlist": map[string]any{"contents": rows}}}},
+	})
+	return string(raw)
+}
+
+// The Song Radio rule: an artist-heavy "Up next" queue must not define the
+// radio when another fetched source is a genuinely mixed recommendation feed
+// — the mixed source is promoted to lead, orders inside sources untouched.
+func TestSongRadioSelectionPromotesMixedSource(t *testing.T) {
+	var gotPlaylistID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		if pid, _ := body["playlistId"].(string); pid != "" {
+			gotPlaylistID = pid
+			_, _ = w.Write([]byte(mixedRadioFixture()))
+			return
+		}
+		// The videoId answer: eight queue rows, all bxkq (artist-heavy).
+		items := make([]map[string]any, 8)
+		for i := range items {
+			items[i] = map[string]any{"playlistPanelVideoRenderer": map[string]any{
+				"videoId": fmt.Sprintf("g%d", i),
+				"title":   map[string]any{"runs": []map[string]any{{"text": "FUNK"}}},
+				"longBylineText": map[string]any{"runs": []map[string]any{
+					{"text": "bxkq", "navigationEndpoint": map[string]any{
+						"browseEndpoint": map[string]any{"browseId": "UCbxkq"}}}}},
+			}}
+		}
+		raw, _ := json.Marshal(map[string]any{
+			"contents": map[string]any{"singleColumnMusicWatchNextResultsRenderer": map[string]any{
+				"playlist": map[string]any{"playlist": map[string]any{"contents": items}}}},
+		})
+		_, _ = w.Write(raw)
+	}))
+	defer srv.Close()
+	c := New(&fakeRunner{err: fmt.Errorf("no yt-dlp")})
+	c.NextEndpoint = srv.URL
+
+	res, err := c.Related(context.Background(), "seed111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPlaylistID != "RDAMVMseed111" {
+		t.Fatalf("expected the RDAMVM song-radio request, got %q", gotPlaylistID)
+	}
+	// The mixed radio leads: first rows are the radio's, not the bxkq wall.
+	if res.Tracks[0].SourceID != "m0" {
+		t.Fatalf("mixed source must lead the song radio, got %s", res.Tracks[0].SourceID)
+	}
+	if res.Tracks[0].Artist != "Kordhell" {
+		t.Fatalf("unexpected lead row: %+v", res.Tracks[0])
+	}
+	bxkq := 0
+	for _, tr := range res.Tracks {
+		if tr.Artist == "bxkq" {
+			bxkq++
+		}
+	}
+	if bxkq != 8 {
+		t.Fatalf("artist-heavy queue must still contribute its rows (behind), got %d", bxkq)
+	}
+	if res.Shelves[0].Kind != "radio" {
+		t.Fatalf("provenance must show the promoted source first: %+v", res.Shelves)
+	}
+	if res.Source != "ytmusic-next" {
+		t.Fatalf("source tag: %s", res.Source)
+	}
+}
+
+// With no mixed source available, the stage order stands — YouTube offered
+// nothing broader and the provider must not invent candidates.
+func TestSongRadioSelectionKeepsOrderWithoutMixedSource(t *testing.T) {
+	heavy := []model.Track{
+		{SourceID: "a", Artist: "X"}, {SourceID: "b", Artist: "X"}, {SourceID: "c", Artist: "X"},
+		{SourceID: "d", Artist: "X"}, {SourceID: "e", Artist: "X"}, {SourceID: "f", Artist: "X"},
+	}
+	small := []model.Track{{SourceID: "g", Artist: "Y"}, {SourceID: "h", Artist: "Z"}}
+	ordered := SelectRadioStages([]RadioStage{
+		{Kind: "queue", Tracks: heavy},
+		{Kind: "radio", Tracks: small}, // too small to prove a mixed feed
+	})
+	if ordered[0].Kind != "queue" || len(ordered) != 2 {
+		t.Fatalf("order must stand when no source is genuinely mixed: %+v", ordered)
+	}
+}
+
+// Diagnosis mode fetches every stage separately even when the first answer
+// is already a healthy mixed feed.
+func TestDiagnoseRelatedFetchesAllStagesSeparately(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case body["videoId"] != nil:
+			_, _ = w.Write([]byte(nextFixture))
+		case body["playlistId"] != nil:
+			_, _ = w.Write([]byte(mixedRadioFixture()))
+		default:
+			_, _ = w.Write([]byte(`{"contents": {}}`))
+		}
+	}))
+	defer srv.Close()
+	c := New(&fakeRunner{err: fmt.Errorf("no yt-dlp")})
+	c.NextEndpoint = srv.URL
+
+	stages, err := c.DiagnoseRelated(context.Background(), "seed111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := []string{}
+	for _, st := range stages {
+		kinds = append(kinds, st.Kind)
+	}
+	if len(kinds) < 2 || kinds[0] != "queue" || !contains(kinds, "radio") {
+		t.Fatalf("diagnosis must fetch every stage separately, got %v", kinds)
+	}
+	for _, st := range stages {
+		for _, tr := range st.Tracks {
+			if tr.Via == "" {
+				t.Fatalf("diagnostic rows must carry renderer provenance: %+v", tr)
+			}
+		}
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
