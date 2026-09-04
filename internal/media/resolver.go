@@ -162,13 +162,15 @@ type Resolver struct {
 	// production set through the REAL pipeline (same cache, dedupe and format
 	// picking). Nil in the app — production behavior is byte-identical.
 	ExtraArgs []string
-	// probeOnce times `yt-dlp --version` the first time a resolution runs with
-	// latency diagnostics enabled. That is the pure spawn+interpreter+import
-	// cost of the binary on THIS machine, with no network and no extraction —
+	// probeOnce kicks off a BACKGROUND `yt-dlp --version` timing the first
+	// time a resolution runs with latency diagnostics enabled. That measures
+	// the pure spawn+interpreter+import cost of the binary on THIS machine —
 	// subtracting it from a resolve attempt separates process overhead from
-	// extraction/network work. Never runs when diagnostics are off.
+	// extraction/network work. It is fire-and-forget: a probe must never delay
+	// a resolution (it would slow down the exact click being diagnosed), so it
+	// runs on its own goroutine and logs whenever it completes. Never runs at
+	// all when diagnostics are off.
 	probeOnce sync.Once
-	probeMS   int64
 	mu        sync.Mutex
 	cache     map[string]Resolved
 	// order preserves insertion order so the cache stays bounded (FIFO
@@ -231,14 +233,18 @@ func (r *Resolver) Resolve(ctx context.Context, sourceID, quality string) (Resol
 
 	if os.Getenv("MELO_PLAY_LATENCY") != "" {
 		r.probeOnce.Do(func() {
-			start := time.Now()
-			out, err := r.runner.Run(context.Background(), "--version")
-			r.probeMS = time.Since(start).Milliseconds()
-			if err != nil {
-				latencyLog("VERSION_PROBE failed err=%v", err)
-				return
-			}
-			latencyLog("VERSION_PROBE elapsed=%dms version=%q (spawn+interpreter+import cost of this binary; subtract from ATTEMPT to isolate extraction+network)", r.probeMS, strings.TrimSpace(string(out)))
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				start := time.Now()
+				out, err := r.runner.Run(ctx, "--version")
+				elapsed := time.Since(start)
+				if err != nil {
+					latencyLog("VERSION_PROBE failed after %s err=%v", elapsed.Round(time.Millisecond), err)
+					return
+				}
+				latencyLog("VERSION_PROBE elapsed=%s version=%q (background spawn+interpreter+import cost; subtract from ATTEMPT to isolate extraction+network)", elapsed.Round(time.Millisecond), strings.TrimSpace(string(out)))
+			}()
 		})
 	}
 

@@ -280,7 +280,8 @@ repeated plays and the next-track prefetch removes for queue advances.
 real hardware: run with `MELO_PLAY_LATENCY=1` for `[play-latency]` lines that
 include a one-time `VERSION_PROBE` (the pure spawn+interpreter+import cost of
 the installed binary — subtract it from an `ATTEMPT` to isolate
-extraction+network), per-attempt timings, process stdout/stderr sizes, and
+extraction+network; it is fire-and-forget on a background goroutine and never
+delays a resolution), per-attempt timings, process stdout/stderr sizes, and
 parse time. `go run ./tools/playbench -ids <id1>,<id2>` produces the full
 matrix (spawn probe, cold, warm, expired-URL refresh, cache hit, failure) and
 can A/B candidate extractor arguments through the real resolver via

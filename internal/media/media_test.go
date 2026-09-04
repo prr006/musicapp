@@ -711,7 +711,7 @@ func TestResolverLatencyProbeRunsOnce(t *testing.T) {
 		}
 	})
 
-	t.Run("runs exactly once when enabled", func(t *testing.T) {
+	t.Run("runs exactly once when enabled (in the background)", func(t *testing.T) {
 		t.Setenv("MELO_PLAY_LATENCY", "1")
 		runner := &countingRunner{out: out}
 		res := NewResolver(runner)
@@ -720,11 +720,75 @@ func TestResolverLatencyProbeRunsOnce(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		waitForCounter(t, &runner.versions, 1, 2*time.Second)
+		waitForCounter(t, &runner.resolves, 3, 0)
 		if got := atomic.LoadInt32(&runner.versions); got != 1 {
 			t.Fatalf("probe must run exactly once, ran %d times", got)
 		}
-		if got := atomic.LoadInt32(&runner.resolves); got != 3 {
-			t.Fatalf("expected 3 real resolutions, got %d", got)
-		}
 	})
+}
+
+// slowVersionRunner makes --version artificially slow while real resolutions
+// return immediately, so a probe that blocks resolution is caught instantly.
+type slowVersionRunner struct {
+	out      []byte
+	versions int32
+	resolves int32
+}
+
+func (r *slowVersionRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
+	if len(args) == 1 && args[0] == "--version" {
+		atomic.AddInt32(&r.versions, 1)
+		select {
+		case <-time.After(800 * time.Millisecond):
+			return []byte("2026.08.19"), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	atomic.AddInt32(&r.resolves, 1)
+	return r.out, nil
+}
+
+// TestResolverLatencyProbeNeverBlocksResolution is the regression test for the
+// hot-path rule: the spawn-cost probe is diagnostics-only, so it must run in
+// the background. A first resolution that waited for an 800ms --version probe
+// would fail this test outright.
+func TestResolverLatencyProbeNeverBlocksResolution(t *testing.T) {
+	t.Setenv("MELO_PLAY_LATENCY", "1")
+	exp := time.Now().Add(time.Hour).Unix()
+	runner := &slowVersionRunner{out: infoJSON(t, exp, []map[string]any{audioFmt("140", "m4a", 128, exp)})}
+	res := NewResolver(runner)
+
+	start := time.Now()
+	if _, err := res.Resolve(context.Background(), "vid", "high"); err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(start)
+	if elapsed > 300*time.Millisecond {
+		t.Fatalf("resolution waited for the version probe: %s (probe must be background-only)", elapsed)
+	}
+	// The probe still completes exactly once, on its own schedule.
+	waitForCounter(t, &runner.versions, 1, 2*time.Second)
+	if got := atomic.LoadInt32(&runner.resolves); got != 1 {
+		t.Fatalf("expected exactly 1 real resolution, got %d", got)
+	}
+}
+
+func waitForCounter(t *testing.T, counter *int32, want int32, timeout time.Duration) {
+	t.Helper()
+	if timeout <= 0 {
+		if got := atomic.LoadInt32(counter); got != want {
+			t.Fatalf("counter = %d, want %d", got, want)
+		}
+		return
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(counter) == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for counter to reach %d (now %d)", want, atomic.LoadInt32(counter))
 }
