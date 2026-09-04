@@ -51,10 +51,15 @@ export const ui = {
     // Navigating dismisses the expanded Now Playing (and its lyrics pane) so the
     // route is immediately visible — even when the target is the route the user
     // is already on, the click still reveals it. The queue drawer stays put.
+    //
+    // A same-route navigate is a no-op for history: the forward stack survives,
+    // so focus-driven re-navigations (the search box auto-focuses when the
+    // search page opens, e.g. after Back) can never wipe the user's ability to
+    // press Forward afterwards.
     set({
       route,
       history: same ? get().history : [...get().history, current],
-      future: [],
+      future: same ? get().future : [],
       nowPlayingOpen: false,
       lyricsOpen: false,
     })

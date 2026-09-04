@@ -85,3 +85,18 @@ export function activeLineIndex(lines: LyricLine[], position: number, offset = 0
   }
   return ans
 }
+
+/**
+ * Defensive view-side cleanup for timed lines. The provider parses LRC, but a
+ * malformed payload can still reach the UI (NaN timestamps, negative values,
+ * out-of-order lines — the active-line binary search assumes ascending order).
+ * Invalid lines are dropped and the rest sorted; the renderer never crashes on
+ * bad timing data, it just shows the clean subset.
+ */
+export function sanitizeTimedLines(lines: LyricLine[] | undefined | null): LyricLine[] {
+  if (!lines || lines.length === 0) return []
+  const valid = lines.filter(
+    (l) => l && typeof l.time === 'number' && Number.isFinite(l.time) && l.time >= 0,
+  )
+  return valid.sort((a, b) => a.time - b.time)
+}

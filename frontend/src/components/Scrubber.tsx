@@ -48,6 +48,9 @@ export function Scrubber({ value, max, buffered = 0, disabled, ariaLabel, onChan
       aria-disabled={disabled}
       onKeyDown={(e) => {
         if (disabled) return
+        // Modifier+arrow belongs to global track navigation (Ctrl+←/→ =
+        // previous/next): don't consume it as a scrub step.
+        if (e.ctrlKey || e.metaKey || e.altKey) return
         if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
           e.preventDefault()
           onChange(Math.min(max, value + step))

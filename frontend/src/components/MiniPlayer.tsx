@@ -11,14 +11,26 @@ import {
 } from './Icons'
 import { Scrubber } from './Scrubber'
 
-/** Only this component re-renders on position ticks. */
+/**
+ * Only this component re-renders on position ticks. The right-hand readout
+ * shows the total duration; hovering, focusing or clicking it flips to the
+ * remaining time so both are available without adding a second row.
+ */
 function ProgressRow({ compact = false }: { compact?: boolean }) {
   const position = usePosition()
   const duration = useDuration()
   const buffered = useBuffered()
   const [preview, setPreview] = useState<number | null>(null)
+  const [hovered, setHovered] = useState(false)
+  const [pinnedRemaining, setPinnedRemaining] = useState(false)
   const disabled = usePlayer((s) => !s.current)
   const shown = preview ?? position
+  const showRemaining = duration > 0 && (hovered || pinnedRemaining)
+  const rightLabel = duration > 0
+    ? showRemaining
+      ? `−${formatTime(Math.max(0, duration - shown))}`
+      : formatTime(duration)
+    : '--:--'
 
   return (
     <div className="scrubber-row">
@@ -32,7 +44,25 @@ function ProgressRow({ compact = false }: { compact?: boolean }) {
         onChange={(v) => playback.seek(v)}
         onPreview={setPreview}
       />
-      <span className="time">{duration > 0 ? formatTime(duration) : '--:--'}</span>
+      <span
+        className={`time time-toggle ${showRemaining ? 'remaining' : ''}`}
+        title={duration > 0 ? (showRemaining ? 'Show total duration' : 'Show time remaining') : undefined}
+        tabIndex={duration > 0 ? 0 : -1}
+        aria-label={duration > 0 ? (showRemaining ? 'Time remaining' : 'Total duration') : 'Duration unknown'}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onFocus={() => setHovered(true)}
+        onBlur={() => setHovered(false)}
+        onClick={() => setPinnedRemaining((p) => !p)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            setPinnedRemaining((p) => !p)
+          }
+        }}
+      >
+        {rightLabel}
+      </span>
       {compact && null}
     </div>
   )

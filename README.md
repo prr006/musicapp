@@ -222,7 +222,13 @@ order) as a playlist.
 
 **Lyrics** — LRCLIB, synced (LRC) and plain, with instrumental / not-found /
 network-failure states handled distinctly. Highlighting is driven purely by the
-player's position and a per-track offset.
+player's position and a per-track offset. Synced lyrics auto-scroll with the
+current line centred, yield to manual scrolling (a "current line" pill offers an
+explicit return; following quietly resumes after a pause), and clicking a line
+seeks through the normal transport — no new radio generation, no queue reset, no
+duplicate history events. Malformed timing (NaN/negative/out-of-order stamps)
+is sanitised rather than trusted, and a "synced" answer without usable
+timestamps degrades to plain text instead of pretending to be synced.
 
 **Desktop integration** — global media keys (play/pause, next, previous, stop),
 a notification-area icon with a transport context menu (play/pause, next,
@@ -233,7 +239,12 @@ extra dependencies — and each piece degrades to "off" if Windows refuses it.
 
 **UI** — MELO's own dark/light identity (deep slate + ember accent, seven
 selectable accents), keyboard shortcuts, persistent mini player, Now Playing
-view, Home, Artist and Album pages.
+view, Home, Artist and Album pages. The mini player and the expanded Now
+Playing view are two presentations of one playback store — current track,
+play/pause, shuffle, repeat, like state and progress update instantly in both.
+The progress readout can flip between total duration and time remaining, and a
+focused scrubber owns its arrow keys (a global shortcut never double-applies
+them).
 
 Keyboard: `Ctrl/⌘+K` search · `Space` play/pause · `←/→` seek 5 s ·
 `Ctrl+←/→` prev/next · `↑/↓` volume · `M` mute · `S` shuffle · `R` repeat ·

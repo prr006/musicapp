@@ -9,6 +9,17 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable
 }
 
+/**
+ * A focused scrubber owns its arrow keys (seek ±5s / volume ±5%). The global
+ * handler must not re-apply them — otherwise one ArrowRight seeks twice (or
+ * nudges the volume AND the playhead). Non-arrow shortcuts still apply.
+ */
+function isSliderTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  if (!el || !el.closest) return false
+  return !!el.closest('[role="slider"]')
+}
+
 /** Global shortcuts. They mirror the list shown in Settings. */
 export function useKeyboardShortcuts(): void {
   const current = usePlayer((s) => s.current)
@@ -30,6 +41,13 @@ export function useKeyboardShortcuts(): void {
         return
       }
       if (typing) return
+
+      // The scrubber already handled plain arrows; modifiers (Ctrl/Cmd+arrow
+      // = previous/next track) still fall through to the global handler.
+      const onSlider = isSliderTarget(e.target)
+      if (onSlider && (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'ArrowDown') && !mod) {
+        return
+      }
 
       if (mod && e.key === 'ArrowRight') {
         e.preventDefault()

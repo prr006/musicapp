@@ -992,6 +992,25 @@ p {
   text-align: center;
 }
 
+/* Duration readout that flips to remaining time on hover/focus/click. */
+.time-toggle {
+  cursor: pointer;
+  user-select: none;
+  border-radius: 6px;
+  transition: color 140ms var(--ease), background-color 140ms var(--ease);
+}
+
+.time-toggle:hover,
+.time-toggle:focus-visible,
+.time-toggle.remaining {
+  color: var(--text-2);
+}
+
+.time-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* range/scrubber */
 
 .scrubber {
@@ -1196,12 +1215,19 @@ p {
   font-weight: 700;
   letter-spacing: -0.025em;
   line-height: 1.2;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .np-artist {
   color: var(--text-2);
   font-size: 15px;
   margin-top: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .np-artist button:hover {
@@ -1227,10 +1253,22 @@ p {
   height: 52px;
 }
 
+/* Grid cell that holds the scroller and the floating follow pill. */
+.lyrics-wrap {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .lyrics-pane {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding-right: 24px;
   mask-image: linear-gradient(to bottom, transparent, #000 8%, #000 88%, transparent);
+  scrollbar-width: thin;
 }
 
 .lyric-line {
@@ -1239,7 +1277,7 @@ p {
   letter-spacing: -0.015em;
   color: var(--text-3);
   padding: 9px 0;
-  transition: color 180ms var(--ease), transform 180ms var(--ease);
+  transition: color 180ms var(--ease), transform 180ms var(--ease), opacity 180ms var(--ease);
   transform-origin: left center;
   cursor: pointer;
   line-height: 1.35;
@@ -1251,11 +1289,44 @@ p {
 
 .lyric-line.active {
   color: var(--text);
+  font-weight: 680;
+  transform: scale(1.015);
 }
 
 .lyric-line.passed {
   color: var(--text-3);
-  opacity: 0.55;
+  opacity: 0.45;
+}
+
+/* Shown while auto-follow is suspended by manual scrolling. */
+.lyrics-follow-btn {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-2);
+  cursor: pointer;
+  transition: color 140ms var(--ease), border-color 140ms var(--ease), transform 140ms var(--ease);
+}
+
+.lyrics-follow-btn:hover,
+.lyrics-follow-btn:focus-visible {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  transform: translateX(-50%) translateY(-1px);
 }
 
 .lyric-plain {
@@ -1859,6 +1930,7 @@ select.input {
   .np-body {
     grid-template-columns: minmax(0, 1fr);
   }
+  .lyrics-wrap,
   .lyrics-pane {
     display: none;
   }
