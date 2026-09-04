@@ -1186,6 +1186,46 @@ describe('radio engine', () => {
 
   // ---------- same-anchor invariant (the SLAVA FUNK! regression) ----------
 
+  it('seed-song provenance: the artist text-search path is traceable end to end', async () => {
+    const h = harness()
+    // The Let Down (Orchestral Version) shape: /next answers only the seed
+    // echo (filtered by the backend) => zero provider candidates, so the
+    // last-resort artist search defines the radio.
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({ tracks: [], source: '' })
+    const artistSong = (id: string, title: string): Track =>
+      track(id, { title, artist: 'Alessandro Veloz', album: 'Orchestral EP', via: 'search:song', artistSrc: 'browse' })
+    const impostor = track('impostor', { title: 'Let Down', artist: 'Someone Else' })
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockImplementation(async (q: string) => ({
+      query: q,
+      songs: q.includes('Orchestral')
+        ? [artistSong('ov1', 'Let Down (Orchestral Reprise)'), impostor]
+        : [artistSong('av1', 'Veloz Song One'), artistSong('av2', 'Veloz Song Two')],
+      videos: [], albums: [], artists: [], provider: 'test',
+    }))
+
+    const seed = track('atvX', {
+      title: 'Let Down (Orchestral Version)', artist: 'Alessandro Veloz', album: 'Orchestral EP',
+    })
+    await h.controller.play(seed, { tracks: [seed], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThan(0))
+
+    // The exact queries: the seed's raw artist, then artist + album.
+    const queries = (h.backend.search as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]))
+    expect(queries).toEqual(['Alessandro Veloz', 'Alessandro Veloz Orchestral EP'])
+    // Song radio labels itself seed-song, never "more from this artist".
+    expect(state().radioSource).toBe('seed-song')
+    // Only identity-verified rows survived (the same-title impostor is out)…
+    expect(state().autoQueue.some((t) => t.id === 'yt:impostor')).toBe(false)
+    // …and the provider's own provenance fields ride along into the queue,
+    // so SEED-SOURCE CANDIDATE lines can be matched against real data.
+    const withProvenance = state().autoQueue.filter((t) => t.artist === 'Alessandro Veloz')
+    expect(withProvenance.length).toBeGreaterThanOrEqual(3)
+    for (const t of withProvenance) {
+      expect(t.via).toBe('search:song')
+      expect(t.artistSrc).toBe('browse')
+    }
+  })
+
   it('does not re-fetch the same anchor when the queue is empty: a completed generation is final', async () => {
     const h = harness()
     // The Windows shape: the provider answers only the seed echo, which the

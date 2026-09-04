@@ -913,18 +913,42 @@ export class PlaybackController {
     let fallbackCandidates: Track[] | null = null
     if (pools.length === 0) {
       const queries = this.fallbackArtistQueries(seed)
+      this.radioDebug(
+        `SEED-SOURCE START anchor=${seed.id} kind=${seed.kind} artist=${JSON.stringify(seed.rawArtist)} ` +
+        `queries=[${queries.map((q) => JSON.stringify(q)).join(', ')}]`,
+      )
       let candidates: Track[] = []
+      const byQuery: { query: string; list: Track[] }[] = []
       for (const query of queries) {
         if (candidates.length >= DISCOVERY_BATCH) break
         try {
           const res = await backend().search(query, 'songs')
           if (gen !== this.discoveryGen) return
-          candidates = dedupeTracks([...candidates, ...(res.songs ?? []), ...(res.videos ?? [])])
+          const batch = [...(res.songs ?? []), ...(res.videos ?? [])]
+          this.radioDebug(
+            `SEED-SOURCE QUERY/ENDPOINT=search(songs) q=${JSON.stringify(query)} got=${batch.length}`,
+          )
+          byQuery.push({ query, list: batch })
+          candidates = dedupeTracks([...candidates, ...batch])
         } catch {
           failed = true
+          this.radioDebug(`SEED-SOURCE QUERY/ENDPOINT=search(songs) q=${JSON.stringify(query)} FAILED`)
         }
       }
+      const raw = candidates.length
       candidates = candidates.filter((t) => verifiedSeedContext(t, seed))
+      this.radioDebug(
+        `SEED-SOURCE END endpoint=search(songs) candidateCount=${candidates.length} ` +
+        `verified=${candidates.length}/${raw} queueBefore=${playerState().autoQueue.length}`,
+      )
+      candidates.forEach((t, i) => {
+        const q = byQuery.find((b) => b.list.some((c) => c.id === t.id))?.query ?? '?'
+        this.radioDebug(
+          `SEED-SOURCE CANDIDATE pos=${i + 1} id=${t.id} title=${JSON.stringify(t.title)} ` +
+          `artist=${JSON.stringify(t.artist)}(${t.artistSrc ?? 'none'}) uploader=${JSON.stringify(t.uploader ?? '')} ` +
+          `via=${t.via ?? 'search'} anchor=${seed.id} query=${JSON.stringify(q)}`,
+        )
+      })
       if (candidates.length > 0) fallbackCandidates = candidates
     }
     if (gen !== this.discoveryGen) return
@@ -966,10 +990,40 @@ export class PlaybackController {
           seededIdentityCounts: seeded,
           queueTailArtists: auto.slice(-4).map(identityKeyOf),
         })
+    if (fresh.length > 0) {
+      // Contextual source label: a single feed is "based on this song";
+      // several contributing sources make it a session-driven radio.
+      const source = fallbackCandidates
+        ? seed.kind === 'artist'
+          ? 'seed-artist'
+          : 'seed-song'
+        : contributors.some((c) => c.endsWith('+drift'))
+          ? 'session-mix' // the listening session itself redirected the radio
+          : primarySource
+      this.radioDebug(`SOURCE=${source || primarySource} CANDIDATE=${fresh.map((t) => t.id).join(',')}`)
+      // THE insertion point: fresh candidates become the autoplay list here.
+      const queueBefore = playerState().autoQueue.length
+      setPlayerState({
+        autoQueue: dedupeTracks([...playerState().autoQueue, ...fresh]).slice(0, DISCOVERY_MAX),
+        radioSource: source || playerState().radioSource,
+      })
+      this.radioDebug(
+        `QUEUE BEFORE=${queueBefore} AFTER=${playerState().autoQueue.length} (inserted ${fresh.length}, capped at ${DISCOVERY_MAX})`,
+      )
+      this.discoveryWarned = false
+    } else if (failed) {
+      // Non-destructive: keep what we have and warn once; the next refill retries.
+      if (!this.discoveryWarned) {
+        this.discoveryWarned = true
+        ui.toast("Couldn't load more suggestions — will retry", 'error')
+      }
+    }
+
     // Anchor accounting (the same-anchor invariant): a generation that ran to
     // completion is final for its anchor — even with zero candidates. Only a
     // generation whose fetches FAILED may retry, bounded. Stale generations
-    // (superseded mid-flight) mark nothing.
+    // (superseded mid-flight) mark nothing. Logged AFTER insertion so the
+    // queue length reflects the generation's result.
     if (gen === this.discoveryGen) {
       if (failed && fresh.length === 0) {
         this.discoveryAnchorRetries.set(anchorId, (this.discoveryAnchorRetries.get(anchorId) ?? 0) + 1)
@@ -982,29 +1036,6 @@ export class PlaybackController {
         `AFTER DISCOVERY RESPONSE current=${after.current?.id} autoQueue=${after.autoQueue.length} ` +
         `gen=${gen} anchor=${anchorId} fresh=${fresh.length} outcome=${failed && fresh.length === 0 ? 'failed (retryable)' : 'complete'}`,
       )
-    }
-    if (fresh.length > 0) {
-      // Contextual source label: a single feed is "based on this song";
-      // several contributing sources make it a session-driven radio.
-      const source = fallbackCandidates
-        ? seed.kind === 'artist'
-          ? 'seed-artist'
-          : 'seed-song'
-        : contributors.some((c) => c.endsWith('+drift'))
-          ? 'session-mix' // the listening session itself redirected the radio
-          : primarySource
-      this.radioDebug(`SOURCE=${source || primarySource} CANDIDATE=${fresh.map((t) => t.id).join(',')}`)
-      setPlayerState({
-        autoQueue: dedupeTracks([...playerState().autoQueue, ...fresh]).slice(0, DISCOVERY_MAX),
-        radioSource: source || playerState().radioSource,
-      })
-      this.discoveryWarned = false
-    } else if (failed) {
-      // Non-destructive: keep what we have and warn once; the next refill retries.
-      if (!this.discoveryWarned) {
-        this.discoveryWarned = true
-        ui.toast("Couldn't load more suggestions — will retry", 'error')
-      }
     }
   }
 
