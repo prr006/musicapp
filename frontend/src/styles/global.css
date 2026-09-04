@@ -1408,8 +1408,14 @@ p {
 .tabs {
   display: flex;
   gap: 6px;
-  padding: 4px 0 22px;
+  padding: 4px 0 14px;
   flex-wrap: wrap;
+}
+
+/* Local library filtering — same field language as global search, bounded. */
+.library-filter {
+  max-width: 340px;
+  margin-bottom: 18px;
 }
 
 .chip {

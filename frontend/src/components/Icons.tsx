@@ -195,6 +195,13 @@ export const SettingsIcon = (p: Props) => (
   </Icon>
 )
 
+export const TrendingIcon = (p: Props) => (
+  <Icon {...p}>
+    <path d="M3 17l5-5 4 3 5-6" />
+    <path d="M14 9h4v4" />
+  </Icon>
+)
+
 export const ClockIcon = (p: Props) => (
   <Icon {...p}>
     <circle cx="12" cy="12" r="8.2" />

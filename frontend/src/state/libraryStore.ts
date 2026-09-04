@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { backend } from '../bridge/backend'
 import type { AppState, PlayEvent, PlayStats, Playlist, Settings, Taste, Track } from '../bridge/types'
+import { canonicalSongKey } from '../lib/radio'
 import { defaultSettings } from '../lib/defaults'
 
 export interface LibraryState {
@@ -72,12 +73,30 @@ export const library = {
   async toggleLike(track: Track): Promise<void> {
     const liked = !library.isLiked(track.id)
     const wasDisliked = library.isDisliked(track.id)
+    // Canonical identity: another upload of the same song (official video,
+    // lyric video, Topic channel…) is the SAME liked song — the freshest
+    // metadata wins and no duplicate library entry appears.
+    const canonicalKey = canonicalSongKey(track)
+    const canonicalDups = liked
+      ? get().liked.filter((t) => t.id !== track.id && canonicalSongKey(t) === canonicalKey)
+      : []
     // Optimistic: likes must feel instant. The backend result is authoritative.
     set((s) => ({
-      liked: liked ? [{ ...track, addedAt: Date.now() }, ...s.liked.filter((t) => t.id !== track.id)] : s.liked.filter((t) => t.id !== track.id),
+      liked: liked
+        ? [{ ...track, addedAt: Date.now() }, ...s.liked.filter((t) => t.id !== track.id && canonicalSongKey(t) !== canonicalKey)]
+        : s.liked.filter((t) => t.id !== track.id),
     }))
     const result = await backend().setLiked(track, liked)
     set({ liked: result ?? [] })
+    // Retire the superseded uploads in the persistent store too.
+    for (const dup of canonicalDups) {
+      try {
+        const merged = await backend().setLiked(dup, false)
+        if (merged) set({ liked: merged })
+      } catch {
+        set((s) => ({ liked: s.liked.filter((t) => t.id !== dup.id) }))
+      }
+    }
     // Like and dislike are mutually exclusive intents.
     if (liked && wasDisliked) await library.setDisliked(track, false)
   },

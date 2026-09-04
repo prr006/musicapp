@@ -3,7 +3,7 @@ import { create } from 'zustand'
 export type Route =
   | { name: 'home' }
   | { name: 'search' }
-  | { name: 'library'; tab: 'songs' | 'albums' | 'artists' | 'playlists' | 'liked' | 'recent' }
+  | { name: 'library'; tab: 'songs' | 'albums' | 'artists' | 'playlists' | 'liked' | 'recent' | 'most-played' }
   | { name: 'playlist'; id: string }
   | { name: 'album'; key: string }
   | { name: 'artist'; artist: string }

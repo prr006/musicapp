@@ -1,9 +1,9 @@
-import { useMemo } from 'react'
-import { AlbumIcon, ArtistIcon, ClockIcon, HeartIcon, MusicIcon, PlusIcon } from '../components/Icons'
+import { useMemo, useState } from 'react'
+import { AlbumIcon, ArtistIcon, ClockIcon, HeartIcon, MusicIcon, PlusIcon, SearchIcon, TrendingIcon } from '../components/Icons'
 import { MediaCard } from '../components/MediaCard'
 import { EmptyState } from '../components/States'
 import { TrackRow } from '../components/TrackRow'
-import { deriveAlbums, deriveArtists } from '../lib/derive'
+import { deriveAlbums, deriveArtists, mostPlayedTracks, primaryArtist } from '../lib/derive'
 import { relativeTime } from '../lib/format'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback } from '../state/playback'
@@ -14,16 +14,29 @@ type Tab = Extract<Route, { name: 'library' }>['tab']
 const TABS: { id: Tab; label: string }[] = [
   { id: 'songs', label: 'Songs' },
   { id: 'liked', label: 'Liked' },
-  { id: 'albums', label: 'Albums' },
-  { id: 'artists', label: 'Artists' },
-  { id: 'playlists', label: 'Playlists' },
   { id: 'recent', label: 'Recently played' },
+  { id: 'most-played', label: 'Most played' },
+  { id: 'artists', label: 'Artists' },
+  { id: 'albums', label: 'Albums' },
+  { id: 'playlists', label: 'Playlists' },
 ]
+
+/** Local, in-memory library filtering — the remote provider is never called. */
+function useLocalFilter<T>(items: T[], query: string, textOf: (item: T) => string): T[] {
+  return useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return items
+    return items.filter((item) => textOf(item).toLowerCase().includes(q))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, query])
+}
 
 export function LibraryView({ tab }: { tab: Tab }) {
   const liked = useLibraryStore((s) => s.liked)
   const playlists = useLibraryStore((s) => s.playlists)
   const history = useLibraryStore((s) => s.history)
+  const stats = useLibraryStore((s) => s.stats)
+  const [query, setQuery] = useState('')
 
   const allTracks = useMemo(() => {
     const seen = new Set<string>()
@@ -43,6 +56,17 @@ export function LibraryView({ tab }: { tab: Tab }) {
     const seen = new Set<string>()
     return history.filter((h) => (seen.has(h.track.id) ? false : (seen.add(h.track.id), true)))
   }, [history])
+
+  const mostPlayed = useMemo(() => mostPlayedTracks(history, stats), [history, stats])
+
+  // Local filtering per tab (never a remote call).
+  const visibleTracks = useLocalFilter(allTracks, query, (t) => `${t.title} ${t.artist}`)
+  const visibleLiked = useLocalFilter(liked, query, (t) => `${t.title} ${t.artist}`)
+  const visibleAlbums = useLocalFilter(albums, query, (a) => `${a.title} ${a.artist}`)
+  const visibleArtists = useLocalFilter(artists, query, (a) => a.name)
+  const visiblePlaylists = useLocalFilter(playlists, query, (p) => p.name)
+  const visibleRecent = useLocalFilter(recent, query, (r) => `${r.track.title} ${r.track.artist}`)
+  const visibleMostPlayed = useLocalFilter(mostPlayed, query, (m) => `${m.track.title} ${m.track.artist}`)
 
   return (
     <div className="page">
@@ -64,6 +88,17 @@ export function LibraryView({ tab }: { tab: Tab }) {
         ))}
       </div>
 
+      <div className="search-field library-filter">
+        <SearchIcon size={15} />
+        <input
+          type="search"
+          aria-label="Search your library"
+          placeholder="Search your library"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
       {tab === 'songs' && (
         allTracks.length === 0 ? (
           <EmptyState icon={<MusicIcon size={20} />} title="No songs yet" message="Songs you play, like or add to a playlist collect here." />
@@ -78,14 +113,17 @@ export function LibraryView({ tab }: { tab: Tab }) {
               </button>
             </div>
             <div className="track-list">
-              {allTracks.map((track, i) => (
+              {visibleTracks.map((track, i) => (
                 <TrackRow
                   key={track.id}
                   track={track}
                   index={i}
-                  onPlay={() => void playback.play(track, { tracks: allTracks, index: i, label: 'Songs' })}
+                  onPlay={() => void playback.play(track, { tracks: visibleTracks, index: i, label: 'Songs' })}
                 />
               ))}
+              {visibleTracks.length === 0 && (
+                <EmptyState icon={<MusicIcon size={20} />} title="No matches" message={`No songs in your library match “${query}”.`} />
+              )}
             </div>
           </>
         )
@@ -93,7 +131,7 @@ export function LibraryView({ tab }: { tab: Tab }) {
 
       {tab === 'liked' && (
         liked.length === 0 ? (
-          <EmptyState icon={<HeartIcon size={20} />} title="No liked songs" message="Tap the heart on any song to save it here." />
+          <EmptyState icon={<HeartIcon size={20} />} title="No liked songs yet" message="Songs you like will appear here." />
         ) : (
           <>
             <div className="detail-actions">
@@ -112,14 +150,17 @@ export function LibraryView({ tab }: { tab: Tab }) {
               </button>
             </div>
             <div className="track-list">
-              {liked.map((track, i) => (
+              {visibleLiked.map((track, i) => (
                 <TrackRow
                   key={track.id}
                   track={track}
                   index={i}
-                  onPlay={() => void playback.play(track, { tracks: liked, index: i, label: 'Liked Songs' })}
+                  onPlay={() => void playback.play(track, { tracks: visibleLiked, index: i, label: 'Liked Songs' })}
                 />
               ))}
+              {visibleLiked.length === 0 && query && (
+                <EmptyState icon={<HeartIcon size={20} />} title="No matches" message={`No liked songs match “${query}”.`} />
+              )}
             </div>
           </>
         )
@@ -127,10 +168,10 @@ export function LibraryView({ tab }: { tab: Tab }) {
 
       {tab === 'albums' && (
         albums.length === 0 ? (
-          <EmptyState icon={<AlbumIcon size={20} />} title="No albums yet" message="Albums appear when the songs in your library carry album metadata." />
+          <EmptyState icon={<AlbumIcon size={20} />} title="No albums yet" message="Albums from your library will appear here — songs need album metadata to group." />
         ) : (
           <div className="card-grid">
-            {albums.map((album) => (
+            {visibleAlbums.map((album) => (
               <MediaCard
                 key={album.id}
                 title={album.title}
@@ -146,20 +187,30 @@ export function LibraryView({ tab }: { tab: Tab }) {
 
       {tab === 'artists' && (
         artists.length === 0 ? (
-          <EmptyState icon={<ArtistIcon size={20} />} title="No artists yet" message="Artists are derived from the songs in your library." />
+          <EmptyState icon={<ArtistIcon size={20} />} title="No artists yet" message="Artists from your library will appear here." />
         ) : (
           <div className="card-grid">
-            {artists.map((artist) => (
-              <MediaCard
-                key={artist.id}
-                title={artist.name}
-                subtitle={`${artist.tracks?.length ?? 0} song${artist.tracks?.length === 1 ? '' : 's'}`}
-                artwork={artist.artwork}
-                round
-                onOpen={() => ui.navigate({ name: 'artist', artist: artist.name })}
-                onPlay={() => void playback.playAll(artist.tracks ?? [], artist.name)}
-              />
-            ))}
+            {visibleArtists.map((artist) => {
+              const likedCount = liked.filter(
+                (t) => primaryArtist(t.artist).toLowerCase() === artist.id && t.artist,
+              ).length
+              const songs = artist.tracks?.length ?? 0
+              const subtitle =
+                likedCount > 0
+                  ? `${songs} song${songs === 1 ? '' : 's'} · ${likedCount} liked`
+                  : `${songs} song${songs === 1 ? '' : 's'}`
+              return (
+                <MediaCard
+                  key={artist.id}
+                  title={artist.name}
+                  subtitle={subtitle}
+                  artwork={artist.artwork}
+                  round
+                  onOpen={() => ui.navigate({ name: 'artist', artist: artist.name })}
+                  onPlay={() => void playback.playAll(artist.tracks ?? [], artist.name)}
+                />
+              )
+            })}
           </div>
         )
       )}
@@ -178,7 +229,7 @@ export function LibraryView({ tab }: { tab: Tab }) {
           />
         ) : (
           <div className="card-grid">
-            {playlists.map((pl) => (
+            {visiblePlaylists.map((pl) => (
               <MediaCard
                 key={pl.id}
                 title={pl.name}
@@ -194,7 +245,7 @@ export function LibraryView({ tab }: { tab: Tab }) {
 
       {tab === 'recent' && (
         recent.length === 0 ? (
-          <EmptyState icon={<ClockIcon size={20} />} title="Nothing played yet" message="Your listening history is recorded as you play." />
+          <EmptyState icon={<ClockIcon size={20} />} title="Nothing played yet" message="Your listening history will appear here." />
         ) : (
           <>
             <div className="detail-actions">
@@ -210,14 +261,14 @@ export function LibraryView({ tab }: { tab: Tab }) {
               </button>
             </div>
             <div className="track-list">
-              {recent.map((record, i) => (
+              {visibleRecent.map((record, i) => (
                 <TrackRow
                   key={`${record.track.id}-${record.playedAt}`}
                   track={record.track}
                   index={i}
                   onPlay={() =>
                     void playback.play(record.track, {
-                      tracks: recent.map((r) => r.track),
+                      tracks: visibleRecent.map((r) => r.track),
                       index: i,
                       label: 'Recently played',
                     })
@@ -225,6 +276,48 @@ export function LibraryView({ tab }: { tab: Tab }) {
                   trailing={<span className="muted">{relativeTime(record.playedAt)}</span>}
                 />
               ))}
+            </div>
+          </>
+        )
+      )}
+
+      {tab === 'most-played' && (
+        mostPlayed.length === 0 ? (
+          <EmptyState
+            icon={<TrendingIcon size={20} />}
+            title="Nothing played yet"
+            message="Keep listening and MELO will build your most-played list."
+          />
+        ) : (
+          <>
+            <div className="detail-actions">
+              <button
+                className="btn primary"
+                onClick={() => void playback.playAll(mostPlayed.map((m) => m.track), 'Most played')}
+                type="button"
+              >
+                Play
+              </button>
+            </div>
+            <div className="track-list">
+              {visibleMostPlayed.map(({ track, plays }, i) => (
+                <TrackRow
+                  key={track.id}
+                  track={track}
+                  index={i}
+                  onPlay={() =>
+                    void playback.play(track, {
+                      tracks: visibleMostPlayed.map((m) => m.track),
+                      index: i,
+                      label: 'Most played',
+                    })
+                  }
+                  trailing={<span className="muted">{plays} play{plays === 1 ? '' : 's'}</span>}
+                />
+              ))}
+              {visibleMostPlayed.length === 0 && query && (
+                <EmptyState icon={<TrendingIcon size={20} />} title="No matches" message={`Nothing in your most-played matches “${query}”.`} />
+              )}
             </div>
           </>
         )

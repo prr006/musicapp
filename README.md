@@ -196,7 +196,22 @@ boost a song and its artist in ranking, dislikes exclude it, and a skip is a
 weaker penalty than a dislike (an accidental skip never blacklists a song).
 Home surfaces Recently played and Most played from the same data.
 
-**Library** — Liked Songs, Songs, Albums, Artists, Playlists, Recently Played.
+**Library** — one page, seven sections: Songs, Liked Songs, Recently Played,
+Most Played, Artists, Albums and Playlists. Everything is derived from the
+local store — likes, the bounded listening history and per-track play
+statistics — and persists across restarts. Likes are canonically deduped
+(another upload of the same song updates the entry instead of duplicating
+it) and instantly reflected in both directions. Most Played is a pure
+selector over the persisted play counts (plays → recency → title,
+deterministic, nothing recomputed in the UI); Recently Played shows the
+deduped history newest-first. Artists come only from real artist metadata
+(uploader/channel names never become artists), albums only from tracks that
+actually carry album metadata, and both navigate to their existing detail
+pages. The page has local-only filtering across every section — the remote
+provider is never called for library search — plus intentional empty states
+per section. Library rows reuse the standard actions (Play, Play Next, Add
+to Queue, Start Radio, Like) through the global User Queue/Autoplay
+architecture.
 Albums and artists are *derived from real track metadata only*; nothing is
 invented to fill a grid. Opening an album or artist you don't actually have shows
 an explicit empty state.

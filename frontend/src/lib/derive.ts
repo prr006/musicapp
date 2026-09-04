@@ -1,4 +1,4 @@
-import type { Album, Artist, Track } from '../bridge/types'
+import type { Album, Artist, PlayRecord, PlayStats, Track } from '../bridge/types'
 
 /**
  * Albums and artists are derived from the metadata the provider actually gave
@@ -64,4 +64,32 @@ export function findAlbum(tracks: Track[], key: string): Album | null {
 export function findArtist(tracks: Track[], name: string): Artist | null {
   const key = name.toLowerCase()
   return deriveArtists(tracks).find((a) => a.id === key) ?? null
+}
+
+/**
+ * Most-played tracks from the persisted per-track statistics — deterministic,
+ * no recomputation: play count first, then most recently played, then title.
+ * Tracks are deduped by id (the newest history record supplies the metadata).
+ */
+export function mostPlayedTracks(
+  history: PlayRecord[],
+  stats: Record<string, PlayStats>,
+  limit = 50,
+): { track: Track; plays: number }[] {
+  const byId = new Map<string, Track>()
+  for (const record of history) {
+    if (!byId.has(record.track.id)) byId.set(record.track.id, record.track)
+  }
+  const out: { track: Track; plays: number }[] = []
+  for (const [id, track] of byId) {
+    const plays = stats[id]?.playCount ?? 0
+    if (plays > 0) out.push({ track, plays })
+  }
+  out.sort(
+    (a, b) =>
+      b.plays - a.plays ||
+      (stats[b.track.id]?.lastPlayedAt ?? 0) - (stats[a.track.id]?.lastPlayedAt ?? 0) ||
+      a.track.title.localeCompare(b.track.title),
+  )
+  return out.slice(0, limit)
 }
