@@ -1315,3 +1315,111 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// ---------- provenance instrumentation for the K5v9A-uye6I diagnosis ----------
+
+// The exact real shape reported from Windows: the seed-echo panel row of
+// "Killers from the Northside - Kordhell" (video K5v9A-uye6I) carries its
+// byline run "The Naghera" WITH a browse id — the uploading CHANNEL page,
+// which also starts with UC. This test DOCUMENTS the current (wrong)
+// behaviour: the run is promoted to Artist via the UC-browse branch and
+// Uploader stays empty. It pins the behaviour so the upcoming identity fix
+// must update it consciously.
+func TestPanelRowDocumentsChannelBrowsePromotion(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"contents": map[string]any{"singleColumnMusicWatchNextResultsRenderer": map[string]any{
+			"playlist": map[string]any{"playlist": map[string]any{"contents": []map[string]any{
+				{"playlistPanelVideoRenderer": map[string]any{
+					"videoId": "K5v9A-uye6I",
+					"title":   map[string]any{"runs": []map[string]any{{"text": "Killers from the Northside - Kordhell"}}},
+					"longBylineText": map[string]any{"runs": []map[string]any{
+						{"text": "The Naghera", "navigationEndpoint": map[string]any{
+							"browseEndpoint": map[string]any{"browseId": "UCthenaghera"}}},
+						{"text": " • "}, {"text": "3:41"}}},
+				}},
+			}}}},
+		},
+	})
+	res, err := ParseNextResponse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Tracks) != 1 {
+		t.Fatalf("expected the echo row, got %d", len(res.Tracks))
+	}
+	row := res.Tracks[0]
+	// Documented current behaviour (the mis-identification):
+	if row.Artist != "The Naghera" || row.ArtistSrc != "browse" || row.Uploader != "" {
+		t.Fatalf("documented behaviour changed: %+v", row)
+	}
+	// The instrumentation must expose the raw evidence: the browse id that
+	// was treated as an artist link.
+	if row.ArtistBrowseID != "UCthenaghera" {
+		t.Fatalf("artist browse id not captured: %+v", row)
+	}
+}
+
+func TestProvenanceCapturesBrowseIDs(t *testing.T) {
+	res, err := ParseNextResponse([]byte(nextFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// rel222: artist run UC12345 + album run MPREb_9999.
+	var rel model.Track
+	for _, tr := range res.Tracks {
+		if tr.SourceID == "rel222" {
+			rel = tr
+		}
+	}
+	if rel.ArtistBrowseID != "UC12345" || rel.AlbumBrowseID != "MPREb_9999" {
+		t.Fatalf("browse ids not captured: %+v", rel)
+	}
+	// Search rows capture them too.
+	sres, err := ParseSearchResponse([]byte(innerTubeFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sres.Songs) == 0 || sres.Songs[0].ArtistBrowseID != "UC12345" {
+		t.Fatalf("search song browse id not captured: %+v", sres.Songs)
+	}
+}
+
+// The diagnosis report must include a section for EVERY source — even the
+// ones that answer nothing — plus the automix-preview absence and the yt-dlp
+// skip reason.
+func TestDiagnoseRelatedReportsEmptySources(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"contents": {}}`))
+	}))
+	defer srv.Close()
+	c := New(&fakeRunner{})
+	c.NextEndpoint = srv.URL
+	stages, err := c.DiagnoseRelated(context.Background(), "K5v9A-uye6I")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]RadioStage{}
+	for _, st := range stages {
+		kinds[st.Kind] = st
+	}
+	for _, want := range []string{"queue", "related-videos", "music-shelves", "tiles", "automix", "radio", "ytdlp-mix"} {
+		if _, ok := kinds[want]; !ok {
+			t.Fatalf("diagnosis must report source %q even when empty; got %v", want, stageKinds(stages))
+		}
+	}
+	if !strings.Contains(kinds["automix"].Note, "ABSENT") {
+		t.Fatalf("automix preview absence must be reported: %q", kinds["automix"].Note)
+	}
+	if !strings.Contains(kinds["ytdlp-mix"].Note, "no yt-dlp runner") && !strings.Contains(kinds["ytdlp-mix"].Note, "failed") {
+		t.Fatalf("yt-dlp skip reason must be reported: %q", kinds["ytdlp-mix"].Note)
+	}
+}
+
+func stageKinds(stages []RadioStage) []string {
+	out := []string{}
+	for _, st := range stages {
+		out = append(out, st.Kind)
+	}
+	return out
+}

@@ -194,10 +194,16 @@ func ParseSearchResponse(raw []byte) (model.SearchResponse, error) {
 				case durationRe.MatchString(r.Text):
 					t.Duration = parseClock(r.Text)
 				case strings.HasPrefix(r.BrowseID, "MPRE"):
-					t.Album = r.Text
+					if t.Album == "" {
+						t.Album = r.Text
+						t.AlbumBrowseID = r.BrowseID
+					}
 				case strings.HasPrefix(r.BrowseID, "UC"):
 					artistParts = append(artistParts, r.Text)
 					t.ArtistSrc = "browse"
+					if t.ArtistBrowseID == "" {
+						t.ArtistBrowseID = r.BrowseID
+					}
 				}
 			}
 			if len(artistParts) == 0 {
@@ -210,6 +216,7 @@ func ParseSearchResponse(raw []byte) (model.SearchResponse, error) {
 						continue
 					}
 					channel = r.Text
+					t.UploaderChannelID = r.BrowseID
 					break
 				}
 				if artist, ok := artistFromChannel(channel); ok {
@@ -523,8 +530,9 @@ func artistFromChannel(channel string) (artist string, ok bool) {
 // endpoint produced it, and the candidates it yielded (each row carrying
 // provenance in Track.Via and Track.ArtistSrc).
 type RadioStage struct {
-	Kind     string // "queue","automix","radio","ytdlp-mix"
+	Kind     string // "queue","automix","radio","ytdlp-mix",…
 	Endpoint string // human-readable description of the request
+	Note     string // diagnostics: why an empty stage is empty
 	Tracks   []model.Track
 }
 
@@ -541,7 +549,7 @@ func (c *Client) Related(ctx context.Context, videoID string) (model.RadioRespon
 		return model.RadioResponse{}, nil
 	}
 	stages, err := c.innerTubeStages(ctx, videoID, false)
-	if len(stages) == 0 || needsBroaderSources(stages) {
+	if len(stages) == 0 || NeedsBroaderSources(stages) {
 		// Last network rung: the auto-generated mix playlist RD<videoID>
 		// dumped flat via yt-dlp — fetched only when InnerTube answered
 		// nothing usable, or when every InnerTube stage is artist-heavy.
@@ -562,21 +570,152 @@ func (c *Client) Related(ctx context.Context, videoID string) (model.RadioRespon
 	return stageResponse(SelectRadioStages(stages)), nil
 }
 
-// DiagnoseRelated fetches every recommendation source for a video SEPARATELY
-// (videoId /next, automix continuation, RDAMVM song radio, yt-dlp mix) and
-// returns the raw stages without any selection — the evidence for debugging
-// "why does song radio look like artist radio?" on a machine with real
-// YouTube access. tools/radiodiag prints the full report.
+// DiagnoseRelated fetches EVERY recommendation source for a video SEPARATELY
+// and returns one stage per source — including sources that answer nothing,
+// so the report shows the full pipeline rather than the first hit:
+//
+//	queue / related-videos / music-shelves / tiles — the four surfaces of
+//	    the videoId /next response, each its own stage (empty ones kept);
+//	automix — the automixPreviewVideoRenderer continuation (the stage's Note
+//	    records whether the preview existed at all);
+//	continuation — up to two extra continuation requests the response itself
+//	    generated (continuationItemRenderer tokens);
+//	radio — the RDAMVM<videoID> song-radio playlist;
+//	ytdlp-mix — the RD<videoID> mix via yt-dlp (Note records why it was
+//	    skipped when it was).
+//
+// No selection or filtering is applied: this is the raw evidence for
+// reconciling "the diagnostic says X" with "the app played Y".
 func (c *Client) DiagnoseRelated(ctx context.Context, videoID string) ([]RadioStage, error) {
-	stages, err := c.innerTubeStages(ctx, strings.TrimSpace(videoID), true)
-	if mix, ferr := c.relatedYTDLP(ctx, strings.TrimSpace(videoID)); ferr == nil && len(mix.Tracks) > 0 {
+	videoID = strings.TrimSpace(videoID)
+	clientCtx := map[string]any{
+		"context": map[string]any{
+			"client": map[string]any{
+				"clientName":    clientName,
+				"clientVersion": clientVer,
+				"hl":            "en",
+				"gl":            "US",
+			},
+		},
+	}
+	stages := []RadioStage{}
+	raw, err := c.postNext(ctx, mergeMaps(clientCtx, map[string]any{"videoId": videoID}))
+	if err != nil {
+		stages = append(stages, RadioStage{Kind: "queue", Endpoint: "next(videoId " + videoID + ")",
+			Note: "request failed: " + err.Error()})
+		return stages, err
+	}
+	surfaces, perr := parseNextSurfaces(raw)
+	if perr != nil {
+		stages = append(stages, RadioStage{Kind: "queue", Endpoint: "next(videoId " + videoID + ")",
+			Note: "malformed payload: " + perr.Error()})
+		return stages, perr
+	}
+	for _, kind := range nextSurfaceOrder {
 		stages = append(stages, RadioStage{
-			Kind:     "ytdlp-mix",
-			Endpoint: "yt-dlp playlist RD" + videoID,
-			Tracks:   mix.Tracks,
+			Kind:     kind,
+			Endpoint: "next(videoId " + videoID + ")",
+			Note:     rendererForSurface[kind] + ": " + itoa(len(surfaces[kind])) + " rows",
+			Tracks:   surfaces[kind],
 		})
 	}
-	return stages, err
+
+	var root any
+	_ = json.Unmarshal(raw, &root)
+
+	// automix preview: present or not, and what its continuation answers.
+	previews := []map[string]any{}
+	collect(root, "automixPreviewVideoRenderer", &previews)
+	automix := RadioStage{Kind: "automix", Endpoint: "next(automixPreviewVideoRenderer continuation)"}
+	if len(previews) == 0 {
+		automix.Note = "automixPreviewVideoRenderer: ABSENT in the videoId response"
+	} else {
+		token := continuationToken(previews[0])
+		if token == "" {
+			automix.Note = "automixPreviewVideoRenderer present but carries NO continuation token"
+		} else {
+			automix.Note = "automixPreviewVideoRenderer present, continuation followed"
+			if next, cerr := c.postNext(ctx, mergeMaps(clientCtx, map[string]any{"continuation": token})); cerr == nil {
+				if mixSurfaces, mperr := parseNextSurfaces(next); mperr == nil {
+					for _, kind := range nextSurfaceOrder {
+						automix.Tracks = append(automix.Tracks, mixSurfaces[kind]...)
+					}
+				}
+			} else {
+				automix.Note += " (request failed: " + cerr.Error() + ")"
+			}
+		}
+	}
+	stages = append(stages, automix)
+
+	// any other continuations the response generated (shelf continuation
+	// items), bounded to keep the report quick.
+	items := []map[string]any{}
+	collect(root, "continuationItemRenderer", &items)
+	fetched := 0
+	for _, item := range items {
+		if fetched >= 2 {
+			break
+		}
+		token := continuationToken(item)
+		if token == "" {
+			continue
+		}
+		fetched++
+		stage := RadioStage{
+			Kind:     "continuation",
+			Endpoint: "next(continuationItemRenderer token " + token[:min(12, len(token))] + "…)",
+		}
+		if next, cerr := c.postNext(ctx, mergeMaps(clientCtx, map[string]any{"continuation": token})); cerr == nil {
+			if cs, cperr := parseNextSurfaces(next); cperr == nil {
+				for _, kind := range nextSurfaceOrder {
+					stage.Tracks = append(stage.Tracks, cs[kind]...)
+				}
+			}
+		} else {
+			stage.Note = "request failed: " + cerr.Error()
+		}
+		stages = append(stages, stage)
+	}
+
+	// RDAMVM song radio.
+	radio := RadioStage{Kind: "radio", Endpoint: "next(RDAMVM" + videoID + ")"}
+	if rraw, rerr := c.postNext(ctx, mergeMaps(clientCtx, map[string]any{"playlistId": "RDAMVM" + videoID})); rerr == nil {
+		if rs, rperr := parseNextSurfaces(rraw); rperr == nil {
+			for _, kind := range nextSurfaceOrder {
+				radio.Tracks = append(radio.Tracks, rs[kind]...)
+			}
+			radio.Note = "RDAMVM song-radio playlist"
+		} else {
+			radio.Note = "malformed payload: " + rperr.Error()
+		}
+	} else {
+		radio.Note = "request failed: " + rerr.Error()
+	}
+	stages = append(stages, radio)
+
+	// yt-dlp mix, if a runner is wired.
+	mix := RadioStage{Kind: "ytdlp-mix", Endpoint: "yt-dlp playlist RD" + videoID}
+	if c.YTDLP == nil {
+		mix.Note = "not attempted: no yt-dlp runner configured"
+	} else if m, merr := c.relatedYTDLP(ctx, videoID); merr == nil {
+		mix.Tracks = m.Tracks
+		mix.Note = "RD mix dumped flat"
+	} else {
+		mix.Note = "failed: " + merr.Error()
+	}
+	stages = append(stages, mix)
+
+	return stages, nil
+}
+
+func itoa(n int) string { return fmt.Sprintf("%d", n) }
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // innerTubeStages runs the InnerTube ladder, keeping each stage separate:
@@ -616,7 +755,7 @@ func (c *Client) innerTubeStages(ctx context.Context, videoID string, diag bool)
 			stages = append(stages, RadioStage{Kind: kind, Endpoint: "next(videoId " + videoID + ")", Tracks: tracks})
 		}
 	}
-	if !diag && len(stages) > 0 && !needsBroaderSources(stages) {
+	if !diag && len(stages) > 0 && !NeedsBroaderSources(stages) {
 		return stages, nil
 	}
 
@@ -647,7 +786,7 @@ func (c *Client) innerTubeStages(ctx context.Context, videoID string, diag bool)
 		}
 		if len(mixTracks) > 0 {
 			stages = append(stages, RadioStage{Kind: "automix", Endpoint: "next(automix continuation)", Tracks: mixTracks})
-			if !diag && !needsBroaderSources(stages) {
+			if !diag && !NeedsBroaderSources(stages) {
 				return stages, nil
 			}
 			break
@@ -676,11 +815,12 @@ func (c *Client) innerTubeStages(ctx context.Context, videoID string, diag bool)
 	return stages, nil
 }
 
-// needsBroaderSources reports whether the candidate stages fail the Song
-// Radio rule as they stand: nothing usable at all, the LEADING stage (the one
+// NeedsBroaderSources reports whether the candidate stages fail the Song
+// Radio rule as they stand (exported for the diagnostics tool, which mirrors
+// the production stop point): nothing usable at all, the LEADING stage (the one
 // that would define the top of the queue) is an artist wall, or the merged
 // feed is artist-dominated. A mixed tail must not mask an artist-heavy lead.
-func needsBroaderSources(stages []RadioStage) bool {
+func NeedsBroaderSources(stages []RadioStage) bool {
 	if len(stages) == 0 {
 		return true
 	}
@@ -698,7 +838,7 @@ func needsBroaderSources(stages []RadioStage) bool {
 // remaining stages follow behind with their internal order untouched. If no
 // stage is mixed, the order stands — YouTube offered nothing broader.
 func SelectRadioStages(stages []RadioStage) []RadioStage {
-	if len(stages) < 2 || !needsBroaderSources(stages) {
+	if len(stages) < 2 || !NeedsBroaderSources(stages) {
 		return stages
 	}
 	best := -1
@@ -1021,12 +1161,19 @@ func trackFromPanel(it map[string]any) model.Track {
 		case strings.HasPrefix(r.BrowseID, "MPRE"):
 			if t.Album == "" {
 				t.Album = r.Text
+				t.AlbumBrowseID = r.BrowseID
 			}
 		case strings.HasPrefix(r.BrowseID, "UC"):
 			// A browse endpoint into an artist channel is the provider
-			// explicitly identifying the performing artist.
+			// explicitly identifying the performing artist. (Diagnostics
+			// record the raw id: personal channel pages also carry UC ids,
+			// which is exactly what the seed-echo mis-identification
+			// surfaced.)
 			artistParts = append(artistParts, r.Text)
 			t.ArtistSrc = "browse"
+			if t.ArtistBrowseID == "" {
+				t.ArtistBrowseID = r.BrowseID
+			}
 		}
 	}
 	if len(artistParts) == 0 {
@@ -1038,6 +1185,7 @@ func trackFromPanel(it map[string]any) model.Track {
 				continue
 			}
 			channel = r.Text
+			t.UploaderChannelID = r.BrowseID
 			break
 		}
 		if artist, ok := artistFromChannel(channel); ok {
@@ -1077,16 +1225,20 @@ func trackFromCompactVideo(it map[string]any) (model.Track, bool) {
 	}
 	byline := panelBylineRuns(it)
 	channel := ""
+	channelID := ""
 	for _, r := range byline {
 		if isTypeLabel(r.Text) || durationRe.MatchString(r.Text) || viewsRe.MatchString(r.Text) {
 			continue
 		}
 		channel = r.Text
+		channelID = r.BrowseID
 		break
 	}
+	t.UploaderChannelID = channelID
 	if artist, ok := artistFromChannel(channel); ok {
 		t.Artist = artist
 		t.ArtistSrc = "topic"
+		t.ArtistBrowseID = channelID
 	}
 	t.Uploader = channel
 	return t, true
@@ -1126,10 +1278,14 @@ func trackFromWatchListItem(it map[string]any) (model.Track, bool) {
 		case strings.HasPrefix(r.BrowseID, "MPRE"):
 			if t.Album == "" {
 				t.Album = r.Text
+				t.AlbumBrowseID = r.BrowseID
 			}
 		case strings.HasPrefix(r.BrowseID, "UC"):
 			artistParts = append(artistParts, r.Text)
 			t.ArtistSrc = "browse"
+			if t.ArtistBrowseID == "" {
+				t.ArtistBrowseID = r.BrowseID
+			}
 		}
 	}
 	if len(artistParts) == 0 {
@@ -1138,6 +1294,7 @@ func trackFromWatchListItem(it map[string]any) (model.Track, bool) {
 				continue
 			}
 			channel = r.Text
+			t.UploaderChannelID = r.BrowseID
 			break
 		}
 		if artist, ok := artistFromChannel(channel); ok {
@@ -1179,16 +1336,19 @@ func trackFromTile(it map[string]any) (model.Track, bool) {
 		}
 		if channel == "" {
 			channel = r.Text
+			t.UploaderChannelID = r.BrowseID
 			continue
 		}
 		if t.Album == "" && !strings.Contains(r.Text, "view") && !strings.Contains(r.Text, "subscriber") {
 			t.Album = r.Text
+			t.AlbumBrowseID = r.BrowseID
 		}
 		break
 	}
 	if artist, ok := artistFromChannel(channel); ok {
 		t.Artist = artist
 		t.ArtistSrc = "topic"
+		t.ArtistBrowseID = t.UploaderChannelID
 	}
 	t.Uploader = channel
 	return t, true

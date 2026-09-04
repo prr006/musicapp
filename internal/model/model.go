@@ -30,6 +30,15 @@ type Track struct {
 	// Via records which renderer/endpoint produced the row, e.g.
 	// "playlistPanelVideoRenderer" or "compactVideoRenderer".
 	Via string `json:"via,omitempty"`
+	// ArtistBrowseID is the raw browse id of the first artist-linked run
+	// (diagnostics only — a UC id here does NOT by itself prove an artist:
+	// personal channel pages carry UC ids too).
+	ArtistBrowseID string `json:"artistBrowseId,omitempty"`
+	// UploaderChannelID is the raw channel browse id of the uploader run
+	// (diagnostics only).
+	UploaderChannelID string `json:"uploaderChannelId,omitempty"`
+	// AlbumBrowseID is the raw MPRE browse id of the album run (diagnostics only).
+	AlbumBrowseID string `json:"albumBrowseId,omitempty"`
 }
 
 // SearchResult groups provider results by kind so the UI can render sections.
