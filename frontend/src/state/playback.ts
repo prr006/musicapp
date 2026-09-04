@@ -45,6 +45,26 @@ const SESSION_SAVE_DEBOUNCE = 1500
 const PLAYABLE_TTL_MS = 5 * 60_000
 const PLAYABLE_CACHE_MAX = 3
 const PREFETCH_DELAY_MS = 1500
+
+// ---- click-to-play diagnostics ([play-latency]) ----
+//
+// Opt-in via localStorage.setItem('melo:play-latency', '1') (or the
+// MELO_PLAY_LATENCY env var for the Go-side resolver lines). Completely silent
+// otherwise — these exist to time the real click → first-audio path:
+// CLICK → PLAY_REQUEST → RESOLVE_START/END → SRC_SET → PLAY_CALL → CANPLAY →
+// FIRST_PLAYING → TOTAL.
+function latencyOn(): boolean {
+  try {
+    return localStorage.getItem('melo:play-latency') === '1'
+  } catch {
+    return false
+  }
+}
+function playLatency(stage: string, info = ''): void {
+  if (!latencyOn()) return
+  // eslint-disable-next-line no-console
+  console.debug(`[play-latency] ${stage}${info ? ' ' + info : ''}`)
+}
 const PREVIOUS_RESTART_THRESHOLD = 3
 
 /** Discovery (autoplay) keeps at least this many upcoming tracks ready. */
@@ -140,9 +160,28 @@ export class PlaybackController {
   /** Anchor track ids whose recommendation feed was already fetched this session. */
   private sessionAnchorsTried = new Set<string>()
 
+  /** Click-to-play timing stamps for the load currently in flight. */
+  private latencyClickAt = 0
+  private latencyResolveStartAt = 0
+  private latencyResolveEndAt = 0
+  private latencyTotalLoggedFor = -1
+
   constructor(engine = new PlaybackEngine()) {
     this.engine = engine
     this.engine.subscribe((event) => this.onEngineEvent(event))
+    // Handoff stages come straight from the media element so the timeline is
+    // real, not reconstructed. A localStorage read per stage is negligible:
+    // stages fire a handful of times per track.
+    this.engine.debugHook = (stage, info) => {
+      if (stage === 'SRC_SET') {
+        playLatency('SRC_SET', info ?? '')
+      } else if (stage === 'FIRST_PLAYING') {
+        playLatency('FIRST_PLAYING')
+        this.logLatencyTotal('FIRST_PLAYING')
+      } else {
+        playLatency(stage)
+      }
+    }
     // Disliked tracks disappear from the current autoplay list immediately;
     // the next batch also excludes them via the ranking context.
     useLibraryStore.subscribe((state, prev) => {
@@ -166,6 +205,7 @@ export class PlaybackController {
         positionChannel.setBuffered(buffered)
         setPlayerState({ status, error, volume, muted, speed: rate })
         if (status === 'playing') {
+          this.logLatencyTotal('STATUS_PLAYING') // no-op unless FIRST_PLAYING hasn't already logged
           this.markPlayed()
           // Refill discovery once per track (generation), not on every state
           // emission — otherwise duration/buffered updates would keep
@@ -319,6 +359,7 @@ export class PlaybackController {
   async play(track: Track, context: PlayContext = {}): Promise<void> {
     // Any explicit choice supersedes discovery: stale continuations are dropped
     // and rebuilt from the new listening context as needed.
+    this.markLatencyClick('CLICK', `track=${track.id} sourceId=${track.sourceId}`)
     this.resetDiscovery()
     this.explicitSeed = null
     const tracks = context.tracks ? dedupeTracks(context.tracks) : null
@@ -349,6 +390,7 @@ export class PlaybackController {
    * discovery. Discovery then rebuilds around the newly chosen track.
    */
   async playDiscovered(track: Track): Promise<void> {
+    this.markLatencyClick('CLICK', `track=${track.id} sourceId=${track.sourceId} via=autoplay`)
     this.resetDiscovery()
     setPlayerState({ playingFrom: 'autoplay' })
     await this.start(track)
@@ -365,6 +407,7 @@ export class PlaybackController {
    */
   async startRadio(track: Track, opts: { kind?: RadioKind; label?: string } = {}): Promise<void> {
     const kind = opts.kind ?? 'track'
+    this.markLatencyClick('CLICK', `track=${track.id} sourceId=${track.sourceId} via=radio:${kind}`)
     this.resetDiscovery()
     this.resetSessionContext()
     this.explicitSeed = radioSeedFromTrack(track, kind)
@@ -379,8 +422,18 @@ export class PlaybackController {
     await this.start(track)
   }
 
+  /** Records the user-intent instant (the click handler calls play()
+   *  synchronously, so this is the honest CLICK stamp) and arms a fresh TOTAL. */
+  private markLatencyClick(stage: string, info: string): void {
+    if (!latencyOn()) return
+    this.latencyClickAt = performance.now()
+    this.latencyTotalLoggedFor = -1
+    playLatency(stage, info)
+  }
+
   /** Starts a specific track: clears old state first, then resolves. */
   private async start(track: Track, startAt = 0): Promise<void> {
+    playLatency('PLAY_REQUEST', `track=${track.id} startAt=${startAt}`)
     const token = this.engine.beginLoad(track.id)
     this.recordedForToken.clear()
     this.significantForToken.clear()
@@ -395,7 +448,20 @@ export class PlaybackController {
     try {
       // Pre-resolution: if the immediate-next prefetch already answered for
       // this exact track, use it and skip the resolver round trip.
-      const source = this.takePlayable(track) ?? (await backend().getPlayable(track))
+      this.latencyResolveStartAt = performance.now()
+      let source: PlayableSource | null = this.takePlayable(track)
+      if (source) {
+        this.latencyResolveEndAt = performance.now()
+        playLatency('RESOLVE_END', 'elapsed=0ms cache=prefetch')
+      } else {
+        playLatency('RESOLVE_START', `sourceId=${track.sourceId}`)
+        source = await backend().getPlayable(track)
+        this.latencyResolveEndAt = performance.now()
+        playLatency(
+          'RESOLVE_END',
+          `elapsed=${Math.round(this.latencyResolveEndAt - this.latencyResolveStartAt)}ms cache=network`,
+        )
+      }
       if (!this.engine.isCurrent(token)) return // a newer track won the race
       if (source.duration > 0) positionChannel.setDuration(source.duration)
       await this.engine.load(token, source.url, startAt)
@@ -570,6 +636,21 @@ export class PlaybackController {
     this.engine.setMuted(muted)
     setPlayerState({ muted })
     void library.saveSettings({ muted })
+  }
+
+  /**
+   * One TOTAL line per load generation: click → first audible playback, with
+   * the resolver stage split out so the dominant cost is obvious.
+   */
+  private logLatencyTotal(trigger: string): void {
+    const gen = this.engine.currentGeneration
+    if (this.latencyTotalLoggedFor === gen) return
+    this.latencyTotalLoggedFor = gen
+    const now = performance.now()
+    const total = this.latencyClickAt ? Math.round(now - this.latencyClickAt) : 0
+    const resolve = this.latencyResolveStartAt ? Math.round(this.latencyResolveEndAt - this.latencyResolveStartAt) : 0
+    const handoff = this.latencyResolveEndAt ? Math.round(now - this.latencyResolveEndAt) : 0
+    playLatency('TOTAL', `total=${total}ms resolve=${resolve}ms handoff=${handoff}ms on=${trigger}`)
   }
 
   setSpeed(speed: number): void {

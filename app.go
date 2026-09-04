@@ -191,15 +191,27 @@ func (a *App) Search(query, filter string) (model.SearchResponse, error) {
 
 // GetPlayable resolves a track to a loopback stream URL. Errors are surfaced
 // verbatim to the UI so it can show a real message.
+//
+// The path is deliberately direct: the track's canonical provider id goes
+// straight to the resolver (https://www.youtube.com/watch?v=<id>) — no text
+// search, no metadata round trip. Timing diagnostics are printed when
+// MELO_PLAY_LATENCY is set (see internal/media).
 func (a *App) GetPlayable(track model.Track) (model.PlayableSource, error) {
 	if track.SourceID == "" {
 		return model.PlayableSource{}, errors.New("couldn't load this song: missing source id")
 	}
 	ctx, cancel := context.WithTimeout(a.baseCtx(), 45*time.Second)
 	defer cancel()
+	start := time.Now()
+	if os.Getenv("MELO_PLAY_LATENCY") != "" {
+		log.Printf("[play-latency] GET_PLAYABLE id=%s sourceId=%s", track.ID, track.SourceID)
+	}
 	res, err := a.resolver.Resolve(ctx, track.SourceID, a.proxy.Quality())
 	if err != nil {
 		return model.PlayableSource{}, err
+	}
+	if os.Getenv("MELO_PLAY_LATENCY") != "" {
+		log.Printf("[play-latency] GET_PLAYABLE_END id=%s elapsed=%s (resolver cache/expiry above; loopback url ready)", track.ID, time.Since(start).Round(time.Millisecond))
 	}
 	return model.PlayableSource{
 		TrackID:   track.ID,

@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -158,9 +159,17 @@ type Resolver struct {
 	runner Runner
 	mu     sync.Mutex
 	cache  map[string]Resolved
+	// order preserves insertion order so the cache stays bounded (FIFO
+	// eviction of the oldest resolution when cacheMax is exceeded).
+	order  []string
 	inWork map[string]*call
 	now    func() time.Time
 }
+
+// cacheMax bounds the resolved-source cache. Entries are small (one CDN URL
+// plus stream facts) and self-expire with the CDN URL; the bound exists so a
+// very long listening session cannot grow the map without limit.
+const cacheMax = 32
 
 type call struct {
 	done chan struct{}
@@ -177,6 +186,29 @@ func NewResolver(r Runner) *Resolver {
 	}
 }
 
+// latencyLog prints click-to-play path diagnostics. Like MELO_RADIO_DEBUG and
+// MELO_RESOLVER_DIAG, it is opt-in via an env var and completely silent in
+// normal operation. The lines are keyed "[play-latency]" so a slow stage can
+// be identified at a glance:
+//
+//	[play-latency] RESOLVE_START id=abc quality=high
+//	[play-latency] RESOLVE_END id=abc elapsed=3.2s attempts=1 outcome=miss
+func latencyLog(format string, args ...any) {
+	if os.Getenv("MELO_PLAY_LATENCY") == "" {
+		return
+	}
+	log.Printf("[play-latency] "+format, args...)
+}
+
+// trimLocked bounds both the cache and its order slice. Called with r.mu held.
+func (r *Resolver) trimLocked() {
+	for len(r.order) > 0 && (len(r.cache) > cacheMax || len(r.order) > 2*cacheMax) {
+		k := r.order[0]
+		r.order = r.order[1:]
+		delete(r.cache, k)
+	}
+}
+
 // Resolve returns a playable upstream URL for sourceID. Concurrent callers for
 // the same key share one yt-dlp invocation; results are cached until expiry.
 func (r *Resolver) Resolve(ctx context.Context, sourceID, quality string) (Resolved, error) {
@@ -188,10 +220,12 @@ func (r *Resolver) Resolve(ctx context.Context, sourceID, quality string) (Resol
 	r.mu.Lock()
 	if hit, ok := r.cache[key]; ok && !hit.Expired(r.now()) {
 		r.mu.Unlock()
+		latencyLog("RESOLVE_HIT id=%s quality=%s expires_in=%s", sourceID, quality, time.Until(hit.ExpiresAt).Round(time.Second))
 		return hit, nil
 	}
 	if c, ok := r.inWork[key]; ok {
 		r.mu.Unlock()
+		latencyLog("RESOLVE_SHARED id=%s quality=%s (joining in-flight resolution)", sourceID, quality)
 		select {
 		case <-c.done:
 			return c.res, c.err
@@ -203,16 +237,40 @@ func (r *Resolver) Resolve(ctx context.Context, sourceID, quality string) (Resol
 	r.inWork[key] = c
 	r.mu.Unlock()
 
+	start := time.Now()
+	latencyLog("RESOLVE_START id=%s quality=%s", sourceID, quality)
 	c.res, c.err = r.fetch(ctx, sourceID, quality)
 	close(c.done)
 
 	r.mu.Lock()
 	delete(r.inWork, key)
 	if c.err == nil {
+		if i := indexOf(r.order, key); i >= 0 {
+			r.order = append(r.order[:i], r.order[i+1:]...)
+		}
+		r.order = append(r.order, key)
 		r.cache[key] = c.res
+		r.trimLocked()
 	}
 	r.mu.Unlock()
+	latencyLog("RESOLVE_END id=%s elapsed=%s outcome=%s", sourceID, time.Since(start).Round(time.Millisecond), outcome(c.err))
 	return c.res, c.err
+}
+
+func indexOf(vals []string, want string) int {
+	for i, v := range vals {
+		if v == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func outcome(err error) string {
+	if err == nil {
+		return "resolved"
+	}
+	return "error: " + firstLine(err.Error())
 }
 
 // Invalidate drops a cached resolution (used when a stream 403s mid-playback).
@@ -261,7 +319,9 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 			"https://www.youtube.com/watch?v=" + sourceID,
 		}
 		diagf("resolve %s: attempt %d/%d yt-dlp %v", sourceID, i+1, len(resolveClients), args)
+		attemptStart := time.Now()
 		out, err := r.runner.Run(ctx, args...)
+		latencyLog("ATTEMPT id=%s %d/%d clients=%s elapsed=%s", sourceID, i+1, len(resolveClients), clients, time.Since(attemptStart).Round(time.Millisecond))
 		if err != nil {
 			diagf("resolve %s: yt-dlp exited with error: %s", sourceID, err.Error())
 			msg := strings.ToLower(err.Error())

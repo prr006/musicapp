@@ -572,3 +572,98 @@ func TestProxyReportsResolveFailure(t *testing.T) {
 		t.Fatalf("expected an actionable message, got %q", msg)
 	}
 }
+
+// argsRunner records every invocation's full argument list.
+type argsRunner struct {
+	mu   sync.Mutex
+	args [][]string
+	outs [][]byte
+}
+
+func (r *argsRunner) Run(_ context.Context, args ...string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.args = append(r.args, args)
+	return r.outs[0], nil
+}
+
+// TestResolverUsesDirectWatchURL verifies the click-to-play fast path: with a
+// canonical provider id in hand the resolver asks yt-dlp for exactly that
+// video — never a text search, never extra metadata passes.
+func TestResolverUsesDirectWatchURL(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	r := &argsRunner{outs: [][]byte{infoJSON(t, exp, []map[string]any{audioFmt("140", "m4a", 128, exp)})}}
+	res := NewResolver(r)
+	if _, err := res.Resolve(context.Background(), "abc123", "high"); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.args) != 1 {
+		t.Fatalf("expected a single yt-dlp invocation, got %d", len(r.args))
+	}
+	joined := strings.Join(r.args[0], " ")
+	if !strings.Contains(joined, "https://www.youtube.com/watch?v=abc123") {
+		t.Fatalf("resolver must use the canonical watch URL directly, got: %s", joined)
+	}
+	if !strings.Contains(joined, "--no-playlist") {
+		t.Fatalf("expected --no-playlist, got: %s", joined)
+	}
+	if strings.Contains(joined, "ytsearch") || strings.Contains(joined, "--default-search") {
+		t.Fatalf("resolver must never fall back to a text search: %s", joined)
+	}
+}
+
+// TestResolverCacheIsBounded verifies the resolved-source cache evicts the
+// oldest entry once it exceeds cacheMax, keeping memory bounded in long
+// sessions while the newest resolutions stay warm.
+func TestResolverCacheIsBounded(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	r := &fakeRunner{out: infoJSON(t, exp, []map[string]any{audioFmt("140", "m4a", 128, exp)})}
+	res := NewResolver(r)
+	for i := 0; i < cacheMax+1; i++ {
+		if _, err := res.Resolve(context.Background(), fmt.Sprintf("vid%d", i), "high"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := atomic.LoadInt32(&r.calls); got != int32(cacheMax+1) {
+		t.Fatalf("expected %d resolutions, got %d", cacheMax+1, got)
+	}
+	if len(res.cache) > cacheMax {
+		t.Fatalf("cache exceeded its bound: %d > %d", len(res.cache), cacheMax)
+	}
+	// The first-inserted id was evicted; re-resolving it runs yt-dlp again,
+	// while the most recent id still answers from the cache.
+	before := atomic.LoadInt32(&r.calls)
+	if _, err := res.Resolve(context.Background(), "vid0", "high"); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&r.calls); got != before+1 {
+		t.Fatalf("evicted entry should re-resolve, calls went %d -> %d", before, got)
+	}
+	before = atomic.LoadInt32(&r.calls)
+	if _, err := res.Resolve(context.Background(), fmt.Sprintf("vid%d", cacheMax), "high"); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&r.calls); got != before {
+		t.Fatalf("newest entry should still be cached, calls went %d -> %d", before, got)
+	}
+}
+
+// TestResolverDoesNotCacheFailures verifies a failed resolution is retried on
+// the next request instead of poisoning the cache.
+func TestResolverDoesNotCacheFailures(t *testing.T) {
+	failing := &fakeRunner{err: errors.New("ERROR: unable to download video data: connection reset")}
+	res := NewResolver(failing)
+	if _, err := res.Resolve(context.Background(), "vid", "high"); err == nil {
+		t.Fatal("expected the first attempt to fail")
+	}
+	exp := time.Now().Add(time.Hour).Unix()
+	res2 := NewResolver(&fakeRunner{out: infoJSON(t, exp, []map[string]any{audioFmt("140", "m4a", 128, exp)})})
+	if _, err := res2.Resolve(context.Background(), "vid", "high"); err != nil {
+		t.Fatalf("a fresh resolution must succeed after a failure: %v", err)
+	}
+	if got := atomic.LoadInt32(&failing.calls); got != 1 {
+		t.Fatalf("expected exactly 1 failing call, got %d", got)
+	}
+}

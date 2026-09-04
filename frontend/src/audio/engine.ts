@@ -51,6 +51,13 @@ function mediaErrorMessage(el: HTMLAudioElement): string {
 
 export class PlaybackEngine {
   readonly el: HTMLAudioElement
+  /**
+   * Optional click-to-play diagnostics tap. Set only when latency debugging is
+   * enabled; the engine reports its handoff stages (SRC_SET / PLAY / CANPLAY /
+   * FIRST_PLAYING) so the full path can be timed end to end. Always null in
+   * normal operation — zero cost, zero noise.
+   */
+  debugHook: ((stage: string, info?: string) => void) | null = null
   private listeners = new Set<Listener>()
   private generation = 0
   private trackId: string | null = null
@@ -58,6 +65,8 @@ export class PlaybackEngine {
   private error: string | null = null
   private timer: ReturnType<typeof setInterval> | null = null
   private lastPosition = -1
+  /** Guards FIRST_PLAYING: the initial 'playing' of a load, not buffer-refills. */
+  private playedThisLoad = false
   /** The chosen playback rate, reapplied on every load so next tracks inherit it. */
   private rate = 1
 
@@ -71,7 +80,13 @@ export class PlaybackEngine {
 
   private bind(): void {
     const el = this.el
-    el.addEventListener('playing', () => this.setStatus('playing'))
+    el.addEventListener('playing', () => {
+      if (!this.playedThisLoad) {
+        this.playedThisLoad = true
+        this.debugHook?.('FIRST_PLAYING')
+      }
+      this.setStatus('playing')
+    })
     el.addEventListener('pause', () => {
       if (this.status === 'playing') this.setStatus('paused')
     })
@@ -79,6 +94,7 @@ export class PlaybackEngine {
       if (this.status === 'playing') this.setStatus('loading')
     })
     el.addEventListener('canplay', () => {
+      this.debugHook?.('CANPLAY')
       if (this.status === 'loading' && el.paused) this.setStatus('paused')
     })
     el.addEventListener('durationchange', () => this.emitState())
@@ -188,6 +204,8 @@ export class PlaybackEngine {
     const el = this.el
     el.src = url
     el.load()
+    this.playedThisLoad = false
+    this.debugHook?.('SRC_SET', url)
     // Browsers normally keep playbackRate across source changes, but the rate
     // is a player setting, not a property of the stream — reapply it so every
     // track inherits the chosen speed deterministically.
@@ -208,6 +226,7 @@ export class PlaybackEngine {
       return true
     }
     try {
+      this.debugHook?.('PLAY_CALL')
       await el.play()
     } catch (err) {
       if (token !== this.generation) return false
@@ -235,6 +254,7 @@ export class PlaybackEngine {
   async play(): Promise<void> {
     if (!this.el.src) return
     try {
+      this.debugHook?.('PLAY_CALL')
       await this.el.play()
     } catch (err) {
       this.error = err instanceof Error ? err.message : 'Playback failed.'

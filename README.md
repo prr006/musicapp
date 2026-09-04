@@ -262,6 +262,20 @@ second audible voice, no LUFS/ReplayGain metadata) and are deliberately left
 out rather than approximated — `src/lib/audioCapabilities.ts` states these
 verdicts explicitly and is test-asserted.
 
+**Click-to-play path** — clicking a search result resolves the track's
+canonical provider id directly (`watch?v=<id>`, never a second text search),
+through a bounded, TTL-based resolver cache with in-flight deduplication (two
+requests for the same video share one yt-dlp run; CDN URL expiry — not a fixed
+timer — invalidates entries, and the stream proxy re-resolves transparently on
+a mid-track 403). The whole path is instrumented: run with
+`MELO_PLAY_LATENCY=1` for resolver-side `[play-latency]` stage timings, and
+`localStorage.setItem('melo:play-latency', '1')` in the webview for the
+frontend timeline (`CLICK → PLAY_REQUEST → RESOLVE_START/END → SRC_SET →
+PLAY_CALL → CANPLAY → FIRST_PLAYING → TOTAL` with resolve/handoff split).
+Both are silent by default. The remaining unavoidable latency is the yt-dlp
+process itself (spawn + page extraction), which the cache removes for
+repeated plays and the next-track prefetch removes for queue advances.
+
 Keyboard: `Ctrl/⌘+K` search · `Space` play/pause · `←/→` seek 5 s ·
 `Ctrl+←/→` prev/next · `↑/↓` volume · `M` mute · `S` shuffle · `R` repeat ·
 `L` like · `Q` queue · `Y` lyrics · `Esc` close panel.
