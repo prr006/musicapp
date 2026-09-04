@@ -667,3 +667,64 @@ func TestResolverDoesNotCacheFailures(t *testing.T) {
 		t.Fatalf("expected exactly 1 failing call, got %d", got)
 	}
 }
+
+// countingRunner splits its counters by invocation kind so the latency probe
+// can be told apart from real resolutions.
+type countingRunner struct {
+	out      []byte
+	versions int32
+	resolves int32
+	all      int32
+}
+
+func (r *countingRunner) Run(_ context.Context, args ...string) ([]byte, error) {
+	atomic.AddInt32(&r.all, 1)
+	if len(args) == 1 && args[0] == "--version" {
+		atomic.AddInt32(&r.versions, 1)
+		return []byte("2026.08.19"), nil
+	}
+	atomic.AddInt32(&r.resolves, 1)
+	return r.out, nil
+}
+
+// TestResolverLatencyProbeRunsOnce verifies the spawn-cost calibration probe:
+// with MELO_PLAY_LATENCY set it runs exactly once per resolver no matter how
+// many resolutions follow, and with the flag unset it never runs at all (the
+// production path is unchanged when diagnostics are off).
+func TestResolverLatencyProbeRunsOnce(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	out := infoJSON(t, exp, []map[string]any{audioFmt("140", "m4a", 128, exp)})
+
+	t.Run("disabled by default", func(t *testing.T) {
+		runner := &countingRunner{out: out}
+		res := NewResolver(runner)
+		for _, id := range []string{"vid", "other"} {
+			if _, err := res.Resolve(context.Background(), id, "high"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := atomic.LoadInt32(&runner.versions); got != 0 {
+			t.Fatalf("probe must never run when MELO_PLAY_LATENCY is unset, ran %d times", got)
+		}
+		if got := atomic.LoadInt32(&runner.resolves); got != 2 {
+			t.Fatalf("expected 2 real resolutions, got %d", got)
+		}
+	})
+
+	t.Run("runs exactly once when enabled", func(t *testing.T) {
+		t.Setenv("MELO_PLAY_LATENCY", "1")
+		runner := &countingRunner{out: out}
+		res := NewResolver(runner)
+		for _, id := range []string{"a", "b", "c"} {
+			if _, err := res.Resolve(context.Background(), id, "high"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := atomic.LoadInt32(&runner.versions); got != 1 {
+			t.Fatalf("probe must run exactly once, ran %d times", got)
+		}
+		if got := atomic.LoadInt32(&runner.resolves); got != 3 {
+			t.Fatalf("expected 3 real resolutions, got %d", got)
+		}
+	})
+}

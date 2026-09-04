@@ -157,8 +157,20 @@ func (r Resolved) Expired(now time.Time) bool {
 
 type Resolver struct {
 	runner Runner
-	mu     sync.Mutex
-	cache  map[string]Resolved
+	// ExtraArgs, when set, are appended to every yt-dlp invocation. It exists
+	// for tools/playbench to A/B candidate extractor arguments against the
+	// production set through the REAL pipeline (same cache, dedupe and format
+	// picking). Nil in the app — production behavior is byte-identical.
+	ExtraArgs []string
+	// probeOnce times `yt-dlp --version` the first time a resolution runs with
+	// latency diagnostics enabled. That is the pure spawn+interpreter+import
+	// cost of the binary on THIS machine, with no network and no extraction —
+	// subtracting it from a resolve attempt separates process overhead from
+	// extraction/network work. Never runs when diagnostics are off.
+	probeOnce sync.Once
+	probeMS   int64
+	mu        sync.Mutex
+	cache     map[string]Resolved
 	// order preserves insertion order so the cache stays bounded (FIFO
 	// eviction of the oldest resolution when cacheMax is exceeded).
 	order  []string
@@ -216,6 +228,19 @@ func (r *Resolver) Resolve(ctx context.Context, sourceID, quality string) (Resol
 		return Resolved{}, ErrResolve
 	}
 	key := sourceID + "|" + quality
+
+	if os.Getenv("MELO_PLAY_LATENCY") != "" {
+		r.probeOnce.Do(func() {
+			start := time.Now()
+			out, err := r.runner.Run(context.Background(), "--version")
+			r.probeMS = time.Since(start).Milliseconds()
+			if err != nil {
+				latencyLog("VERSION_PROBE failed err=%v", err)
+				return
+			}
+			latencyLog("VERSION_PROBE elapsed=%dms version=%q (spawn+interpreter+import cost of this binary; subtract from ATTEMPT to isolate extraction+network)", r.probeMS, strings.TrimSpace(string(out)))
+		})
+	}
 
 	r.mu.Lock()
 	if hit, ok := r.cache[key]; ok && !hit.Expired(r.now()) {
@@ -318,6 +343,7 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 			"--extractor-args", "youtube:player_client=" + clients,
 			"https://www.youtube.com/watch?v=" + sourceID,
 		}
+		args = append(args, r.ExtraArgs...)
 		diagf("resolve %s: attempt %d/%d yt-dlp %v", sourceID, i+1, len(resolveClients), args)
 		attemptStart := time.Now()
 		out, err := r.runner.Run(ctx, args...)
@@ -339,7 +365,13 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 			}
 			return Resolved{}, fmt.Errorf("%w: %s", ErrResolve, firstLine(err.Error()))
 		}
+		parseStart := time.Now()
 		res, perr := ParseResolved(out, sourceID, quality)
+		if parse := time.Since(parseStart); parse > 50*time.Millisecond {
+			// Parsing is expected to be negligible (<tens of ms). If it ever
+			// is not, it shows up explicitly instead of hiding in the attempt.
+			latencyLog("PARSE id=%s elapsed=%s jsonKB=%d", sourceID, parse.Round(time.Millisecond), len(out)/1024)
+		}
 		if perr == nil {
 			return res, nil
 		}

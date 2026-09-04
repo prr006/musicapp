@@ -4,8 +4,8 @@
   "baseUrl": "https://github.com/yt-dlp/yt-dlp/releases/download",
   "sumsAsset": "SHA2-256SUMS",
   "assets": {
-    "windows/amd64": { "name": "yt-dlp.exe", "sha256": "" },
-    "windows/arm64": { "name": "yt-dlp_arm64.exe", "sha256": "" },
+    "windows/amd64": { "name": "yt-dlp_win.zip", "entry": "yt-dlp.exe", "sha256": "" },
+    "windows/arm64": { "name": "yt-dlp_win_arm64.zip", "entry": "yt-dlp.exe", "sha256": "" },
     "linux/amd64": { "name": "yt-dlp_linux", "sha256": "" },
     "linux/arm64": { "name": "yt-dlp_linux_aarch64", "sha256": "" },
     "darwin/amd64": { "name": "yt-dlp_macos", "sha256": "" },

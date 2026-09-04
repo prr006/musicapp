@@ -1,6 +1,8 @@
 package deps
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -162,5 +164,177 @@ func TestOverrideBinary(t *testing.T) {
 	p, err := m.BinaryPath()
 	if err != nil || p != "/opt/custom/yt-dlp" {
 		t.Fatalf("override ignored: %q %v", p, err)
+	}
+}
+
+// zipRelease serves a synthetic onedir-style zip "release" whose SHA2-256SUMS
+// covers every asset name the manifest can request for this platform.
+func zipRelease(t *testing.T, zipBytes []byte) *httptest.Server {
+	t.Helper()
+	sum := sha256.Sum256(zipBytes)
+	digest := hex.EncodeToString(sum[:])
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "SHA2-256SUMS") {
+			for _, name := range []string{"yt-dlp.exe", "yt-dlp_linux", "yt-dlp_macos", "yt-dlp_arm64.exe", "yt-dlp_linux_aarch64", "yt-dlp_win.zip", "yt-dlp_win_arm64.zip"} {
+				fmt.Fprintf(w, "%s  %s\n", digest, name)
+			}
+			return
+		}
+		_, _ = w.Write(zipBytes)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// buildOnedirZip builds a deterministic onedir-style archive: yt-dlp.exe plus
+// an _internal/ tree. When nested is true everything is wrapped in one folder.
+func buildOnedipZip(t *testing.T, nested bool) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	prefix := ""
+	if nested {
+		prefix = "yt-dlp-win/"
+	}
+	files := map[string]string{
+		prefix + "yt-dlp.exe":           "MZ fake exe",
+		prefix + "_internal/Cryptodome": "lib1",
+		prefix + "_internal/websockets": "lib2",
+	}
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// forceZipAsset points THIS platform's manifest entry at the onedir zip so the
+// zip install path can be tested on any OS.
+func forceZipAsset(t *testing.T, m *Manager, name string) {
+	t.Helper()
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	m.manifest.Assets[key] = Asset{Name: name, Entry: "yt-dlp.exe", SHA256: ""}
+}
+
+func TestEnsureInstallsOnedirZipRootLayout(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forceZipAsset(t, m, "yt-dlp_win.zip")
+	m.manifest.BaseURL = zipRelease(t, buildOnedipZip(t, false)).URL
+
+	p, err := m.Ensure(nil)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if filepath.Base(p) != "yt-dlp.exe" {
+		t.Fatalf("binary path must point at the entry executable, got %s", p)
+	}
+	if !strings.Contains(p, m.Version()) {
+		t.Fatalf("install path must be version-scoped: %s", p)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(p), "_internal", "websockets")); err != nil {
+		t.Fatalf("archive payload must be extracted: %v", err)
+	}
+	if st := m.Status(); !st.Installed {
+		t.Fatalf("status should report installed: %+v", st)
+	}
+	// Idempotent: second call re-downloads nothing and leaves no staging.
+	if _, err := m.Ensure(nil); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "staging") || strings.HasSuffix(e.Name(), ".download") {
+			t.Fatalf("install left temporary artifacts behind: %s", e.Name())
+		}
+	}
+}
+
+func TestEnsureInstallsOnedirZipNestedLayout(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := NewManager(dir)
+	forceZipAsset(t, m, "yt-dlp_win.zip")
+	m.manifest.BaseURL = zipRelease(t, buildOnedipZip(t, true)).URL
+
+	p, err := m.Ensure(nil)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if filepath.Base(p) != "yt-dlp.exe" {
+		t.Fatalf("expected the nested entry executable, got %s", p)
+	}
+	if st := m.Status(); !st.Installed {
+		t.Fatalf("status should report installed: %+v", st)
+	}
+}
+
+func TestEnsureRejectsZipWithoutEntry(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, _ := zw.Create("readme.txt")
+	_, _ = w.Write([]byte("no exe here"))
+	zw.Close()
+
+	dir := t.TempDir()
+	m, _ := NewManager(dir)
+	forceZipAsset(t, m, "yt-dlp_win.zip")
+	m.manifest.BaseURL = zipRelease(t, buf.Bytes()).URL
+
+	if _, err := m.Ensure(nil); err == nil || !strings.Contains(err.Error(), "does not contain") {
+		t.Fatalf("expected a missing-entry error, got %v", err)
+	}
+}
+
+func TestEnsureRemovesLegacyOnefileAfterZipInstall(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := NewManager(dir)
+	forceZipAsset(t, m, "yt-dlp_win.zip")
+	m.manifest.BaseURL = zipRelease(t, buildOnedipZip(t, false)).URL
+
+	legacy := m.legacyPath()
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("old onefile build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Ensure(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy onefile build should be removed after the onedir install, stat err=%v", err)
+	}
+}
+
+func TestUnzipRejectsPathTraversal(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("../evil.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("zip-slip")); err != nil {
+		t.Fatal(err)
+	}
+	zw.Close()
+
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "a.zip")
+	if err := os.WriteFile(archive, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := unzip(archive, filepath.Join(dir, "out")); err == nil || !strings.Contains(err.Error(), "unsafe path") {
+		t.Fatalf("expected zip-slip rejection, got %v", err)
 	}
 }

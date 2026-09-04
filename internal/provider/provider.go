@@ -13,8 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1564,17 +1567,31 @@ func (e Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if latency := os.Getenv("MELO_PLAY_LATENCY"); latency != "" {
+		// Full command provenance (executable + arguments) for the latency
+		// investigation. The arguments carry no credentials: flags and a URL.
+		log.Printf("[play-latency] PROC_START exe=%s args=%s", bin, strings.Join(args, " "))
+	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	hideWindow(cmd)
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
+	spawnStart := time.Now()
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	waitErr := cmd.Wait()
+	if os.Getenv("MELO_PLAY_LATENCY") != "" {
+		spawnMs := time.Since(spawnStart).Milliseconds()
+		log.Printf("[play-latency] PROC_EXIT exe=%s total=%dms stdout=%dB stderr=%dB", filepath.Base(bin), spawnMs, stdout.Len(), stderr.Len())
+	}
+	if waitErr != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
-			msg = err.Error()
+			msg = waitErr.Error()
 		}
 		return nil, errors.New(msg)
 	}
-	return out, nil
+	return stdout.Bytes(), nil
 }

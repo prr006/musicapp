@@ -276,6 +276,23 @@ Both are silent by default. The remaining unavoidable latency is the yt-dlp
 process itself (spawn + page extraction), which the cache removes for
 repeated plays and the next-track prefetch removes for queue advances.
 
+**Resolver performance** — the resolution path is measurable end to end on
+real hardware: run with `MELO_PLAY_LATENCY=1` for `[play-latency]` lines that
+include a one-time `VERSION_PROBE` (the pure spawn+interpreter+import cost of
+the installed binary — subtract it from an `ATTEMPT` to isolate
+extraction+network), per-attempt timings, process stdout/stderr sizes, and
+parse time. `go run ./tools/playbench -ids <id1>,<id2>` produces the full
+matrix (spawn probe, cold, warm, expired-URL refresh, cache hit, failure) and
+can A/B candidate extractor arguments through the real resolver via
+`-extra "--extractor-args youtube:player_skip=…"`. Windows installs the
+**onedir** yt-dlp build (`yt-dlp_win.zip`, extracted into its own directory)
+instead of the self-extracting onefile exe — the onefile unpacks itself into a
+temp directory on *every* spawn, which is pure per-request overhead the onedir
+build eliminates; a persistent resolver worker was prototyped and rejected
+(it only recovers the same spawn slice while adding process-lifecycle
+complexity). Risky extractor shortcuts (`player_skip=js` throttled-URL risk,
+`player_skip=initial_data`) are deliberately not used.
+
 Keyboard: `Ctrl/⌘+K` search · `Space` play/pause · `←/→` seek 5 s ·
 `Ctrl+←/→` prev/next · `↑/↓` volume · `M` mute · `S` shuffle · `R` repeat ·
 `L` like · `Q` queue · `Y` lyrics · `Esc` close panel.
