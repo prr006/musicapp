@@ -37,6 +37,40 @@ jobs:
           CGO_ENABLED: '0'
         run: go build -trimpath -o /tmp/MELO.exe .
 
+  container-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production container
+        run: docker build --tag melo-api:ci .
+      - name: Start production container and verify health
+        shell: bash
+        run: |
+          set -euo pipefail
+          session_secret=$(openssl rand -hex 32)
+          playback_secret=$(openssl rand -hex 32)
+          docker run --detach --rm --name melo-api-ci \
+            --publish 18080:8080 \
+            --env MELO_ENV=production \
+            --env MELO_DATA_DIR=/data \
+            --env COOKIE_SECURE=true \
+            --env TRUST_PROXY_HEADERS=true \
+            --env CORS_ORIGINS=https://ci-frontend.invalid \
+            --env SESSION_SECRET="$session_secret" \
+            --env PLAYBACK_SIGNING_KEY="$playback_secret" \
+            melo-api:ci
+          trap 'docker logs melo-api-ci || true; docker stop melo-api-ci >/dev/null 2>&1 || true' EXIT
+          curl --fail --show-error --silent --retry 20 --retry-all-errors --retry-delay 1 \
+            http://127.0.0.1:18080/health | grep -q '"status":"ok"'
+          curl --fail --show-error --silent http://127.0.0.1:18080/ready | grep -q '"status":"ready"'
+          headers=$(mktemp)
+          curl --fail --show-error --silent --dump-header "$headers" --output /dev/null \
+            --header 'Origin: https://ci-frontend.invalid' \
+            http://127.0.0.1:18080/api/v1/state
+          grep -qi '^Access-Control-Allow-Origin: https://ci-frontend.invalid' "$headers"
+          grep -qi '^X-Request-Id:' "$headers"
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

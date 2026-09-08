@@ -32,6 +32,10 @@ export type EngineEvent =
 type Listener = (event: EngineEvent) => void
 
 const POSITION_INTERVAL_MS = 100
+const PLAY_START_TIMEOUT_MS = 30_000
+const BUFFERING_TIMEOUT_MS = 25_000
+
+class PlaybackStartTimeout extends Error {}
 
 function mediaErrorMessage(el: HTMLAudioElement): string {
   // Numeric MediaError codes: 1 aborted, 2 network, 3 decode, 4 unsupported.
@@ -57,6 +61,7 @@ export class PlaybackEngine {
   private status: EngineStatus = 'idle'
   private error: string | null = null
   private timer: ReturnType<typeof setInterval> | null = null
+  private bufferingTimer: ReturnType<typeof setTimeout> | null = null
   private lastPosition = -1
 
   constructor(el?: HTMLAudioElement) {
@@ -69,14 +74,22 @@ export class PlaybackEngine {
 
   private bind(): void {
     const el = this.el
-    el.addEventListener('playing', () => this.setStatus('playing'))
+    el.addEventListener('playing', () => {
+      this.clearBufferingWatchdog()
+      this.setStatus('playing')
+    })
     el.addEventListener('pause', () => {
+      this.clearBufferingWatchdog()
       if (this.status === 'playing') this.setStatus('paused')
     })
     el.addEventListener('waiting', () => {
-      if (this.status === 'playing') this.setStatus('loading')
+      if (this.status === 'playing') {
+        this.setStatus('loading')
+        this.armBufferingWatchdog()
+      }
     })
     el.addEventListener('canplay', () => {
+      this.clearBufferingWatchdog()
       if (this.status === 'loading' && el.paused) this.setStatus('paused')
     })
     el.addEventListener('durationchange', () => this.emitState())
@@ -86,12 +99,14 @@ export class PlaybackEngine {
     el.addEventListener('ended', () => {
       const id = this.trackId
       if (!id) return
+      this.clearBufferingWatchdog()
       this.stopTimer()
       this.setStatus('paused')
       this.emit({ type: 'ended', trackId: id })
     })
     el.addEventListener('error', () => {
       if (!this.trackId) return // src cleared on stop(): not a real failure
+      this.clearBufferingWatchdog()
       this.error = mediaErrorMessage(el)
       this.setStatus('error')
       this.emit({ type: 'error', trackId: this.trackId, message: this.error, recoverable: true })
@@ -137,6 +152,27 @@ export class PlaybackEngine {
     this.timer = null
   }
 
+  private clearBufferingWatchdog(): void {
+    if (!this.bufferingTimer) return
+    clearTimeout(this.bufferingTimer)
+    this.bufferingTimer = null
+  }
+
+  private armBufferingWatchdog(): void {
+    this.clearBufferingWatchdog()
+    const generation = this.generation
+    this.bufferingTimer = setTimeout(() => {
+      this.bufferingTimer = null
+      if (generation !== this.generation || this.status !== 'loading' || !this.trackId) return
+      const trackId = this.trackId
+      const message = 'Audio kept buffering too long. Refreshing the playback source may help.'
+      this.error = message
+      this.hardStop()
+      this.setStatus('error')
+      this.emit({ type: 'error', trackId, message, recoverable: true })
+    }, BUFFERING_TIMEOUT_MS)
+  }
+
   snapshot(): EngineSnapshot {
     const el = this.el
     let buffered = 0
@@ -180,6 +216,20 @@ export class PlaybackEngine {
     return this.generation
   }
 
+  private async startElementPlayback(): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        this.el.play(),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new PlaybackStartTimeout()), PLAY_START_TIMEOUT_MS)
+        }),
+      ])
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout)
+    }
+  }
+
   /** Returns false when the token is stale, meaning the caller lost the race. */
   async load(token: number, url: string, startAt = 0, autoplay = true): Promise<boolean> {
     if (token !== this.generation) return false
@@ -202,13 +252,17 @@ export class PlaybackEngine {
       return true
     }
     try {
-      await el.play()
+      await this.startElementPlayback()
     } catch (err) {
       if (token !== this.generation) return false
-      const message = err instanceof Error ? err.message : 'Playback failed.'
+      const timedOut = err instanceof PlaybackStartTimeout
+      const message = timedOut
+        ? 'Playback did not start before the buffering timeout.'
+        : err instanceof Error ? err.message : 'Playback failed.'
       this.error = message
+      if (timedOut) this.hardStop()
       this.setStatus('error')
-      this.emit({ type: 'error', trackId: this.trackId, message, recoverable: false })
+      this.emit({ type: 'error', trackId: this.trackId, message, recoverable: timedOut })
       return false
     }
     return token === this.generation
@@ -229,10 +283,16 @@ export class PlaybackEngine {
   async play(): Promise<void> {
     if (!this.el.src) return
     try {
-      await this.el.play()
+      await this.startElementPlayback()
     } catch (err) {
-      this.error = err instanceof Error ? err.message : 'Playback failed.'
+      const timedOut = err instanceof PlaybackStartTimeout
+      const message = timedOut
+        ? 'Playback did not resume before the buffering timeout.'
+        : err instanceof Error ? err.message : 'Playback failed.'
+      this.error = message
+      if (timedOut) this.hardStop()
       this.setStatus('error')
+      this.emit({ type: 'error', trackId: this.trackId, message, recoverable: timedOut })
     }
   }
 
@@ -255,6 +315,7 @@ export class PlaybackEngine {
   private hardStop(): void {
     const el = this.el
     this.stopTimer()
+    this.clearBufferingWatchdog()
     try {
       el.pause()
     } catch {

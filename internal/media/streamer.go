@@ -13,9 +13,59 @@ import (
 // Streamer is the reusable HTTP streaming boundary shared by the desktop
 // loopback proxy and the hosted API. It only accepts an already-validated
 // provider source id; it can never be used as an arbitrary URL proxy.
+var ErrUpstreamStream = errors.New("provider audio stream unavailable")
+
+type StreamFailure struct {
+	Stage     string
+	SourceID  string
+	RequestID string
+	Status    int
+	Failure   string
+}
+
 type Streamer struct {
 	resolver *Resolver
 	client   *http.Client
+	onError  func(StreamFailure)
+}
+
+// SetFailureObserver installs a diagnostics callback. Events contain only the
+// provider source id, stage, request id, status, and classified failure; raw
+// errors, provider URLs, request headers, cookies, and signing capabilities are
+// never included.
+func (s *Streamer) SetFailureObserver(observer func(StreamFailure)) {
+	s.onError = observer
+}
+
+func (s *Streamer) report(r *http.Request, stage, sourceID string, status int, err error) {
+	if s.onError == nil || err == nil {
+		return
+	}
+	s.onError(StreamFailure{
+		Stage: stage, SourceID: sourceID, RequestID: r.Header.Get("X-Melo-Request-ID"),
+		Status: status, Failure: FailureClass(err),
+	})
+}
+
+// FailureClass is deliberately lossy: it provides operationally useful labels
+// without allowing wrapped HTTP client or resolver errors to leak signed URLs.
+func FailureClass(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, ErrUnavailable):
+		return "media_unavailable"
+	case errors.Is(err, ErrNoAudio):
+		return "no_audio"
+	case errors.Is(err, ErrResolve):
+		return "resolve_failed"
+	case errors.Is(err, ErrUpstreamStream):
+		return "upstream_unavailable"
+	default:
+		return "stream_failed"
+	}
 }
 
 func NewStreamer(resolver *Resolver) *Streamer {
@@ -39,6 +89,7 @@ func NewStreamer(resolver *Resolver) *Streamer {
 func (s *Streamer) Serve(w http.ResponseWriter, r *http.Request, sourceID, quality string) {
 	res, err := s.resolver.Resolve(r.Context(), sourceID, quality)
 	if err != nil {
+		s.report(r, "stream_resolve", sourceID, 0, err)
 		writeStreamError(w, err)
 		return
 	}
@@ -50,14 +101,17 @@ func (s *Streamer) Serve(w http.ResponseWriter, r *http.Request, sourceID, quali
 		s.resolver.Invalidate(sourceID)
 		res, resolveErr := s.resolver.Resolve(r.Context(), sourceID, quality)
 		if resolveErr != nil {
+			s.report(r, "stream_reresolve", sourceID, status, resolveErr)
 			writeStreamError(w, resolveErr)
 			return
 		}
-		if _, pipeErr := s.pipe(w, r, res); pipeErr != nil {
+		if retryStatus, pipeErr := s.pipe(w, r, res); pipeErr != nil {
+			s.report(r, "stream_retry", sourceID, retryStatus, pipeErr)
 			writeStreamError(w, pipeErr)
 		}
 		return
 	}
+	s.report(r, "upstream_stream", sourceID, status, err)
 	writeStreamError(w, err)
 }
 
@@ -68,7 +122,7 @@ func (s *Streamer) pipe(w http.ResponseWriter, r *http.Request, res Resolved) (i
 	}
 	req, err := http.NewRequestWithContext(r.Context(), method, res.URL, nil)
 	if err != nil {
-		return 0, err
+		return 0, ErrUpstreamStream
 	}
 	for k, v := range res.Headers {
 		if strings.EqualFold(k, "Accept-Encoding") || strings.EqualFold(k, "Range") || strings.EqualFold(k, "Host") {
@@ -84,7 +138,10 @@ func (s *Streamer) pipe(w http.ResponseWriter, r *http.Request, res Resolved) (i
 		if errors.Is(err, context.Canceled) {
 			return 0, nil // seeking and track changes normally abort old requests
 		}
-		return 0, fmt.Errorf("couldn't reach the audio stream: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return 0, context.DeadlineExceeded
+		}
+		return 0, ErrUpstreamStream
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -116,11 +173,14 @@ func (s *Streamer) pipe(w http.ResponseWriter, r *http.Request, res Resolved) (i
 
 func writeStreamError(w http.ResponseWriter, err error) {
 	code := http.StatusBadGateway
+	message := "Playback stream is temporarily unavailable."
 	switch {
 	case errors.Is(err, ErrUnavailable), errors.Is(err, ErrNoAudio):
 		code = http.StatusNotFound
+		message = "Media unavailable: this track has no playable source."
 	case errors.Is(err, context.DeadlineExceeded):
 		code = http.StatusGatewayTimeout
+		message = "Playback stream timed out."
 	}
-	http.Error(w, err.Error(), code)
+	http.Error(w, message, code)
 }

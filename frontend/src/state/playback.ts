@@ -105,9 +105,22 @@ export class PlaybackController {
         if (event.recoverable && current && current.id === event.trackId && this.recoveredTrackId !== current.id) {
           this.recoveredTrackId = current.id
           backend().invalidatePlayable?.(current.id)
+          void backend().reportPlaybackError?.({
+            trackId: current.id,
+            code: 'media_interrupted_retrying',
+            recoverable: true,
+          }).catch(() => {})
+          ui.toast('Playback interrupted — refreshing the source…', 'info')
           const resumeAt = positionChannel.getPosition()
           void this.start(current, resumeAt, true)
           return
+        }
+        if (current) {
+          void backend().reportPlaybackError?.({
+            trackId: current.id,
+            code: event.recoverable ? 'media_recovery_exhausted' : 'media_playback_failed',
+            recoverable: false,
+          }).catch(() => {})
         }
         ui.toast(event.message, 'error')
         break

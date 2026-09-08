@@ -56,6 +56,7 @@ export function createWebBackend(baseURL = import.meta.env.VITE_MELO_API_URL || 
     getPlayable: resolve,
     prefetchPlayable: async (track) => { await resolve(track) },
     invalidatePlayable: (trackId) => { playable.delete(trackId) },
+    reportPlaybackError: (diagnostic) => api.send<void>('POST', '/events/playback-error', diagnostic),
     getLyrics: (query: LyricsQuery) => api.send<LyricsResult>('POST', '/lyrics', query),
     saveSettings: (settings: Settings) => api.send<Settings>('PUT', '/settings', settings),
     setLiked: (track: Track, liked: boolean) => api.send<Track[]>(liked ? 'POST' : 'DELETE', '/library/likes', track),

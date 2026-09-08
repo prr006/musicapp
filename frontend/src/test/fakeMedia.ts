@@ -74,6 +74,10 @@ export class FakeMedia extends EventTarget {
     this.dispatchEvent(new Event('timeupdate'))
   }
 
+  startBuffering(): void {
+    this.dispatchEvent(new Event('waiting'))
+  }
+
   endNaturally(): void {
     this.currentTime = Number.isFinite(this.duration) ? this.duration : this.currentTime
     this.paused = true

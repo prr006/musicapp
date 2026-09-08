@@ -87,6 +87,29 @@ describe('PlaybackEngine', () => {
     expect(media.currentTime).toBe(0)
   })
 
+  it('fails a stream that buffers indefinitely so recovery can run', async () => {
+    vi.useFakeTimers()
+    try {
+      const errors: Array<{ message: string; recoverable: boolean }> = []
+      engine.subscribe((event) => {
+        if (event.type === 'error') errors.push(event)
+      })
+      const token = engine.beginLoad('a')
+      await engine.load(token, 'http://local/a')
+      media.startBuffering()
+      expect(engine.snapshot().status).toBe('loading')
+
+      vi.advanceTimersByTime(25_000)
+
+      expect(engine.snapshot().status).toBe('error')
+      expect(errors.at(-1)?.recoverable).toBe(true)
+      expect(errors.at(-1)?.message).toMatch(/buffering too long/i)
+      expect(media.src).toBe('')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('surfaces decode failures as a real error state', async () => {
     const errors: string[] = []
     engine.subscribe((e) => {

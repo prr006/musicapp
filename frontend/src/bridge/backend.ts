@@ -46,6 +46,7 @@ export interface Backend {
   recommendations?(): Promise<Recommendations>
   prefetchPlayable?(track: Track): Promise<void>
   invalidatePlayable?(trackId: string): void
+  reportPlaybackError?(diagnostic: { trackId: string; code: string; recoverable: boolean }): Promise<void>
   getMe?(): Promise<UserIdentity>
   login?(username: string, password: string): Promise<UserIdentity>
   register?(username: string, password: string): Promise<UserIdentity>

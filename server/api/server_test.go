@@ -123,6 +123,28 @@ func TestResolveReturnsTicketNotProviderURL(t *testing.T) {
 	}
 }
 
+func TestPlaybackDiagnosticsAreSanitizedAndCorrelated(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/events/playback-error", strings.NewReader(`{"trackId":"yt:abcdefghijk","code":"media_recovery_exhausted","recoverable":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "browser-request-123")
+	res := httptest.NewRecorder()
+	testHandler(t).ServeHTTP(res, req)
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", res.Code, res.Body.String())
+	}
+	if got := res.Header().Get("X-Request-ID"); got != "browser-request-123" {
+		t.Fatalf("request id was not preserved, got %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/events/playback-error", strings.NewReader(`{"trackId":"yt:abcdefghijk","code":"raw secret text!","recoverable":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	res = httptest.NewRecorder()
+	testHandler(t).ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("unsafe diagnostic code should be rejected, got %d", res.Code)
+	}
+}
+
 func TestRequestValidation(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=", nil)
 	res := httptest.NewRecorder()

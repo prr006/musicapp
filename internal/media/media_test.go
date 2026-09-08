@@ -445,6 +445,18 @@ func TestResolverSurfacesRealErrors(t *testing.T) {
 	}
 }
 
+func TestStreamErrorsNeverExposeProviderURLs(t *testing.T) {
+	providerURL := "https://signed-provider.invalid/audio?token=secret"
+	res := httptest.NewRecorder()
+	writeStreamError(res, fmt.Errorf("GET %s: %w", providerURL, ErrUpstreamStream))
+	if strings.Contains(res.Body.String(), providerURL) || strings.Contains(res.Body.String(), "secret") {
+		t.Fatalf("provider capability leaked in stream error: %q", res.Body.String())
+	}
+	if got := FailureClass(fmt.Errorf("wrapped: %w", ErrUpstreamStream)); got != "upstream_unavailable" {
+		t.Fatalf("unexpected safe failure class %q", got)
+	}
+}
+
 // ---------------- proxy ----------------
 
 func newTestProxy(t *testing.T, upstream string) (*Proxy, *fakeRunner) {

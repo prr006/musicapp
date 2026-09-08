@@ -9,6 +9,8 @@ Success responses are stable domain objects; errors are:
 
 A signed HTTP-only `melo_session` cookie isolates anonymous and authenticated
 libraries. CORS echoes only configured exact origins and permits credentials.
+Every response includes an `X-Request-ID`; a valid caller-supplied ID is preserved
+and exposed to approved browser origins for support correlation.
 
 ## Catalogue and playback
 
@@ -52,5 +54,15 @@ another account receives `404` rather than object existence information.
 - `GET /ready`: storage readiness.
 - `GET /api/v1/diagnostics`: sanitized runtime/provider status with no internal
   filesystem paths.
+- `POST /api/v1/events/playback-error`: accepts only a validated track ID,
+  machine-readable code, and recoverability flag. It lets browser media failures
+  be correlated without accepting or logging free-form messages, source URLs,
+  cookies, or capabilities.
 - Search, resolve, stream, and global API requests use independent token buckets.
 - Provider failures open a short circuit backoff after repeated failures.
+- Structured logs identify the `search`, `suggest`, `resolve`, `lyrics`, `radio`,
+  `recommendations`, `signed_source`, `stream_resolve`, `stream_reresolve`,
+  `upstream_stream`, `stream_retry`, and `browser_playback` stages. Provider URLs,
+  provider headers, cookie values, and playback signatures are never logged.
+- Provider-facing error details remain in server logs; browser responses use
+  stable messages suitable for retry UI rather than exposing resolver output.

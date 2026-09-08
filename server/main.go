@@ -45,6 +45,15 @@ func main() {
 	searchProvider := provider.New(runner)
 	resolver := media.NewResolver(runner)
 	streamer := media.NewStreamer(resolver)
+	streamer.SetFailureObserver(func(failure media.StreamFailure) {
+		logger.Error("playback stream failure",
+			"stage", failure.Stage,
+			"source_id", failure.SourceID,
+			"request_id", failure.RequestID,
+			"upstream_status", failure.Status,
+			"failure", failure.Failure,
+		)
+	})
 	lyricsProvider := lyrics.New()
 	accounts := accountstore.NewFileRepository(cfg.DataDir)
 	authService, err := auth.New(cfg.SessionSecret, cfg.CookieSecure, cfg.DataDir)

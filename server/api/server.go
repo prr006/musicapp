@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,6 +126,7 @@ func New(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/v1/stream/{id}", s.stream)
 	mux.HandleFunc("HEAD /api/v1/stream/{id}", s.stream)
 	mux.HandleFunc("POST /api/v1/lyrics", s.getLyrics)
+	mux.HandleFunc("POST /api/v1/events/playback-error", s.playbackError)
 	mux.HandleFunc("GET /api/v1/playlists", s.listPlaylists)
 	mux.HandleFunc("POST /api/v1/playlists", s.createPlaylist)
 	mux.HandleFunc("PATCH /api/v1/playlists/{id}", s.renamePlaylist)
@@ -140,6 +143,7 @@ func New(dependencies Dependencies) http.Handler {
 	handler = s.logRequests(handler)
 	handler = s.securityHeaders(handler)
 	handler = s.cors(handler)
+	handler = s.requestID(handler)
 	return handler
 }
 
@@ -368,7 +372,8 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.cachedSearch(r.Context(), query, filter)
 	if err != nil {
-		writeProviderError(w, err)
+		s.logStageFailure(r, "search", err, "filter", filter, "query_length", len(query))
+		writeSearchError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -386,7 +391,8 @@ func (s *Server) suggest(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.cachedSearch(r.Context(), query, "")
 	if err != nil {
-		writeProviderError(w, err)
+		s.logStageFailure(r, "suggest", err, "query_length", len(query))
+		writeSearchError(w, err)
 		return
 	}
 	if len(result.Songs) > 6 {
@@ -461,7 +467,8 @@ func (s *Server) resolveTrack(w http.ResponseWriter, r *http.Request, trackID, s
 	defer cancel()
 	resolved, err := s.resolver.Resolve(ctx, sourceID, quality)
 	if err != nil {
-		writeProviderError(w, err)
+		s.logStageFailure(r, "resolve", err, "source_id", sourceID, "quality", quality)
+		writeResolveError(w, err)
 		return
 	}
 	expires := time.Now().Add(2 * time.Hour).Unix()
@@ -469,7 +476,9 @@ func (s *Server) resolveTrack(w http.ResponseWriter, r *http.Request, trackID, s
 		expires = resolved.ExpiresAt.Add(-30 * time.Second).Unix()
 	}
 	if expires <= time.Now().Unix() {
-		writeError(w, http.StatusBadGateway, "expired_source", "the provider returned an expired playback source")
+		err := errors.New("resolver returned a source too close to expiry")
+		s.logStageFailure(r, "signed_source", err, "source_id", sourceID)
+		writeError(w, http.StatusBadGateway, "expired_source", "Playback source expired. Retry the track.")
 		return
 	}
 	signature := s.playbackSignature(sourceID, expires)
@@ -485,7 +494,12 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	expires, err := strconv.ParseInt(r.URL.Query().Get("expires"), 10, 64)
 	signature := r.URL.Query().Get("signature")
 	if err != nil || !validSourceID(id) || expires < time.Now().Unix() || !hmac.Equal([]byte(signature), []byte(s.playbackSignature(id, expires))) {
-		writeError(w, http.StatusForbidden, "invalid_playback_ticket", "playback link is invalid or expired")
+		safeSourceID := ""
+		if validSourceID(id) {
+			safeSourceID = id
+		}
+		s.logger.Warn("signed playback source rejected", "stage", "signed_source", "request_id", requestID(r), "source_id", safeSourceID, "expired", expires > 0 && expires < time.Now().Unix())
+		writeError(w, http.StatusForbidden, "invalid_playback_ticket", "Playback source expired or is invalid. Resolve the track again.")
 		return
 	}
 	if !s.streamLimit.allow(clientIP(r, s.cfg.TrustProxyHeaders)) {
@@ -532,13 +546,45 @@ func (s *Server) getLyrics(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, lyrics.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "lyrics_not_found", err.Error())
+			writeError(w, http.StatusNotFound, "lyrics_not_found", "No lyrics found.")
 		} else {
-			writeProviderError(w, err)
+			s.logStageFailure(r, "lyrics", err, "track_id", query.TrackID)
+			writeLyricsError(w, err)
 		}
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+type playbackErrorBody struct {
+	TrackID     string `json:"trackId"`
+	Code        string `json:"code"`
+	Recoverable bool   `json:"recoverable"`
+}
+
+func (s *Server) playbackError(w http.ResponseWriter, r *http.Request) {
+	var body playbackErrorBody
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if len(body.TrackID) > 200 || len(body.Code) < 1 || len(body.Code) > 80 {
+		writeError(w, http.StatusBadRequest, "invalid_playback_event", "invalid playback diagnostic")
+		return
+	}
+	for _, char := range body.Code {
+		if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '_' || char == '-') {
+			writeError(w, http.StatusBadRequest, "invalid_playback_event", "invalid playback diagnostic")
+			return
+		}
+	}
+	s.logger.Warn("browser playback failure",
+		"stage", "browser_playback",
+		"request_id", requestID(r),
+		"track_id", body.TrackID,
+		"code", body.Code,
+		"recoverable", body.Recoverable,
+	)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) listPlaylists(w http.ResponseWriter, r *http.Request) {
@@ -688,7 +734,8 @@ func (s *Server) radio(w http.ResponseWriter, r *http.Request) {
 		return s.buildRadio(ctx, r, kind, id)
 	})
 	if err != nil {
-		writeProviderError(w, err)
+		s.logStageFailure(r, "radio", err, "kind", kind, "seed_id", id)
+		writeSearchError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -754,7 +801,8 @@ func (s *Server) recommendations(w http.ResponseWriter, r *http.Request) {
 		return s.buildRecommendations(ctx, state)
 	})
 	if err != nil {
-		writeProviderError(w, err)
+		s.logStageFailure(r, "recommendations", err)
+		writeSearchError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -852,6 +900,46 @@ func canonical(value string) string {
 	}, value)
 }
 
+const requestIDHeader = "X-Melo-Request-ID"
+
+func (s *Server) requestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if !validRequestID(id) {
+			var raw [12]byte
+			if _, err := rand.Read(raw[:]); err != nil {
+				id = fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+			} else {
+				id = hex.EncodeToString(raw[:])
+			}
+		}
+		r.Header.Set(requestIDHeader, id)
+		w.Header().Set("X-Request-ID", id)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func validRequestID(value string) bool {
+	if len(value) < 8 || len(value) > 80 {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-' || char == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func requestID(r *http.Request) string { return r.Header.Get(requestIDHeader) }
+
+func (s *Server) logStageFailure(r *http.Request, stage string, err error, attributes ...any) {
+	_, failure := providerErrorStatus(err)
+	fields := []any{"stage", stage, "request_id", requestID(r), "failure", failure}
+	fields = append(fields, attributes...)
+	s.logger.Error("provider operation failed", fields...)
+}
+
 func (s *Server) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodOptions && !s.globalLimit.allow(clientIP(r, s.cfg.TrustProxyHeaders)) {
@@ -876,6 +964,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 			}
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
 			w.Header().Add("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
@@ -929,7 +1018,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		wrapped := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
 		if r.URL.Path != "/health" && !strings.Contains(r.URL.Path, "/stream/") {
-			s.logger.Info("http request", "method", r.Method, "path", r.URL.Path, "status", wrapped.status, "duration_ms", time.Since(started).Milliseconds())
+			s.logger.Info("http request", "request_id", requestID(r), "method", r.Method, "path", r.URL.Path, "status", wrapped.status, "duration_ms", time.Since(started).Milliseconds())
 		}
 	})
 }
@@ -1027,19 +1116,49 @@ func writeInternal(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusInternalServerError, "storage_error", "account storage is unavailable")
 }
 
-func writeProviderError(w http.ResponseWriter, err error) {
-	status := http.StatusBadGateway
-	code := "provider_error"
-	if errors.Is(err, context.DeadlineExceeded) {
-		status, code = http.StatusGatewayTimeout, "provider_timeout"
+func providerErrorStatus(err error) (int, string) {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return http.StatusGatewayTimeout, "provider_timeout"
+	case errors.Is(err, cache.ErrCircuitOpen):
+		return http.StatusServiceUnavailable, "provider_backoff"
+	case errors.Is(err, media.ErrUnavailable), errors.Is(err, media.ErrNoAudio):
+		return http.StatusNotFound, "media_unavailable"
+	default:
+		return http.StatusBadGateway, "provider_error"
 	}
-	if errors.Is(err, cache.ErrCircuitOpen) {
-		status, code = http.StatusServiceUnavailable, "provider_backoff"
+}
+
+func writeSearchError(w http.ResponseWriter, err error) {
+	status, code := providerErrorStatus(err)
+	message := "Search is temporarily unavailable. Try again shortly."
+	if status == http.StatusGatewayTimeout {
+		message = "Search timed out. Try again."
 	}
-	if errors.Is(err, media.ErrUnavailable) || errors.Is(err, media.ErrNoAudio) {
-		status, code = http.StatusNotFound, "media_unavailable"
+	writeError(w, status, code, message)
+}
+
+func writeResolveError(w http.ResponseWriter, err error) {
+	status, code := providerErrorStatus(err)
+	message := "Couldn't resolve this track. Try again."
+	switch status {
+	case http.StatusNotFound:
+		message = "This track has no playable source or is unavailable."
+	case http.StatusGatewayTimeout:
+		message = "Track resolution timed out. Try again."
+	case http.StatusServiceUnavailable:
+		message = "Playback provider is temporarily unavailable. Try again shortly."
 	}
-	writeError(w, status, code, err.Error())
+	writeError(w, status, code, message)
+}
+
+func writeLyricsError(w http.ResponseWriter, err error) {
+	status, code := providerErrorStatus(err)
+	message := "Lyrics are temporarily unavailable."
+	if status == http.StatusGatewayTimeout {
+		message = "Lyrics request timed out. Try again."
+	}
+	writeError(w, status, code, message)
 }
 
 func writeRateLimited(w http.ResponseWriter) {
