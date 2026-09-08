@@ -1189,63 +1189,113 @@ p {
   padding: 16px 24px;
 }
 
-/* The expanded player fills the overlay. With lyrics open it is
-   [player composition | lyrics]; solo it is the composition alone. The
-   global queue overlays the right side of the app — when it is open the
+/* The expanded player body is ONE grid whose template changes with the
+   mode; the DOM is mode-independent (np-art-col / np-info-col /
+   np-lyrics-col cells):
+     solo   →  [ art  | info ]      the desktop two-column composition
+     lyrics →  [ art  | lyrics ]
+               [ info | lyrics ]    lyrics own the right column; metadata
+                                    + controls stack under the artwork
+   The queue panel overlays the right side of the app — when it is open the
    body's right padding grows by its width so the player REFLOWS beside it
    instead of hiding underneath. */
 .np-body {
   flex: 1;
+  min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 440px);
-  gap: clamp(32px, 4vw, 64px);
-  padding: 12px clamp(32px, 4vw, 72px) 48px;
+  gap: clamp(28px, 3.5vw, 64px);
+  padding: 8px clamp(32px, 4vw, 72px) 44px;
   overflow: hidden;
+  align-content: center;
   transition: padding-right 200ms var(--ease);
 }
 
+/* Desktop composition (>=1200px): artwork left, metadata + transport right.
+   The artwork track takes ~half the available width (bounded), so the two
+   columns visibly fill the player instead of one centred stack. */
 .np-body.solo {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(280px, min(50%, 620px)) minmax(0, 1fr);
+  grid-template-areas: "art info";
+  align-items: center;
+  width: 100%;
+  max-width: 1880px;
+  margin-inline: auto;
 }
 
+/* Lyrics open: lyrics are the right column of the player — a substantial
+   region, not a strip squeezed next to the metadata. */
+.np-body.with-lyrics {
+  grid-template-columns: minmax(0, 22fr) minmax(340px, 27fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "art lyrics"
+    "info lyrics";
+  align-items: start;
+  align-content: stretch;
+  column-gap: clamp(40px, 4vw, 80px);
+  row-gap: 22px;
+}
+
+.np-body.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The global queue overlays the right side of the app; while it is open the
+   player's right padding grows by exactly the panel's width so the whole
+   composition reflows to stay visible beside it. */
 .now-playing.with-queue .np-body {
   padding-right: calc(clamp(320px, 30vw, 420px) + 24px);
 }
 
-/* The player composition: artwork left, metadata + transport right — a real
-   two-column desktop layout rather than one centred stack. Both axes are
-   fluid: the artwork track follows the viewport WIDTH (a vw share, capped),
-   and the cover itself is bounded by the viewport HEIGHT (it is square, so
-   its width may never exceed the vertical room) — short windows shrink the
-   cover instead of clipping the controls. */
 .np-art-col {
-  display: grid;
-  grid-template-columns: minmax(280px, min(44vw, 560px)) minmax(0, 1fr);
-  column-gap: clamp(36px, 4.5vw, 80px);
-  row-gap: 18px;
-  align-items: center;
+  grid-area: art;
   min-width: 0;
-  width: 100%;
-  max-width: 1560px;
-  margin-inline: auto;
+  display: grid;
+  justify-items: center;
 }
 
-/* Lyrics open shares the width with a third region, so the artwork track
-   takes a smaller share of the viewport. */
-.np-body:not(.solo) .np-art-col {
-  grid-template-columns: minmax(260px, min(34vw, 460px)) minmax(0, 1fr);
+.np-info-col {
+  grid-area: info;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.np-lyrics-col {
+  grid-area: lyrics;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.np-lyrics-col .lyrics-wrap {
+  flex: 1;
+  min-height: 0;
 }
 
 .np-art {
-  grid-row: 1 / span 2;
-  justify-self: center;
-  width: min(100%, calc(100vh - 240px));
+  /* Square cover, never cropped (the Artwork component picks the fit). It
+     takes its track's width but is also bounded by the viewport HEIGHT so
+     it stays fully visible: the vertical budget is larger when the info
+     column sits BESIDE the art (solo) than when it stacks UNDER it
+     (lyrics mode). */
+  width: min(100%, calc(100vh - 260px));
   box-shadow: var(--shadow-3);
   border-radius: var(--radius-lg);
 }
 
-.np-art-col .state {
-  grid-column: 1 / -1;
+.np-body.with-lyrics .np-art {
+  width: min(100%, max(240px, calc(100vh - 470px)), 620px);
+}
+
+.np-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
 }
 
 .np-title {
@@ -1262,7 +1312,7 @@ p {
 .np-artist {
   color: var(--text-2);
   font-size: 15px;
-  margin-top: 4px;
+  margin-top: 2px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -1273,16 +1323,23 @@ p {
   text-decoration: underline;
 }
 
+/* Like / dislike / track menu sit directly under the metadata. */
+.np-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .np-controls {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
   width: 100%;
   min-width: 0;
 }
 
 /* The transport follows the metadata column: the scrubber spans its full
-   width (the 780px cap below belongs to the mini player bar only). */
+   width — the 780px cap belongs to the mini player bar only. */
 .now-playing .scrubber-row {
   max-width: none;
 }
@@ -1291,18 +1348,20 @@ p {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 12px;
+}
+
+/* Secondary row: speed, sleep timer, volume — left-aligned under the
+   transport, wrapping instead of overflowing on narrow columns. */
+.np-secondary {
+  display: flex;
+  align-items: center;
+  gap: 18px;
   flex-wrap: wrap;
 }
 
-.np-volume-row {
-  display: flex;
-  justify-content: flex-start;
-}
-
 .np-buttons .play-btn {
-  width: 52px;
-  height: 52px;
+  width: 56px;
+  height: 56px;
 }
 
 /* Small setting clusters (speed, sleep timer) inside the transport row. */
@@ -1972,30 +2031,32 @@ select.input {
 }
 
 /* ---------------- responsive desktop scale ----------------
-   Intermediate sizes stay fluid (clamp()/vw in the rules above), so the
-   whole desktop range needs only three breakpoints: the spacious tier
-   (1600px+), the compact tier (900–1199px) and the narrow single-column
-   fallback (<900px). Sizing only — the visual language is unchanged. */
+   The composition itself is fluid (grid shares + caps in the rules above);
+   the tiers only tune proportions. Breakpoints, deliberately few:
+     >=1920  large desktop      (artwork up to ~650px)
+     >=1600  spacious desktop   (artwork up to ~620px, roomier rhythm)
+     1200-1599 = the base two-column composition, no query needed
+     900-1199 compact desktop   (smaller artwork track, tighter gaps)
+     <900    single-column fallback (stacked player, lyrics hidden)
+   Sizing only — the visual language is unchanged. */
 @media (min-width: 1600px) {
-  .np-body {
-    grid-template-columns: minmax(0, 1fr) minmax(360px, 520px);
-    gap: clamp(40px, 4vw, 80px);
-    padding: 12px clamp(48px, 4vw, 96px) 56px;
+  .np-body.solo {
+    grid-template-columns: minmax(320px, min(52%, 620px)) minmax(0, 1fr);
+    gap: clamp(40px, 4vw, 84px);
+    padding: 8px clamp(48px, 4vw, 96px) 52px;
   }
-  .np-art-col {
-    grid-template-columns: minmax(320px, min(46vw, 680px)) minmax(0, 1fr);
-    column-gap: clamp(44px, 4.5vw, 96px);
-    max-width: 1640px;
+  .np-body.with-lyrics {
+    grid-template-columns: minmax(0, 21fr) minmax(400px, 26fr);
+    column-gap: clamp(48px, 4vw, 88px);
   }
-  .np-body:not(.solo) .np-art-col {
-    grid-template-columns: minmax(300px, min(36vw, 560px)) minmax(0, 1fr);
+  .np-body.with-lyrics .np-art {
+    width: min(100%, max(280px, calc(100vh - 460px)), 620px);
   }
   .np-title {
-    font-size: clamp(30px, 2.2vw, 42px);
+    font-size: clamp(30px, 2.1vw, 40px);
   }
-  .np-buttons .play-btn {
-    width: 56px;
-    height: 56px;
+  .np-artist {
+    font-size: 16px;
   }
   .lyric-line {
     font-size: 23px;
@@ -2017,32 +2078,55 @@ select.input {
   }
 }
 
-/* Compact tier (900–1199px): solo keeps the two-column composition (the
-   artwork track is vw-fluid, so it is already smaller here); with lyrics
-   open there is no room for three regions, so the player falls back to its
-   classic stacked column beside the lyrics pane. */
+/* Large desktop (>=1920): the extra width goes to the artwork (up to the
+   ~650px ceiling from the design) and to the metadata/progress column —
+   not to making every element bigger. */
+@media (min-width: 1920px) {
+  .np-body.solo {
+    grid-template-columns: minmax(340px, min(52%, 650px)) minmax(0, 1fr);
+    max-width: 1960px;
+  }
+  .np-body.with-lyrics {
+    grid-template-columns: minmax(0, 21fr) minmax(440px, 26fr);
+  }
+  .np-body.with-lyrics .np-art {
+    width: min(100%, max(300px, calc(100vh - 470px)), 650px);
+  }
+  .np-title {
+    font-size: clamp(32px, 1.8vw, 42px);
+  }
+  .np-secondary {
+    gap: 24px;
+  }
+}
+
+/* Compact desktop (900–1199px): the two-column composition holds with a
+   smaller artwork track and tighter rhythm; with lyrics open the split
+   narrows so both regions stay usable. */
 @media (max-width: 1199px) {
   .np-body {
-    gap: 32px;
-    padding: 12px 32px 32px;
+    gap: 28px;
+    padding: 8px 32px 32px;
   }
-  .np-body:not(.solo) .np-art-col {
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
-    max-width: min(440px, max(280px, calc(100vh - 520px)));
-    margin-inline: auto;
+  .np-body.solo {
+    grid-template-columns: minmax(240px, min(46%, 440px)) minmax(0, 1fr);
   }
-  .np-body:not(.solo) .np-art {
-    grid-row: auto;
-    width: 100%;
+  .np-body.with-lyrics {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 1fr);
+    column-gap: 36px;
   }
-  .np-body:not(.solo) .np-buttons,
-  .np-body:not(.solo) .np-volume-row {
-    justify-content: center;
+  .np-body.with-lyrics .np-art {
+    width: min(100%, max(220px, calc(100vh - 480px)), 440px);
   }
-  .np-body:not(.solo) .np-title {
-    font-size: clamp(24px, 2vw, 30px);
+  .np-title {
+    font-size: clamp(24px, 2.2vw, 30px);
+  }
+  .np-buttons .play-btn {
+    width: 48px;
+    height: 48px;
+  }
+  .np-secondary {
+    gap: 12px;
   }
   .track-row {
     grid-template-columns: 28px 44px minmax(0, 3fr) auto;
@@ -2052,8 +2136,8 @@ select.input {
   }
 }
 
-/* Narrow tier (<900px): single-column fallback — the composition stacks
-   artwork over metadata and controls again. */
+/* Narrow fallback (<900px): single column — artwork over metadata and
+   controls, lyrics hidden (same as before). */
 @media (max-width: 900px) {
   :root {
     --sidebar-w: 76px;
@@ -2068,26 +2152,42 @@ select.input {
   .playlist-link {
     justify-content: center;
   }
-  .np-body {
+  .np-body.solo,
+  .np-body.with-lyrics {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas:
+      "art"
+      "info";
+    align-items: start;
+    align-content: start;
   }
   .np-art-col {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    max-width: min(420px, 100%);
+    justify-items: center;
   }
   .np-art {
-    grid-row: auto;
-    width: 100%;
+    width: min(100%, max(220px, calc(100vh - 480px)), 420px);
   }
+  /* The stacked column keeps a readable measure (controls span it, the
+     rows inside centre themselves) instead of hugging the window edge. */
+  .np-info-col {
+    width: 100%;
+    max-width: 560px;
+    margin-inline: auto;
+  }
+  .np-meta {
+    align-items: center;
+    text-align: center;
+  }
+  .np-actions,
   .np-buttons,
-  .np-volume-row {
+  .np-secondary {
     justify-content: center;
   }
   .np-title {
     font-size: 24px;
   }
+  .np-lyrics-col,
   .lyrics-wrap,
   .lyrics-pane {
     display: none;

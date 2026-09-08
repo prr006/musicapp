@@ -14,7 +14,7 @@
 // makes `?raw` CSS imports empty — see test/node-api.d.ts for the shims.)
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
@@ -96,56 +96,80 @@ describe('layout: stylesheet contract (desktop viewport usage)', () => {
 })
 
 describe('layout: expanded Now Playing', () => {
-  it('is a true two-column composition: artwork track + metadata column', () => {
-    const col = rule('.np-art-col')
-    // The artwork track is a fluid share of the viewport WIDTH…
-    expect(col).toContain('minmax(280px, min(44vw, 560px))')
-    expect(col).toContain('minmax(0, 1fr)') // …beside the metadata/controls column
-    expect(col).toContain('clamp(36px, 4.5vw, 80px)') // fluid inter-column gap
-    // …while the square cover is bounded by the viewport HEIGHT too: its
-    // width may never exceed the vertical room, so short windows shrink it
-    // instead of clipping the controls.
-    expect(rule('.np-art')).toContain('min(100%, calc(100vh - 240px))')
-    const body = rule('.np-body')
-    expect(body).toContain('clamp(32px, 4vw, 64px)') // fluid gap
-    expect(body).toContain('minmax(320px, 440px)') // lyrics column beside the composition
+  it('>=1200px is a two-column composition: artwork cell + metadata/controls cell', () => {
+    // The body grid places the artwork cell in one column and the info
+    // column in the other — not one centred stack.
+    const body = rule('.np-body.solo')
+    expect(body).toContain('grid-template-areas: "art info"')
+    expect(body).toContain('minmax(280px, min(50%, 620px))') // artwork track ~half the width
+    expect(body).toContain('minmax(0, 1fr)') // metadata + controls take the rest
+    expect(rule('.np-art-col')).toContain('grid-area: art')
+    expect(rule('.np-info-col')).toContain('grid-area: info')
+  })
+
+  it('the artwork is height-bounded so it stays fully visible (never cropped)', () => {
+    const art = rule('.np-art')
+    expect(art).toContain('min(100%, calc(100vh - 260px))')
+    // With lyrics open the info column stacks UNDER the art, so the vertical
+    // budget is smaller — a separate, tighter bound exists for that mode.
+    expect(css).toContain('.np-body.with-lyrics .np-art {')
   })
 
   it('the scrubber spans the metadata column — the 780px cap is mini-player only', () => {
     expect(rule('.scrubber-row')).toContain('max-width: 780px')
-    expect(css).toContain('.now-playing .scrubber-row {')
     const idx = css.indexOf('.now-playing .scrubber-row {')
+    expect(idx).toBeGreaterThanOrEqual(0)
     expect(css.slice(idx, css.indexOf('}', idx))).toContain('max-width: none')
+  })
+
+  it('like/dislike/track menu sit with the metadata; transport and secondary rows below', () => {
+    expect(rule('.np-actions')).toContain('display: flex')
+    expect(rule('.np-buttons .play-btn')).toContain('width: 56px')
+    expect(rule('.np-secondary')).toContain('flex-wrap: wrap')
+  })
+
+  it('>=1600px uses the spacious tier', () => {
+    const spacious = mediaBlock('min-width: 1600px')
+    expect(spacious).toContain('minmax(320px, min(52%, 620px))') // larger artwork track
+    expect(spacious).toContain('clamp(30px, 2.1vw, 40px)') // larger title
+    // Pages benefit too: roomier cards and detail heroes.
+    expect(spacious).toContain('clamp(184px, 11vw, 240px)')
+    expect(spacious).toContain('clamp(232px, 13vw, 300px)')
+  })
+
+  it('>=1920px uses the large-desktop tier (artwork ceiling ~650px, no element inflation)', () => {
+    const large = mediaBlock('min-width: 1920px')
+    expect(large).toContain('minmax(340px, min(52%, 650px))') // artwork ceiling
+    expect(large).toContain('max-width: 1960px') // the composition stays bounded
+    expect(large).toContain('minmax(440px, 26fr)') // lyrics region grows too
+  })
+
+  it('900-1199px keeps a compact two-column layout', () => {
+    const compact = mediaBlock('max-width: 1199px')
+    expect(compact).toContain('minmax(240px, min(46%, 440px))') // smaller artwork track, still two columns
+    expect(compact).toContain('width: 48px') // compact play button
+  })
+
+  it('<900px collapses to the single-column stacked fallback', () => {
+    const narrow = mediaBlock('max-width: 900px')
+    expect(narrow).toContain('"art"')
+    expect(narrow).toContain('"info"')
+    expect(narrow).toContain('grid-template-columns: minmax(0, 1fr)')
+    expect(narrow).toContain('.np-lyrics-col') // lyrics hidden in the narrow tier
+  })
+
+  it('lyrics own the right column when open (art + info stack beside them)', () => {
+    const lyrics = rule('.np-body.with-lyrics')
+    expect(lyrics).toContain('"art lyrics"')
+    expect(lyrics).toContain('"info lyrics"')
+    expect(lyrics).toContain('minmax(340px, 27fr)') // substantial region, not a strip
+    expect(rule('.np-lyrics-col')).toContain('grid-area: lyrics')
   })
 
   it('the player reflows beside the open queue panel instead of hiding under it', () => {
     expect(css).toContain('.now-playing.with-queue .np-body {')
     const idx = css.indexOf('.now-playing.with-queue .np-body {')
     expect(css.slice(idx, css.indexOf('}', idx))).toContain('clamp(320px, 30vw, 420px)')
-  })
-
-  it('the spacious tier (1600px+) visibly enlarges the player', () => {
-    const spacious = mediaBlock('min-width: 1600px')
-    expect(spacious).toContain('minmax(320px, min(46vw, 680px))') // bigger artwork track
-    expect(spacious).toContain('clamp(30px, 2.2vw, 42px)') // bigger title
-    expect(spacious).toContain('.np-buttons .play-btn')
-    // Pages benefit too: roomier cards and detail heroes.
-    expect(spacious).toContain('clamp(184px, 11vw, 240px)')
-    expect(spacious).toContain('clamp(232px, 13vw, 300px)')
-  })
-
-  it('compact tier (900–1199px): lyrics mode stacks beside the pane; solo keeps the split', () => {
-    const compact = mediaBlock('max-width: 1199px')
-    expect(compact).toContain('display: flex') // stacked player column with lyrics open
-    expect(compact).toContain('calc(100vh - 520px)') // …still height-bounded
-    expect(compact).toContain('justify-content: center') // controls re-centre when stacked
-  })
-
-  it('collapses to a single column at narrow widths', () => {
-    const narrow = mediaBlock('max-width: 900px')
-    expect(narrow).toContain('.np-body')
-    expect(narrow).toContain('.np-art-col') // the composition itself stacks
-    expect(narrow).toContain('grid-template-columns: minmax(0, 1fr)')
   })
 
   it('lyrics keep a readable line length on ultra-wide columns', () => {
@@ -170,12 +194,12 @@ describe('layout: breakpoints', () => {
   it('uses fluid sizing first and only the intended breakpoints', () => {
     const queries = [...css.matchAll(/@media \(([^)]+)\)/g)].map((m) => m[1])
     expect(queries).toEqual(
-      expect.arrayContaining(['min-width: 1600px', 'max-width: 1199px', 'max-width: 900px', 'prefers-reduced-motion: reduce']),
+      expect.arrayContaining(['min-width: 1600px', 'min-width: 1920px', 'max-width: 1199px', 'max-width: 900px', 'prefers-reduced-motion: reduce']),
     )
-    // Guard against hard-coded breakpoint sprawl: exactly these four. The
-    // tiers between them (≥1920, 1200–1599, 900–1199) stay fluid via
-    // clamp()/vw sizing rather than piling up more breakpoints.
-    expect(queries).toHaveLength(4)
+    // Guard against hard-coded breakpoint sprawl: exactly these five. The
+    // 1200–1599px balanced tier is the no-query base (fluid clamp()/vw
+    // sizing) rather than another breakpoint.
+    expect(queries).toHaveLength(5)
   })
 })
 
@@ -322,5 +346,87 @@ describe('layout: rendered shell structure', () => {
     const user = userEvent.setup()
     await user.click(libraryLink!)
     await waitFor(() => expect(useUIStore.getState().route.name).toBe('library'))
+  })
+})
+
+/* ---------------- expanded Now Playing: rendered composition ---------------- */
+
+describe('layout: rendered Now Playing composition', () => {
+  async function openNowPlaying(opts: { lyrics?: boolean; queue?: boolean } = {}) {
+    const { container } = render(<App />)
+    const { playback } = await import('../state/playback')
+    await playback.play(song('a'))
+    await waitFor(() => expect(usePlayerStore.getState().current).toBeTruthy())
+    useUIStore.setState({
+      nowPlayingOpen: true,
+      lyricsOpen: !!opts.lyrics,
+      queueOpen: !!opts.queue,
+    })
+    const section = () => container.querySelector('.main > .now-playing')!
+    await waitFor(() => expect(section()).toBeTruthy())
+    return { container, section }
+  }
+
+  it('renders the two-column composition: artwork cell beside the info cell', async () => {
+    const { section } = await openNowPlaying()
+    const body = section().querySelector('.np-body')
+    expect(body).toBeTruthy()
+    expect(body!.classList.contains('solo')).toBe(true)
+    // Two named grid cells — artwork and metadata/controls — not one stack.
+    const artCol = body!.querySelector(':scope > .np-art-col')
+    const infoCol = body!.querySelector(':scope > .np-info-col')
+    expect(artCol).toBeTruthy()
+    expect(infoCol).toBeTruthy()
+    expect(artCol!.querySelector('.np-art')).toBeTruthy()
+    // The info column carries the full right-side stack: metadata, actions
+    // (like / dislike / track menu), progress, transport, secondary row.
+    expect(infoCol!.querySelector('.np-title')).toBeTruthy()
+    expect(infoCol!.querySelector('.np-actions')).toBeTruthy()
+    expect(infoCol!.querySelector('.np-controls .scrubber-row')).toBeTruthy()
+    expect(infoCol!.querySelectorAll('.np-buttons button').length).toBeGreaterThanOrEqual(4)
+    expect(infoCol!.querySelector('.np-secondary [aria-label="Playback speed"]')).toBeTruthy()
+    expect(infoCol!.querySelector('.np-secondary [aria-label="Sleep timer"]')).toBeTruthy()
+    expect(infoCol!.querySelector('.np-secondary [aria-label="Mute"], .np-secondary [aria-label="Unmute"]')).toBeTruthy()
+    // No lyrics column when lyrics are closed.
+    expect(body!.querySelector('.np-lyrics-col')).toBeNull()
+  })
+
+  it('lyrics open: the lyrics column exists and the art/info cells remain', async () => {
+    const { section } = await openNowPlaying({ lyrics: true })
+    const body = section().querySelector('.np-body')!
+    expect(body.classList.contains('with-lyrics')).toBe(true)
+    // The lyrics column exists and hosts the pane (whatever state it is in —
+    // synced, plain, loading or empty all live in that column).
+    const lyricsCol = body.querySelector(':scope > .np-lyrics-col') as HTMLElement
+    expect(lyricsCol).toBeTruthy()
+    expect(lyricsCol.childElementCount).toBeGreaterThan(0)
+    expect(body.querySelector(':scope > .np-art-col')).toBeTruthy()
+    expect(body.querySelector(':scope > .np-info-col')).toBeTruthy()
+  })
+
+  it('queue open: the player body gains the with-queue reflow class', async () => {
+    const { section } = await openNowPlaying({ queue: true })
+    expect(section().classList.contains('with-queue')).toBe(true)
+    // The panel and the player coexist; the stacking contract is separate
+    // (panel z-80 over player z-70) and is asserted in the overlay suite.
+    expect(section().querySelector('.np-body')).toBeTruthy()
+  })
+
+  it('the track menu opens from the info column (shared TrackMenu)', async () => {
+    const { section } = await openNowPlaying()
+    const more = section().querySelector('[aria-label="More options"]') as HTMLElement
+    expect(more).toBeTruthy()
+    fireEvent.click(more)
+    await waitFor(() => expect(document.querySelector('[role="menu"]')).toBeTruthy())
+  })
+
+  it('empty player state renders without composition cells', async () => {
+    const { container } = render(<App />)
+    useUIStore.setState({ nowPlayingOpen: true })
+    const section = () => container.querySelector('.main > .now-playing')!
+    await waitFor(() => expect(section()).toBeTruthy())
+    const body = section().querySelector('.np-body')!
+    expect(body.classList.contains('empty')).toBe(true)
+    expect(body.querySelector('.state')).toBeTruthy()
   })
 })

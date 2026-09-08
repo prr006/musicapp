@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { SPEEDS } from '../lib/defaults'
 import { displayArtist, formatTime } from '../lib/format'
 import { library, useLibraryStore } from '../state/libraryStore'
@@ -5,9 +6,10 @@ import { playback, usePlayer } from '../state/playback'
 import { useSleepTimerRemaining } from '../state/timerChannel'
 import { ui, useUIStore } from '../state/uiStore'
 import { Artwork } from './Artwork'
-import { ChevronDown, HeartIcon, LyricsIcon, MoonIcon, QueueIcon, SpeedIcon, ThumbDownIcon } from './Icons'
+import { ChevronDown, HeartIcon, LyricsIcon, MoonIcon, MoreIcon, QueueIcon, SpeedIcon, ThumbDownIcon } from './Icons'
 import { LyricsPane } from './LyricsPane'
 import { ProgressRow, TransportButtons, VolumeControl } from './MiniPlayer'
+import { TrackMenu } from './TrackMenu'
 
 const SLEEP_PRESETS = [15, 30, 45, 60]
 
@@ -23,6 +25,18 @@ function SleepTimerStatus() {
   )
 }
 
+/**
+ * The expanded player. The body is ONE grid whose template changes with the
+ * mode — the DOM itself is mode-independent:
+ *
+ *   solo   (no lyrics)  →  [ artwork | metadata + controls ]   the desktop
+ *                          two-column composition
+ *   lyrics (open)       →  [ artwork | lyrics ]
+ *                           [ metadata | lyrics ]              lyrics own the
+ *                          right column; info stacks under the art
+ *
+ * Everything below 900px collapses to a single stacked column.
+ */
 export function NowPlaying() {
   const current = usePlayer((s) => s.current)
   const status = usePlayer((s) => s.status)
@@ -35,8 +49,10 @@ export function NowPlaying() {
   const disliked = useLibraryStore((s) => (current ? s.disliked.some((t) => t.id === current.id) : false))
   const showLyrics = useLibraryStore((s) => s.settings.showLyrics)
   const sleepTimer = usePlayer((s) => s.sleepTimer)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
   const withLyrics = lyricsOpen && showLyrics
+  const mode = !current ? 'empty' : withLyrics ? 'with-lyrics' : 'solo'
 
   return (
     <section className={`now-playing ${queueOpen ? 'with-queue' : ''}`} aria-label="Now playing">
@@ -81,16 +97,19 @@ export function NowPlaying() {
         </div>
       </div>
 
-      <div className={`np-body ${withLyrics ? '' : 'solo'}`}>
-        <div className="np-art-col">
-          {current ? (
-            <>
+      <div className={`np-body ${mode}`}>
+        {current ? (
+          <>
+            <div className="np-art-col">
               <Artwork
                 src={current.artwork}
                 alt={current.title}
                 className={`np-art ${status === 'loading' ? 'skeleton' : ''}`}
               />
-              <div>
+            </div>
+
+            <div className="np-info-col">
+              <div className="np-meta">
                 <h1 className="np-title">{current.title}</h1>
                 <div className="np-artist">
                   {current.artist ? (
@@ -123,29 +142,48 @@ export function NowPlaying() {
                 {error && <div className="inline-error" style={{ marginTop: 14 }}>{error}</div>}
               </div>
 
+              <div className="np-actions">
+                <button
+                  className={`icon-btn ${liked ? 'active' : ''}`}
+                  onClick={() => void library.toggleLike(current)}
+                  aria-label={liked ? 'Unlike' : 'Like'}
+                  aria-pressed={liked}
+                  type="button"
+                >
+                  <HeartIcon size={19} filled={liked} />
+                </button>
+                <button
+                  className={`icon-btn ${disliked ? 'active' : ''}`}
+                  onClick={() => void library.setDisliked(current, !disliked)}
+                  aria-label={disliked ? 'Allow recommendations again' : 'Don’t recommend this song'}
+                  aria-pressed={disliked}
+                  title={disliked ? 'Allow recommendations again' : 'Don’t recommend this song'}
+                  type="button"
+                >
+                  <ThumbDownIcon size={18} filled={disliked} />
+                </button>
+                <button
+                  className="icon-btn sm"
+                  onClick={(e) => {
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                    setMenu({ x: rect.left, y: rect.bottom + 6 })
+                  }}
+                  aria-label="More options"
+                  aria-haspopup="menu"
+                  title="More options"
+                  type="button"
+                >
+                  <MoreIcon size={16} />
+                </button>
+                {menu && <TrackMenu track={current} anchor={menu} onClose={() => setMenu(null)} />}
+              </div>
+
               <div className="np-controls">
                 <ProgressRow />
                 <div className="np-buttons">
-                  <button
-                    className={`icon-btn ${liked ? 'active' : ''}`}
-                    onClick={() => void library.toggleLike(current)}
-                    aria-label={liked ? 'Unlike' : 'Like'}
-                    aria-pressed={liked}
-                    type="button"
-                  >
-                    <HeartIcon size={19} filled={liked} />
-                  </button>
-                  <button
-                    className={`icon-btn ${disliked ? 'active' : ''}`}
-                    onClick={() => void library.setDisliked(current, !disliked)}
-                    aria-label={disliked ? 'Allow recommendations again' : 'Don’t recommend this song'}
-                    aria-pressed={disliked}
-                    title={disliked ? 'Allow recommendations again' : 'Don’t recommend this song'}
-                    type="button"
-                  >
-                    <ThumbDownIcon size={18} filled={disliked} />
-                  </button>
                   <TransportButtons />
+                </div>
+                <div className="np-secondary">
                   <div className={`np-aux ${speed !== 1 ? 'active' : ''}`}>
                     <SpeedIcon size={16} />
                     <select
@@ -184,21 +222,23 @@ export function NowPlaying() {
                     </select>
                     <SleepTimerStatus />
                   </div>
-                </div>
-                <div className="np-volume-row">
                   <VolumeControl />
                 </div>
               </div>
-            </>
-          ) : (
-            <div className="state">
-              <h3>Nothing playing</h3>
-              <p>Search for something and press play.</p>
             </div>
-          )}
-        </div>
 
-        {withLyrics && <LyricsPane />}
+            {withLyrics && (
+              <div className="np-lyrics-col">
+                <LyricsPane />
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="state">
+            <h3>Nothing playing</h3>
+            <p>Search for something and press play.</p>
+          </div>
+        )}
       </div>
     </section>
   )
