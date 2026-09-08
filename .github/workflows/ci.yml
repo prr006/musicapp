@@ -51,7 +51,9 @@ jobs:
           session_secret=$(openssl rand -hex 32)
           playback_secret=$(openssl rand -hex 32)
           data_dir=$(mktemp -d)
-          chmod 0755 "$data_dir"
+          mkdir -p "$data_dir/accounts"
+          touch "$data_dir/accounts/.existing-root-owned-data"
+          chmod 0700 "$data_dir/accounts"
           docker run --detach --rm --name melo-api-ci \
             --publish 18080:8080 \
             --mount "type=bind,src=$data_dir,dst=/data" \
@@ -77,6 +79,7 @@ jobs:
           grep -qi '^X-Request-Id:' "$headers"
           test "$(stat --format=%u "$data_dir")" = 10001
           test -d "$data_dir/accounts"
+          test -z "$(find "$data_dir" ! -uid 10001 -print -quit)"
 
   frontend:
     runs-on: ubuntu-latest

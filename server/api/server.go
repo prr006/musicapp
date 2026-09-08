@@ -153,6 +153,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	if err := s.accounts.Ready(r.Context()); err != nil {
+		s.logger.Error("storage readiness failed", "stage", "storage_ready", "request_id", requestID(r), "error", err)
 		writeError(w, http.StatusServiceUnavailable, "not_ready", "storage is unavailable")
 		return
 	}

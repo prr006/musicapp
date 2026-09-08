@@ -7,7 +7,10 @@ set -eu
 data_dir=${MELO_DATA_DIR:-/data}
 if [ "$(id -u)" = "0" ]; then
   mkdir -p "$data_dir"
-  chown melo:melo "$data_dir"
+  # Existing Railway volumes can contain directories created by an older image
+  # under a different uid. Repair the small MELO data tree recursively so auth,
+  # account storage, and readiness all use the unprivileged runtime user.
+  chown -R melo:melo "$data_dir"
   exec gosu melo "$@"
 fi
 
