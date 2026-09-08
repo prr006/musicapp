@@ -30,6 +30,12 @@ jobs:
           fi
       - run: go vet ./...
       - run: go build -trimpath -o /tmp/melo-api ./server
+      - name: Build Wails desktop shell (Windows)
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: go build -trimpath -o /tmp/MELO.exe .
 
   frontend:
     runs-on: ubuntu-latest
