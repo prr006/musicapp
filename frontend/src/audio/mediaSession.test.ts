@@ -1,5 +1,4 @@
 import { BrowserMediaSession } from './mediaSession'
-import type { Track } from '../bridge/types'
 
 describe('BrowserMediaSession', () => {
   it('registers supported controls and publishes playback position safely', () => {

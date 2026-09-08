@@ -75,11 +75,11 @@ type Server struct {
 	streamSlots    chan struct{}
 }
 
-func New(deps Dependencies) http.Handler {
+func New(dependencies Dependencies) http.Handler {
 	s := &Server{
-		cfg: deps.Config, auth: deps.Auth, accounts: deps.Accounts, provider: deps.Provider,
-		resolver: deps.Resolver, streamer: deps.Streamer, lyrics: deps.Lyrics,
-		resolverInfo: deps.ResolverInfo, logger: deps.Logger,
+		cfg: dependencies.Config, auth: dependencies.Auth, accounts: dependencies.Accounts, provider: dependencies.Provider,
+		resolver: dependencies.Resolver, streamer: dependencies.Streamer, lyrics: dependencies.Lyrics,
+		resolverInfo: dependencies.ResolverInfo, logger: dependencies.Logger,
 		searchCache: cache.NewGroup[model.SearchResponse](), lyricsCache: cache.NewGroup[lyrics.Result](),
 		radioCache: cache.NewGroup[model.RadioSession](), recommendCache: cache.NewGroup[model.Recommendations](),
 		providerBreak: cache.NewBreaker(5, 30*time.Second),
