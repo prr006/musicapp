@@ -12,6 +12,7 @@ export function NowPlaying() {
   const status = usePlayer((s) => s.status)
   const error = usePlayer((s) => s.error)
   const speed = usePlayer((s) => s.speed)
+  const sleepTimerEndsAt = usePlayer((s) => s.sleepTimerEndsAt)
   const lyricsOpen = useUIStore((s) => s.lyricsOpen)
   const queueOpen = useUIStore((s) => s.queueOpen)
   const liked = useLibraryStore((s) => (current ? s.liked.some((t) => t.id === current.id) : false))
@@ -121,6 +122,20 @@ export function NowPlaying() {
                       ))}
                     </select>
                   </div>
+                  <select
+                    className="input sleep-select"
+                    value={sleepTimerEndsAt ? 'active' : 'off'}
+                    aria-label="Sleep timer"
+                    title="Sleep timer"
+                    onChange={(e) => playback.setSleepTimer(e.target.value === 'off' ? null : Number(e.target.value))}
+                  >
+                    <option value="off">Sleep off</option>
+                    {sleepTimerEndsAt && <option value="active" disabled>Timer active</option>}
+                    <option value="15">15 min</option>
+                    <option value="30">30 min</option>
+                    <option value="45">45 min</option>
+                    <option value="60">1 hour</option>
+                  </select>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'center' }}>
                   <VolumeControl />

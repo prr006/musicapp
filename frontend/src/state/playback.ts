@@ -12,7 +12,8 @@
  * with A's audio, metadata, artwork or lyrics attached to B.
  */
 import { PlaybackEngine } from '../audio/engine'
-import { backend } from '../bridge/backend'
+import { BrowserMediaSession } from '../audio/mediaSession'
+import { backend, type RadioKind } from '../bridge/backend'
 import type { RepeatMode, Track } from '../bridge/types'
 import { normalizeTitle, pickDiscoveryCandidates, type DiscoveryBlock } from '../lib/discovery'
 import { dedupeTracks, moveItem, shuffleUpcoming } from '../lib/queue'
@@ -47,9 +48,23 @@ export class PlaybackController {
   private discoveryWarned = false
   /** Engine generation that has already kicked off a discovery refill. */
   private discoveryRefillGen = 0
+  private sleepTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly mediaSession: BrowserMediaSession
+  private prefetchedTrackId = ''
+  private recoveredTrackId: string | null = null
 
   constructor(engine = new PlaybackEngine()) {
     this.engine = engine
+    this.mediaSession = new BrowserMediaSession({
+      play: () => void this.resume(),
+      pause: () => this.pause(),
+      next: () => void this.next(),
+      previous: () => void this.previous(),
+      seek: (position) => this.seek(position),
+      position: () => positionChannel.getPosition(),
+      duration: () => positionChannel.getDuration(),
+      rate: () => this.engine.snapshot().rate,
+    })
     this.engine.subscribe((event) => this.onEngineEvent(event))
   }
 
@@ -62,6 +77,8 @@ export class PlaybackController {
         positionChannel.setDuration(duration)
         positionChannel.setBuffered(buffered)
         setPlayerState({ status, error, volume, muted, speed: rate })
+        this.mediaSession.setPlaybackState(status)
+        this.mediaSession.updatePosition(status === 'playing')
         if (status === 'playing') {
           this.markPlayed()
           // Refill discovery once per track (generation), not on every state
@@ -69,21 +86,32 @@ export class PlaybackController {
           // re-searching the same anchor query.
           if (this.discoveryRefillGen !== this.engine.currentGeneration) {
             this.discoveryRefillGen = this.engine.currentGeneration
-            void this.refillDiscovery()
+            void this.refillDiscovery().then(() => this.prefetchNext())
           }
+          void this.prefetchNext()
         }
         this.queueSessionSave()
         break
       }
       case 'position':
         positionChannel.setPosition(event.position)
+        this.mediaSession.updatePosition()
         break
       case 'ended':
         this.handleEnded(event.trackId)
         break
-      case 'error':
+      case 'error': {
+        const current = playerState().current
+        if (event.recoverable && current && current.id === event.trackId && this.recoveredTrackId !== current.id) {
+          this.recoveredTrackId = current.id
+          backend().invalidatePlayable?.(current.id)
+          const resumeAt = positionChannel.getPosition()
+          void this.start(current, resumeAt, true)
+          return
+        }
         ui.toast(event.message, 'error')
         break
+      }
     }
   }
 
@@ -165,13 +193,16 @@ export class PlaybackController {
   }
 
   /** Starts a specific track: clears old state first, then resolves. */
-  private async start(track: Track, startAt = 0): Promise<void> {
+  private async start(track: Track, startAt = 0, recovering = false): Promise<void> {
+    if (!recovering) this.recoveredTrackId = null
     const token = this.engine.beginLoad(track.id)
     this.recordedForToken.clear()
     this.discoveryRefillGen = 0
     positionChannel.reset()
     positionChannel.setDuration(track.duration || 0)
     setPlayerState({ current: track, status: 'loading', error: null })
+    this.mediaSession.setTrack(track)
+    this.mediaSession.setPlaybackState('loading')
     lyrics.loadFor(track, () => this.engine.isCurrent(token))
     this.mirrorToDesktop(track.title, track.artist)
 
@@ -217,6 +248,8 @@ export class PlaybackController {
     positionChannel.reset()
     setPlayerState({ current: null, status: 'idle', error: null, index: -1 })
     lyrics.clear()
+    this.mediaSession.setTrack(null)
+    this.setSleepTimer(null)
     this.mirrorToDesktop('', '')
     this.queueSessionSave()
   }
@@ -452,6 +485,74 @@ export class PlaybackController {
     await this.play(list[0], { tracks: list, index: 0, label })
   }
 
+  /** Starts a named radio session while preserving the user's explicit queue.
+   * Hosted builds ask the radio API; desktop falls back to the existing search
+   * provider so the same controls remain useful in Wails. */
+  async startRadio(kind: RadioKind, seedId: string, seed?: Partial<Track>): Promise<void> {
+    this.resetDiscovery()
+    let tracks: Track[] = []
+    const radio = backend().radio
+    if (radio) {
+      const session = await radio(kind, seedId, seed)
+      tracks = dedupeTracks(session.tracks ?? [])
+    } else {
+      const query = [seed?.artist, seed?.title, seed?.album, seedId].filter(Boolean).join(' ')
+      const result = await backend().search(query, 'songs')
+      tracks = dedupeTracks([...(result.songs ?? []), ...(result.videos ?? [])])
+    }
+    const fresh = pickDiscoveryCandidates(tracks, this.discoveryBlock(), DISCOVERY_BATCH)
+    if (fresh.length === 0) {
+      ui.toast('No radio suggestions are available right now', 'error')
+      return
+    }
+    const [first, ...rest] = fresh
+    setPlayerState({
+      autoQueue: rest,
+      playingFrom: 'autoplay',
+      contextLabel: `${kind[0].toUpperCase()}${kind.slice(1)} Radio`,
+    })
+    await this.start(first)
+  }
+
+  /** Resolve the most likely next track while the current one is playing. The
+   * web adapter coalesces this with a later play request and expires tickets at
+   * their real server deadline; desktop simply skips this optional capability. */
+  private async prefetchNext(): Promise<void> {
+    const prefetch = backend().prefetchPlayable
+    if (!prefetch) return
+    const state = playerState()
+    const next = state.queue[state.index + 1] ?? state.autoQueue[0]
+    if (!next || next.id === this.prefetchedTrackId) return
+    this.prefetchedTrackId = next.id
+    try {
+      await prefetch(next)
+    } catch {
+      // Prefetch is speculative. A normal play retries and surfaces errors.
+      if (this.prefetchedTrackId === next.id) this.prefetchedTrackId = ''
+    }
+  }
+
+  /** Pause automatically after a fixed number of minutes. Passing null clears
+   * the active timer. */
+  setSleepTimer(minutes: number | null): void {
+    if (this.sleepTimer) {
+      clearTimeout(this.sleepTimer)
+      this.sleepTimer = null
+    }
+    if (!minutes || minutes <= 0) {
+      setPlayerState({ sleepTimerEndsAt: null })
+      return
+    }
+    const endsAt = Date.now() + minutes * 60_000
+    setPlayerState({ sleepTimerEndsAt: endsAt })
+    this.sleepTimer = setTimeout(() => {
+      this.sleepTimer = null
+      this.pause()
+      setPlayerState({ sleepTimerEndsAt: null })
+      ui.toast('Sleep timer finished')
+    }, minutes * 60_000)
+  }
+
   // ---------- autoplay / discovery ----------
 
   /**
@@ -514,18 +615,30 @@ export class PlaybackController {
     const artist = (current.artist || '').split(',')[0].trim()
     const title = current.title.trim()
 
-    // 1) related discovery from the provider, seeded by the current artist,
-    // 2) a bounded contextual search on the normalized title as fallback.
+    // Hosted builds use the typed Song Radio endpoint. Wails and controlled
+    // test backends retain the existing contextual-search implementation.
     let combined: Track[] = []
     let failed = false
-    for (const query of [artist, title].filter(Boolean)) {
-      if (combined.length >= DISCOVERY_BATCH) break
+    const radio = backend().radio
+    if (radio) {
       try {
-        const res = await backend().search(query, 'songs')
-        if (gen !== this.discoveryGen) return // superseded by a newer request
-        combined = dedupeTracks([...combined, ...(res.songs ?? []), ...(res.videos ?? [])])
+        const session = await radio('song', current.sourceId || current.id, current)
+        if (gen !== this.discoveryGen) return
+        combined = dedupeTracks(session.tracks ?? [])
       } catch {
         failed = true
+      }
+    }
+    if (!radio || combined.length === 0) {
+      for (const query of [artist, title].filter(Boolean)) {
+        if (combined.length >= DISCOVERY_BATCH) break
+        try {
+          const res = await backend().search(query, 'songs')
+          if (gen !== this.discoveryGen) return // superseded by a newer request
+          combined = dedupeTracks([...combined, ...(res.songs ?? []), ...(res.videos ?? [])])
+        } catch {
+          failed = true
+        }
       }
     }
     if (gen !== this.discoveryGen) return

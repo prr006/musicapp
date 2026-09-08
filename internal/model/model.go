@@ -47,6 +47,29 @@ type Artist struct {
 	Albums  []Album `json:"albums,omitempty"`
 }
 
+// RadioSession is a server-generated discovery continuation. The explicit user
+// queue stays in the client; these candidates populate the separate discovery
+// queue and are canonically deduplicated there.
+type RadioSession struct {
+	ID          string  `json:"id"`
+	Kind        string  `json:"kind"`
+	SeedID      string  `json:"seedId"`
+	Tracks      []Track `json:"tracks"`
+	GeneratedAt int64   `json:"generatedAt"`
+}
+
+type RecommendationSection struct {
+	ID       string  `json:"id"`
+	Title    string  `json:"title"`
+	Subtitle string  `json:"subtitle,omitempty"`
+	Tracks   []Track `json:"tracks"`
+}
+
+type Recommendations struct {
+	Sections    []RecommendationSection `json:"sections"`
+	GeneratedAt int64                   `json:"generatedAt"`
+}
+
 // PlayableSource is what the resolver hands to the player. The URL is always a
 // local streaming-proxy URL so the webview media element can range-request it
 // without provider auth/CORS concerns.

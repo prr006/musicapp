@@ -1,0 +1,8 @@
+.git
+.arena
+frontend/node_modules
+frontend/dist
+build/bin
+data
+*.log
+.env*

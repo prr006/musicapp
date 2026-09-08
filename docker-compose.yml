@@ -1,0 +1,21 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      MELO_ENV: development
+      COOKIE_SECURE: "false"
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      SESSION_SECRET: local-compose-session-secret-change-before-production
+      PLAYBACK_SIGNING_KEY: local-compose-playback-secret-change-before-production
+    volumes:
+      - melo-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  melo-data:

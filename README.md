@@ -1,28 +1,33 @@
 # MELO v3
 
-A lightweight desktop music player for Windows. Native shell in Go
-([Wails v2](https://wails.io) / WebView2), UI in React + TypeScript. No Electron,
-no bundled Chromium, no Rust, no libmpv — the shipped app is a single ~7.6 MB
-executable that renders in the WebView2 runtime already present on Windows 10/11.
+MELO is an artwork-first music application for the **web and Windows desktop**.
+One React + TypeScript UI runs against either a hosted Go HTTP API in Chrome,
+Firefox, and Edge or the existing lightweight Wails/WebView2 desktop shell. The
+browser build is a responsive PWA with HTMLAudioElement playback, Media Session
+controls, queue/discovery, LRCLIB lyrics, recommendations, persistent anonymous
+libraries, and optional accounts.
 
-MELO searches YouTube Music, resolves an audio-only stream, plays it, and keeps a
-local library (likes, playlists, history) in a single JSON file you own.
+MELO searches YouTube Music and resolves browser-compatible audio on the Go
+side. Hosted clients receive short-lived signed playback links; provider URLs,
+headers, executables, credentials, and filesystem access remain server-side.
+Desktop continues to use its local capability proxy and the local JSON library.
 
 ---
 
 ## Architecture
 
 ```
-React UI (TypeScript)                 Go (native shell)
-────────────────────────              ─────────────────────────────
-views/  components/                   app.go          Wails bindings
-   │                                  internal/provider   YT Music InnerTube + yt-dlp search
-state/playback.ts  ◀── one controller  internal/media/resolver.go   yt-dlp format pick + cache
-state/*Store.ts    ◀── zustand         internal/media/proxy.go      loopback Range proxy
-audio/engine.ts    ─── <audio>         internal/lyrics    LRCLIB client + LRC parser
-bridge/backend.ts  ─── typed adapter   internal/store     atomic JSON persistence
-                        │              internal/deps      pinned yt-dlp installer
-                        └──────────────► window.go.main.App (Wails)
+React UI (TypeScript)                   Go services
+────────────────────────                ─────────────────────────────
+views/ components/ state/               internal/provider  YouTube Music + yt-dlp fallback
+         │                              internal/media     resolver + reusable Range streamer
+bridge/Backend                          internal/lyrics    LRCLIB matching + LRC parser
+   ├── WailsBackend ─────────────────►  app.go             desktop bindings/local store
+   └── WebBackend ─── HTTPS JSON ────►  server/api         auth/cache/limits/radio/library
+                                           │
+                                           └── server/store Repository
+                                               ├── account file store (development/current)
+                                               └── PostgreSQL schema/adapter boundary
 ```
 
 Rules the codebase holds to:
@@ -111,12 +116,35 @@ Keyboard: `Ctrl/⌘+K` search · `Space` play/pause · `←/→` seek 5 s ·
 
 ---
 
+## Run MELO Web
+
+```bash
+# Terminal 1 — API (Go 1.23+)
+MELO_YTDLP="$(command -v yt-dlp)" go run ./server
+
+# Terminal 2 — browser UI
+cd frontend
+npm install
+npm run dev
+# open http://localhost:5173
+```
+
+Or run `./scripts/dev-web.sh`. Vite proxies `/api` to the Go process; web
+development does not require Wails. `docker compose up --build` can run the API
+with its pinned server-side resolver. See:
+
+- [Local development and exact Railway/Vercel steps](docs/WEB_DEPLOYMENT.md)
+- [HTTP API](docs/WEB_API.md)
+- [Desktop/web compatibility matrix](docs/COMPATIBILITY.md)
+
 ## Requirements
 
-- Windows 10 1809+ or Windows 11 with the **WebView2 runtime** (preinstalled on
+- Web: current Chrome, Firefox, or Edge on desktop/mobile; Go 1.23+ and Node 20+
+  for development.
+- Windows desktop: Windows 10 1809+ or Windows 11 with the **WebView2 runtime** (preinstalled on
   Windows 11 and on up-to-date Windows 10).
-- Internet access for search, streaming and lyrics. The library, playlists and
-  settings are entirely local and work offline.
+- Internet access for search, streaming and lyrics. Desktop library data is
+  local; hosted library data is persisted by the configured API repository.
 
 ## Build
 
@@ -145,10 +173,11 @@ go vet ./...
 
 ## Data
 
-State lives in `%AppData%\MELO\melo-state.json` (override with `MELO_DATA_DIR`).
-Writes are atomic (temp file + rename) and debounced by 250 ms. A corrupt file is
-moved aside to `melo-state.json.corrupt` and MELO starts with a clean state
-instead of failing to launch. History is capped at 500 entries with a 30 s
+Desktop state lives in `%AppData%\MELO\melo-state.json`. The hosted development
+repository keeps one isolated document per signed anonymous/account subject under
+`MELO_DATA_DIR/accounts`; the API never accepts a storage path from a client.
+Writes are atomic and debounced by 250 ms. A corrupt document is preserved with a
+`.corrupt` suffix. History is capped at 500 entries with a 30 s consecutive
 dedupe window; search history at 50.
 
 ## The resolver dependency
@@ -190,11 +219,13 @@ looks at.
 - **No live network validation.** YouTube and LRCLIB are unreachable from the
   build environment, so the provider, resolver and lyrics clients are covered by
   tests against recorded/served fixtures rather than the live services.
-- `frontend/.env.development` sets `VITE_MELO_MOCK=1`, which makes `npm run dev`
-  (browser only) run against an in-memory fixture backend so the UI can be worked
-  on without the Go shell. It is ignored the moment real Wails bindings exist, and
-  never applies to `wails dev`, `wails build` or any production bundle.
-- No local-file library, no gapless/crossfade, no equalizer, no offline caching of
-  streams, no account or cloud sync.
+- The hosted account repository currently uses account-scoped atomic files. The
+  PostgreSQL repository interface and normalized migration are present, but the
+  production PostgreSQL adapter and cross-device desktop sync remain follow-up.
+- To use the browser-only fixture backend, create
+  `frontend/.env.development.local` with `VITE_MELO_MOCK=1`; normal development
+  uses the real Go HTTP API.
+- No local-file library, gapless/crossfade, equalizer, or offline music cache.
+  The PWA caches only the application shell and static assets.
 - Album and artist pages cover what is in your library; MELO does not browse a
   catalogue it hasn't got metadata for.

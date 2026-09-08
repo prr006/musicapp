@@ -15,17 +15,15 @@ import (
 	"time"
 )
 
-// Proxy is a loopback HTTP server that streams resolved audio to the webview.
-//
-// Why a proxy at all: provider CDN URLs are bound to specific request headers
-// and are not CORS-enabled, so the renderer cannot fetch them directly.
-// Proxying also lets us re-resolve transparently when a URL expires mid-track.
+// Proxy is the capability-protected loopback server used by the Wails desktop
+// build. Hosted web streaming uses the same Streamer behind API-issued,
+// short-lived tickets instead of exposing this listener.
 type Proxy struct {
 	resolver *Resolver
+	streamer *Streamer
 	token    string
 	listener net.Listener
 	server   *http.Server
-	client   *http.Client
 
 	mu      sync.RWMutex
 	quality string
@@ -42,17 +40,10 @@ func NewProxy(r *Resolver) (*Proxy, error) {
 	}
 	p := &Proxy{
 		resolver: r,
+		streamer: NewStreamer(r),
 		token:    hex.EncodeToString(tokenBytes),
 		listener: ln,
 		quality:  "high",
-		client: &http.Client{
-			Timeout: 0, // streaming responses; per-request contexts bound them
-			Transport: &http.Transport{
-				Proxy:               http.ProxyFromEnvironment,
-				MaxIdleConnsPerHost: 4,
-				IdleConnTimeout:     60 * time.Second,
-			},
-		},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/stream/", p.handleStream)
@@ -86,7 +77,6 @@ func (p *Proxy) Quality() string {
 
 func (p *Proxy) Addr() string { return p.listener.Addr().String() }
 
-// URLFor returns the loopback URL the media element should load.
 func (p *Proxy) URLFor(sourceID string) string {
 	return fmt.Sprintf("http://%s/stream/%s/%s", p.Addr(), p.token, sourceID)
 }
@@ -103,92 +93,8 @@ func (p *Proxy) handleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	sourceID := parts[1]
-
-	res, err := p.resolver.Resolve(r.Context(), sourceID, p.Quality())
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	status, err := p.pipe(w, r, res)
-	if err == nil {
-		return
-	}
-	// A stale CDN URL answers 403/410: re-resolve once, then give up.
-	if status == http.StatusForbidden || status == http.StatusGone {
-		p.resolver.Invalidate(sourceID)
-		res, rerr := p.resolver.Resolve(r.Context(), sourceID, p.Quality())
-		if rerr != nil {
-			writeErr(w, rerr)
-			return
-		}
-		if _, perr := p.pipe(w, r, res); perr != nil {
-			writeErr(w, perr)
-		}
-		return
-	}
-	writeErr(w, err)
-}
-
-// pipe forwards one request upstream, preserving Range semantics. It returns
-// the upstream status when the failure came from upstream.
-func (p *Proxy) pipe(w http.ResponseWriter, r *http.Request, res Resolved) (int, error) {
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, res.URL, nil)
-	if err != nil {
-		return 0, err
-	}
-	for k, v := range res.Headers {
-		if strings.EqualFold(k, "Accept-Encoding") || strings.EqualFold(k, "Range") {
-			continue
-		}
-		req.Header.Set(k, v)
-	}
-	if rng := r.Header.Get("Range"); rng != "" {
-		req.Header.Set("Range", rng)
-	}
-	resp, err := p.client.Do(req)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return 0, nil // the media element aborted; not an error
-		}
-		return 0, fmt.Errorf("couldn't reach the audio stream: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return resp.StatusCode, fmt.Errorf("audio stream returned HTTP %d", resp.StatusCode)
-	}
-	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified", "ETag"} {
-		if v := resp.Header.Get(h); v != "" {
-			w.Header().Set(h, v)
-		}
-	}
-	if w.Header().Get("Content-Type") == "" && res.MimeType != "" {
-		w.Header().Set("Content-Type", res.MimeType)
-	}
-	if w.Header().Get("Accept-Ranges") == "" {
-		w.Header().Set("Accept-Ranges", "bytes")
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	// The webview origin is wails://; allow it to read the loopback stream.
+	// Wails loads the media from its custom origin. The loopback capability URL
+	// is unguessable, and this wildcard applies only to the desktop listener.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.WriteHeader(resp.StatusCode)
-	if r.Method == http.MethodHead {
-		return resp.StatusCode, nil
-	}
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		// Client-side aborts (seek, track change) are normal.
-		return resp.StatusCode, nil
-	}
-	return resp.StatusCode, nil
-}
-
-func writeErr(w http.ResponseWriter, err error) {
-	code := http.StatusBadGateway
-	switch {
-	case errors.Is(err, ErrUnavailable), errors.Is(err, ErrNoAudio):
-		code = http.StatusNotFound
-	case errors.Is(err, ErrResolve):
-		code = http.StatusBadGateway
-	}
-	http.Error(w, err.Error(), code)
+	p.streamer.Serve(w, r, parts[1], p.Quality())
 }

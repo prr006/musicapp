@@ -1,0 +1,15 @@
+{
+  "name": "MELO Web",
+  "short_name": "MELO",
+  "description": "An artwork-first music player with queue, radio, lyrics and a personal library.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0b0e",
+  "theme_color": "#131317",
+  "orientation": "any",
+  "icons": [
+    { "src": "/icons/melo-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/melo-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

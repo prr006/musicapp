@@ -4,7 +4,7 @@ import type { Track } from '../bridge/types'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback } from '../state/playback'
 import { ui } from '../state/uiStore'
-import { AlbumIcon, ArtistIcon, HeartIcon, NextIcon, PlusIcon, QueueIcon } from './Icons'
+import { AlbumIcon, ArtistIcon, HeartIcon, MusicIcon, NextIcon, PlusIcon, QueueIcon } from './Icons'
 
 interface Props {
   track: Track
@@ -59,6 +59,9 @@ export function TrackMenu({ track, anchor, onClose, extra = [] }: Props) {
           </button>
           <button className="menu-item" role="menuitem" onClick={act(() => playback.addToQueue([track]))}>
             <QueueIcon size={16} /> Add to queue
+          </button>
+          <button className="menu-item" role="menuitem" onClick={act(() => void playback.startRadio('song', track.sourceId || track.id, track))}>
+            <MusicIcon size={16} /> Start song radio
           </button>
           <button className="menu-item" role="menuitem" onClick={act(() => void library.toggleLike(track))}>
             <HeartIcon size={16} filled={liked} /> {liked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}

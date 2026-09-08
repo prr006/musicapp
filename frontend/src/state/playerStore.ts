@@ -20,6 +20,8 @@ export interface PlayerState {
   /** Source of the current playback: the explicit queue or autoplay. */
   playingFrom: 'queue' | 'autoplay'
   contextLabel: string
+  /** Unix milliseconds, or null when no sleep timer is active. */
+  sleepTimerEndsAt: number | null
 }
 
 export const usePlayerStore = create<PlayerState>(() => ({
@@ -36,6 +38,7 @@ export const usePlayerStore = create<PlayerState>(() => ({
   speed: 1,
   playingFrom: 'queue',
   contextLabel: '',
+  sleepTimerEndsAt: null,
 }))
 
 export const playerState = () => usePlayerStore.getState()

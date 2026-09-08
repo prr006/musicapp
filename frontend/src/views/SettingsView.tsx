@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { backend } from '../bridge/backend'
-import type { Diagnostics, Settings } from '../bridge/types'
+import type { Diagnostics, Settings, UserIdentity } from '../bridge/types'
 import { ACCENTS, SPEEDS } from '../lib/defaults'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback } from '../state/playback'
@@ -45,6 +45,12 @@ export function SettingsView() {
   const [diag, setDiag] = useState<Diagnostics | null>(null)
   const [diagError, setDiagError] = useState<string | null>(null)
   const [installing, setInstalling] = useState(false)
+  const [identity, setIdentity] = useState<UserIdentity | null>(null)
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [authError, setAuthError] = useState<string | null>(null)
+  const [authBusy, setAuthBusy] = useState(false)
 
   const loadDiagnostics = () => {
     backend()
@@ -57,6 +63,22 @@ export function SettingsView() {
   }
 
   useEffect(loadDiagnostics, [])
+  useEffect(() => {
+    const getMe = backend().getMe
+    if (getMe) void getMe().then(setIdentity).catch(() => setIdentity({ authenticated: false }))
+  }, [])
+
+  const submitAccount = (event: React.FormEvent) => {
+    event.preventDefault()
+    const action = authMode === 'login' ? backend().login : backend().register
+    if (!action) return
+    setAuthBusy(true)
+    setAuthError(null)
+    void action(username, password)
+      .then(() => window.location.reload())
+      .catch((error: Error) => setAuthError(error.message))
+      .finally(() => setAuthBusy(false))
+  }
 
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) => {
     void library.saveSettings({ [key]: value } as Partial<Settings>)
@@ -67,6 +89,37 @@ export function SettingsView() {
       <div className="page-header">
         <h1>Settings</h1>
       </div>
+
+      {backend().getMe && (
+        <div className="settings-group">
+          <h3>MELO account</h3>
+          {identity?.authenticated ? (
+            <Row name={identity.username ?? 'Signed in'} desc="Likes, history, playlists, preferences and queue state are stored in this account.">
+              <button
+                className="btn ghost"
+                type="button"
+                onClick={() => void backend().logout?.().then(() => window.location.reload())}
+              >
+                Sign out
+              </button>
+            </Row>
+          ) : (
+            <form className="auth-form" onSubmit={submitAccount}>
+              <p className="muted">Browsing and playback work anonymously. Sign in to use the same server-side library whenever you return.</p>
+              <div className="tabs">
+                <button type="button" className="chip" aria-selected={authMode === 'login'} onClick={() => setAuthMode('login')}>Sign in</button>
+                <button type="button" className="chip" aria-selected={authMode === 'register'} onClick={() => setAuthMode('register')}>Create account</button>
+              </div>
+              <div className="auth-fields">
+                <input className="input" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Username" aria-label="Username" />
+                <input className="input" type="password" autoComplete={authMode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password (8+ characters)" aria-label="Password" />
+                <button className="btn primary" disabled={authBusy} type="submit">{authBusy ? 'Please wait…' : authMode === 'login' ? 'Sign in' : 'Create account'}</button>
+              </div>
+              {authError && <div className="inline-error">{authError}</div>}
+            </form>
+          )}
+        </div>
+      )}
 
       <div className="settings-group">
         <h3>Appearance</h3>
@@ -251,7 +304,7 @@ export function SettingsView() {
             <div className="setting-row">
               <div className="setting-info">
                 <div className="name">Media resolver</div>
-                <div className="desc">Downloads the pinned, checksum-verified yt-dlp build into the data folder.</div>
+                <div className="desc">{backend().isNative ? 'Downloads the pinned, checksum-verified yt-dlp build into the data folder.' : 'The hosted API manages this provider dependency securely on the server.'}</div>
               </div>
               <div className="setting-control">
                 <button
@@ -271,7 +324,7 @@ export function SettingsView() {
                       .finally(() => setInstalling(false))
                   }}
                 >
-                  {installing ? 'Installing…' : diag.resolver.installed ? 'Reinstall' : 'Install now'}
+                  {installing ? 'Checking…' : backend().isNative ? (diag.resolver.installed ? 'Reinstall' : 'Install now') : 'Check status'}
                 </button>
               </div>
             </div>

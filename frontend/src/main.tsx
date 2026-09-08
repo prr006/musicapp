@@ -82,6 +82,14 @@ async function boot(): Promise<void> {
 
   // Persist the session on shutdown so a restart can pick up where we left off.
   window.addEventListener('beforeunload', () => void playback.saveSession())
+
+  // The hosted build is installable. The service worker caches only the app
+  // shell and static assets — never provider responses or audio streams.
+  if (!be.isNative && import.meta.env.PROD && 'serviceWorker' in navigator) {
+    void navigator.serviceWorker.register('/sw.js').catch(() => {
+      // PWA support is an enhancement; playback must not depend on it.
+    })
+  }
 }
 
 createRoot(document.getElementById('root')!).render(

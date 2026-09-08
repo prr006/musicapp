@@ -25,6 +25,17 @@ export default defineConfig({
     strictPort: true,
     // The Wails dev server and the sandbox preview proxy both need to be allowed.
     allowedHosts: true,
+    // Browser code always uses a relative URL in development. This also works
+    // through Arena/Vercel-style preview hosts where localhost is the user's
+    // machine rather than the sandbox/container.
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8080',
+        changeOrigin: false,
+      },
+      '/health': { target: 'http://127.0.0.1:8080', changeOrigin: false },
+      '/ready': { target: 'http://127.0.0.1:8080', changeOrigin: false },
+    },
   },
   build: {
     outDir: 'dist',

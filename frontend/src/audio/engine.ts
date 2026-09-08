@@ -27,7 +27,7 @@ export type EngineEvent =
   | { type: 'state'; snapshot: EngineSnapshot }
   | { type: 'position'; position: number; trackId: string | null }
   | { type: 'ended'; trackId: string }
-  | { type: 'error'; trackId: string | null; message: string }
+  | { type: 'error'; trackId: string | null; message: string; recoverable: boolean }
 
 type Listener = (event: EngineEvent) => void
 
@@ -94,7 +94,7 @@ export class PlaybackEngine {
       if (!this.trackId) return // src cleared on stop(): not a real failure
       this.error = mediaErrorMessage(el)
       this.setStatus('error')
-      this.emit({ type: 'error', trackId: this.trackId, message: this.error })
+      this.emit({ type: 'error', trackId: this.trackId, message: this.error, recoverable: true })
     })
   }
 
@@ -208,7 +208,7 @@ export class PlaybackEngine {
       const message = err instanceof Error ? err.message : 'Playback failed.'
       this.error = message
       this.setStatus('error')
-      this.emit({ type: 'error', trackId: this.trackId, message })
+      this.emit({ type: 'error', trackId: this.trackId, message, recoverable: false })
       return false
     }
     return token === this.generation
@@ -219,7 +219,7 @@ export class PlaybackEngine {
     if (token !== this.generation) return
     this.error = message
     this.setStatus('error')
-    this.emit({ type: 'error', trackId: this.trackId, message })
+    this.emit({ type: 'error', trackId: this.trackId, message, recoverable: false })
   }
 
   isCurrent(token: number): boolean {

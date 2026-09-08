@@ -40,6 +40,32 @@ export interface SearchResponse {
   provider: string
 }
 
+export interface RadioSession {
+  id: string
+  kind: 'song' | 'artist' | 'album' | 'playlist' | 'liked' | 'library'
+  seedId: string
+  tracks: Track[]
+  generatedAt: number
+}
+
+export interface RecommendationSection {
+  id: string
+  title: string
+  subtitle?: string
+  tracks: Track[]
+}
+
+export interface Recommendations {
+  sections: RecommendationSection[]
+  generatedAt: number
+}
+
+export interface UserIdentity {
+  id?: string
+  username?: string
+  authenticated: boolean
+}
+
 export interface PlayableSource {
   trackId: string
   url: string

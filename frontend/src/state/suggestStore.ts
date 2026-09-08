@@ -75,8 +75,8 @@ export const suggest = {
     set({ status: 'loading' })
     timer = setTimeout(() => {
       timer = null
-      void backend()
-        .search(q, '')
+      const source = backend()
+      void (source.suggest ? source.suggest(q) : source.search(q, ''))
         .then((res) => {
           if (token !== generation) return
           set({ items: toSuggestions(res), status: 'ready' })

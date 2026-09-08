@@ -1,4 +1,6 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { backend } from '../bridge/backend'
+import type { RecommendationSection } from '../bridge/types'
 import { MediaCard } from '../components/MediaCard'
 import { EmptyState } from '../components/States'
 import { TrackRow } from '../components/TrackRow'
@@ -15,6 +17,21 @@ export function HomeView() {
   const liked = useLibraryStore((s) => s.liked)
   const playlists = useLibraryStore((s) => s.playlists)
   const searchHistory = useLibraryStore((s) => s.searchHistory)
+  const [recommendations, setRecommendations] = useState<RecommendationSection[]>([])
+
+  useEffect(() => {
+    const load = backend().recommendations
+    if (!load || (history.length === 0 && liked.length === 0)) return
+    let active = true
+    void load()
+      .then((result) => {
+        if (active) setRecommendations(result.sections ?? [])
+      })
+      .catch(() => {
+        // Home remains fully useful from local history when providers are down.
+      })
+    return () => { active = false }
+  }, [history.length, liked.length])
 
   const recent = useMemo(() => {
     const seen = new Set<string>()
@@ -70,6 +87,29 @@ export function HomeView() {
           </div>
         </section>
       )}
+
+      {recommendations.map((section) => (
+        <section className="section" key={section.id}>
+          <div className="section-head">
+            <div>
+              <h2>{section.title}</h2>
+              {section.subtitle && <p className="muted recommendation-subtitle">{section.subtitle}</p>}
+            </div>
+          </div>
+          <div className="card-grid">
+            {section.tracks.slice(0, 6).map((track, index) => (
+              <MediaCard
+                key={track.id}
+                title={track.title}
+                subtitle={track.artist}
+                artwork={track.artwork}
+                onOpen={() => void playback.play(track)}
+                onPlay={() => void playback.play(track, { tracks: section.tracks, index, label: section.title })}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
 
       {liked.length > 0 && (
         <section className="section">

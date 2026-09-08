@@ -6,6 +6,9 @@ frontend/node_modules/
 frontend/wailsjs/
 *.tsbuildinfo
 
+# hosted API local state
+/data/
+
 # local tooling
 .env.local
 .env.*.local
