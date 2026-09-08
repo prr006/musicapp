@@ -90,10 +90,10 @@ jobs:
             { echo '::error title=CORS smoke check failed::Approved origin header was missing'; false; }
           grep -Eqi '^X-Request-Id: .+' "$headers" || \
             { echo '::error title=Request ID smoke check failed::Request ID header was missing'; false; }
-          test -d "$data_dir/accounts" || { echo '::error title=Volume smoke check failed::Accounts directory disappeared'; false; }
-          # /ready is executed by the gosu-dropped MELO process and now performs
-          # an actual create/remove write probe. Its 200 is the authoritative
-          # unprivileged-volume check; avoid a second docker-exec user model.
+          # /ready is executed by the gosu-dropped MELO process and performs an
+          # actual create/remove write probe. Its 200 is the authoritative check:
+          # recursive ownership repair intentionally makes the mode-0700 bind
+          # source inaccessible to the runner's host uid.
 
   frontend:
     runs-on: ubuntu-latest
