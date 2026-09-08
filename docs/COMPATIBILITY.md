@@ -6,10 +6,15 @@ means the hosted backend exists without a dedicated UI entry point; **Partial**
 means follow-up work remains. Desktop **Yes** reflects the established desktop
 path, while the current CI guards its build and shared tests.
 
-> **Production status (2026-09-08):** no public Vercel/Railway deployment exists.
-> Every hosted capability below is therefore implemented-but-unverified against
-> a real Railway provider path and public browser. Do not interpret this matrix
-> as a production E2E result.
+> **Production status (2026-09-09):** the public Vercel frontend is
+> <https://musicapp-rp-1bc2.vercel.app> and the Railway API is
+> <https://musicapp-production-9257.up.railway.app>. Real search, signed hosted
+> playback, audible play/pause/seek, several transitions, Song Radio, synced
+> lyrics, and lyric seek have been manually verified. The repaired five-to-eight
+> item radio buffer passes a five-transition automated regression and is deployed;
+> its fresh post-fix five-transition audible browser run remains pending. Account
+> relogin/isolation, restart persistence, multi-browser responsive behavior, Media
+> Session, PWA install, and expired-ticket recovery remain unverified.
 
 | Capability | Wails desktop | Hosted web | Notes |
 | --- | :---: | :---: | --- |
@@ -18,14 +23,14 @@ path, while the current CI guards its build and shared tests.
 | Repeat off/all/one / shuffle | Yes | Implemented | Shared queue controller |
 | Sleep timer | Yes | Implemented | Now Playing 15/30/45/60 minute control |
 | Media Session / OS metadata | desktop keys | Implemented | play, pause, next, previous, seek and position |
-| Automatic autoplay | Yes | Implemented | Discovery queue remains separate from user queue |
+| Automatic autoplay | Yes | Implemented | Separate 5–8 item discovery buffer; proactive refill and failure-safe retry |
 | Next-track resolution prefetch | resolver cache | Implemented | Web adapter coalesces and expires signed sources |
 | Expired URL recovery | Yes | Implemented | Streamer invalidates and resolves once on 403/410 |
 | Explicit user queue | Yes | Implemented | Search single-click never enqueues every result |
-| Discovery queue | Yes | Implemented | canonical title/id dedupe and artist cap |
+| Discovery queue | Yes | Implemented | current/explicit/discovery/history/session ID and canonical-title reconciliation |
 | Session persistence | local | Implemented | isolated anonymous or authenticated account |
 | Save queue as playlist | Yes | Implemented | shared queue panel/library operations |
-| Song radio | autoplay | Implemented | `/api/v1/radio/song/:id` drives hosted autoplay |
+| Song radio | autoplay | Implemented | persistent client session refills from the seed and advancing tracks |
 | Artist radio | search-derived | API | `/api/v1/radio/artist/:id` |
 | Album radio | search-derived | API | `/api/v1/radio/album/:id` |
 | Playlist radio | search-derived | API | ownership checked server-side |

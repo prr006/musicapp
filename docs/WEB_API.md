@@ -30,6 +30,13 @@ The resolve response never includes the raw provider URL or provider headers.
 Tickets authorize only one validated source ID and never outlive the provider source (with a two-hour upper bound). Identical
 resolver/search/radio/lyrics requests are coalesced.
 
+Radio responses are bounded, cached candidate batches rather than continuation
+tokens. The shared playback controller owns the persistent radio session: it keeps
+five to eight ready discovery tracks, preserves that buffer across transitions,
+requests the original radio context and then the advancing current track as
+needed, and supplements short batches with bounded search candidates. It never
+replaces either queue with a raw search response or an empty failed response.
+
 ## Account and library
 
 | Method | Path |

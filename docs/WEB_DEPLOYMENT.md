@@ -13,33 +13,40 @@ short-lived URL scoped to that one ID. The API streams bytes only because curren
 provider CDN responses require server-side headers and generally do not permit a
 browser-origin request; this is a bounded, signed media path, not an open proxy.
 
-## Production verification status (2026-09-08)
+## Production verification status (2026-09-09)
 
-No public MELO frontend or API deployment has been created yet. The current Arena
-workspace has no authorized Vercel or Railway session, and the repository has no
-deployment secrets, variables, or prior deployment records that can be reused.
-Accordingly, no production URL is listed here and no placeholder URL is committed
-as production configuration.
+The hosted architecture is live:
 
-Verified before deployment:
+- Frontend: <https://musicapp-rp-1bc2.vercel.app>
+- API: <https://musicapp-production-9257.up.railway.app>
+- Vercel builds `frontend/` and Railway builds the root Dockerfile from
+  `arena/01a0817d-musicapp`. Railway remains at one replica with `/data` mounted
+  for the file repository.
 
-- GitHub Actions builds the Vite production bundle and Go API, runs the frontend
-  and Go test suites, runs `go vet`, and cross-builds the Windows desktop shell.
-- The latest local frontend validation passes 113 tests and a production Vite
-  build.
-- CI builds and starts the production Docker image with production-mode secrets,
-  exact-origin CORS, proxy trust, and secure cookies; `/health`, `/ready`, CORS,
-  and request correlation pass against that running container.
-- Automated API tests cover exact-origin credentialed CORS, signed-source URL
-  confinement, anonymous/authenticated isolation, playlist ownership, request
-  correlation, and sanitized browser playback diagnostics.
+Verified in production:
 
-Implemented but **not yet verified in a public browser/Railway environment**:
-real provider search/resolution/audio bytes, Range behavior through Railway,
-provider-header-dependent playback, expiry recovery, cross-site secure cookies,
-volume persistence across service restart, responsive device layouts, Media
-Session integration, and PWA install metadata. These must remain reported as
-unverified until the deployment and browser checklist below is actually run.
+- `/health`, `/ready`, and sanitized diagnostics return successful responses.
+- Exact-origin credentialed CORS, the signed same-API resolve/stream path, real
+  provider search, metadata/artwork, and multi-track resolution work from the
+  public frontend.
+- Audible browser playback, pause/resume, seeking, several automatic track
+  transitions, explicit-over-discovery priority, Song Radio, synced lyrics, and
+  lyric-click seek were manually exercised on the public deployment.
+- CI run `34268753016` passes Go tests/vet/build, the Windows desktop cross-build,
+  119 frontend tests and production bundle build, plus the production-container
+  health/readiness/CORS/request-ID smoke test. The queue regression suite includes
+  five radio transitions, proactive refill, failure preservation, stale-request
+  handoff, queue priority, search isolation, and multi-refill canonical dedupe.
+
+The queue-controller repair that maintains a five-to-eight item discovery buffer
+is deployed. Its five-transition test is automated; a fresh **post-fix audible
+browser run through five Believer Song Radio transitions is still pending** and
+must not be inferred from the earlier three-transition manual run.
+
+Still unverified in production: invalid/expired-ticket recovery, account
+register/logout/relogin and cross-account isolation, library/playlist persistence
+across a Railway restart, responsive Chrome/Firefox/Edge coverage, Media Session,
+and PWA installation. These remain checklist items rather than claimed results.
 
 ## Local development
 
@@ -201,10 +208,11 @@ count as audible-playback verification.
    continuous audio. Repeat across at least three tracks and one track whose
    upstream requires server-side headers. Confirm metadata/duration/artwork and
    play, pause, seek, volume, speed, mute, next, and previous.
-4. Let at least three tracks transition automatically. Verify explicit queue and
-   discovery queue remain separate, no immediate canonical duplicates appear,
-   radio refills, a manual queue item outranks discovery, and one failed track
-   does not stall or destroy the queues.
+4. Start Song Radio from Believer and advance through at least five tracks.
+   Verify explicit queue and discovery queue remain separate, discovery stays at
+   roughly five to eight ready items and refills before empty, no immediate
+   canonical duplicates appear, a manual queue item outranks discovery, and one
+   failed refill does not stall or destroy either queue.
 5. Exercise an expired/invalid ticket (`403`) and an interrupted source. Confirm
    the browser performs only the bounded re-resolve/retry, resumes when possible,
    reports a stable actionable error when exhausted, and never receives an
