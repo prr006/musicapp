@@ -27,6 +27,9 @@ Verified before deployment:
   and Go test suites, runs `go vet`, and cross-builds the Windows desktop shell.
 - The latest local frontend validation passes 113 tests and a production Vite
   build.
+- CI builds and starts the production Docker image with production-mode secrets,
+  exact-origin CORS, proxy trust, and secure cookies; `/health`, `/ready`, CORS,
+  and request correlation pass against that running container.
 - Automated API tests cover exact-origin credentialed CORS, signed-source URL
   confinement, anonymous/authenticated isolation, playlist ownership, request
   correlation, and sanitized browser playback diagnostics.

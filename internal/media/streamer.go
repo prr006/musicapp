@@ -177,7 +177,7 @@ func writeStreamError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrUnavailable), errors.Is(err, ErrNoAudio):
 		code = http.StatusNotFound
-		message = "Media unavailable: this track has no playable source."
+		message = "media unavailable: this track has no playable source."
 	case errors.Is(err, context.DeadlineExceeded):
 		code = http.StatusGatewayTimeout
 		message = "Playback stream timed out."
