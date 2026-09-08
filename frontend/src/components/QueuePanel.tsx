@@ -80,7 +80,9 @@ export function QueuePanel() {
         )}
 
         <div className="queue-group-title">
-          <span>Up next {upcoming.length > 0 && `· ${formatCount(upcoming.length, 'song')}`}</span>
+          <span>
+            Up next · Added by you {upcoming.length > 0 && `· ${formatCount(upcoming.length, 'song')}`}
+          </span>
           {upcoming.length > 0 && (
             <button className="link" onClick={() => playback.clearUpcoming()} type="button" style={{ color: 'var(--text-3)' }}>
               Clear
@@ -153,12 +155,10 @@ export function QueuePanel() {
           <>
             <div className="queue-group-title">
               <span className="row" style={{ gap: 6 }}>
-                <RadioIcon size={13} /> Autoplay · MELO radio
-                {radioSource && (
-                  <span className="muted" style={{ fontSize: 11 }}>
-                    {RADIO_SOURCE_LABELS[radioSource] ?? radioSource}
-                  </span>
-                )}
+                <RadioIcon size={13} className="radio-glyph" /> MELO radio
+                <span className="muted" style={{ fontSize: 11 }}>
+                  {radioSource ? RADIO_SOURCE_LABELS[radioSource] ?? radioSource : 'Keeps the music going'}
+                </span>
               </span>
               <button className="link" onClick={() => playback.clearAutoplay()} type="button" style={{ color: 'var(--text-3)' }}>
                 Clear

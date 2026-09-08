@@ -1,25 +1,36 @@
 /* MELO design system
    ------------------------------------------------------------------
-   Identity: warm charcoal surfaces, one confident accent, generous
-   spacing, artwork-first cards, editorial typography. No gradients as
-   decoration, no glow effects, no visual noise.                       */
+   Identity: cinematic dark surfaces with a cool cast, one restrained
+   teal accent (warm orange reserved for contextual/radio moments),
+   artwork-first cards, editorial display typography over a quiet UI
+   face. No gradients as decoration, no glow effects, no visual noise.
+
+   Typography follows the Sora (display) / Manrope (UI) direction with a
+   fully local, system-safe fallback chain — no font is downloaded, so
+   offline/Wails behaviour is unchanged; machines with the faces
+   installed simply get the intended look.                              */
 
 :root {
-  --accent: #ff6a3d;
-  --accent-contrast: #1a0b05;
+  /* Primary accent: restrained teal. */
+  --accent: #2dd4bf;
+  --accent-contrast: #04201b;
+  --accent-soft: color-mix(in srgb, var(--accent) 13%, transparent);
+  /* Contextual accent: warm orange, used sparingly (radio/mix moments). */
+  --accent-warm: #ff6a3d;
+  --accent-warm-contrast: #1a0b05;
 
-  --bg: #0b0b0e;
-  --surface: #131317;
-  --surface-2: #191920;
-  --surface-3: #21212a;
+  --bg: #0a0c10;
+  --surface: #0f1218;
+  --surface-2: #141924;
+  --surface-3: #1b2230;
   --hover: rgba(255, 255, 255, 0.055);
   --active: rgba(255, 255, 255, 0.09);
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.14);
 
-  --text: #f4f4f6;
-  --text-2: #a5a5b0;
-  --text-3: #6f6f7c;
+  --text: #f2f5f7;
+  --text-2: #9aa3b2;
+  --text-3: #67707e;
   --danger: #ff5d5d;
   --success: #37d399;
 
@@ -40,23 +51,28 @@
   --fast: 120ms var(--ease);
   --normal: 220ms var(--ease);
 
-  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display',
+  --font: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display',
     'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-display: 'Sora', 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont,
+    'Segoe UI Variable Display', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   color-scheme: dark;
 }
 
 html[data-theme='light'] {
-  --bg: #f7f6f4;
+  --accent: #0d9488;
+  --accent-contrast: #eafffb;
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --bg: #f5f7f8;
   --surface: #ffffff;
-  --surface-2: #f1efec;
-  --surface-3: #e7e4e0;
+  --surface-2: #eff2f3;
+  --surface-3: #e4e9ea;
   --hover: rgba(15, 15, 20, 0.05);
   --active: rgba(15, 15, 20, 0.09);
   --border: rgba(15, 15, 20, 0.1);
   --border-strong: rgba(15, 15, 20, 0.18);
-  --text: #16161a;
-  --text-2: #55555f;
-  --text-3: #85858f;
+  --text: #131b1e;
+  --text-2: #515a61;
+  --text-3: #7d8790;
   --shadow-1: 0 1px 2px rgba(20, 18, 15, 0.08);
   --shadow-2: 0 12px 32px rgba(20, 18, 15, 0.12);
   --shadow-3: 0 24px 64px rgba(20, 18, 15, 0.18);
@@ -116,6 +132,7 @@ h4 {
   margin: 0;
   font-weight: 680;
   letter-spacing: -0.02em;
+  font-family: var(--font-display);
 }
 
 h1 {
@@ -281,6 +298,7 @@ p {
 }
 
 .brand-name {
+  font-family: var(--font-display);
   font-size: 15px;
   font-weight: 720;
   letter-spacing: 0.14em;
@@ -311,9 +329,23 @@ p {
   color: var(--text);
 }
 
+/* Active route: tinted row plus a slim accent bar on the leading edge —
+   the reference's clear active-state indicator. */
 .nav-item[aria-current='true'] {
   background: var(--active);
   color: var(--text);
+  position: relative;
+}
+
+.nav-item[aria-current='true']::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 22%;
+  bottom: 22%;
+  width: 3px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
 }
 
 .nav-item[aria-current='true'] svg {
@@ -404,6 +436,15 @@ p {
   position: relative;
   flex: 1;
   max-width: 460px;
+  /* Balanced bar: the field sits between the nav arrows and the action
+     shortcuts instead of hugging the left edge. */
+  margin-inline: auto;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .search-field {
@@ -419,7 +460,7 @@ p {
 }
 
 .search-field:focus-within {
-  border-color: var(--border-strong);
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
   background: var(--surface-3);
 }
 
@@ -735,6 +776,71 @@ p {
   transform: none;
 }
 
+/* Radio mix tiles (Home: "Made for you"). The warm glyph is the one
+   deliberate contextual-orange moment; the tiles trigger the real
+   list-radio engine, they are not decorative mockups. */
+.mix-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.mix-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  text-align: left;
+  transition: background var(--fast), border-color var(--fast), transform var(--fast);
+}
+
+.mix-card:hover {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.mix-glyph {
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-full);
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.mix-glyph.warm {
+  background: color-mix(in srgb, var(--accent-warm) 14%, transparent);
+  color: var(--accent-warm);
+}
+
+.mix-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mix-title {
+  font-family: var(--font-display);
+  font-weight: 640;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.mix-sub {
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------------- track rows ---------------- */
 
 .track-list {
@@ -766,6 +872,12 @@ p {
 
 .track-row[data-current='true'] .track-title {
   color: var(--accent);
+}
+
+/* The playing row carries a slim accent edge — visible in dense lists and
+   in the queue panel alike. */
+.track-row[data-current='true'] {
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .track-index {
@@ -1146,6 +1258,10 @@ p {
   gap: 8px;
 }
 
+.radio-glyph {
+  color: var(--accent-warm);
+}
+
 .queue-group-title {
   font-size: 11px;
   font-weight: 660;
@@ -1344,6 +1460,10 @@ p {
   max-width: none;
 }
 
+.now-playing .scrubber .fill {
+  background: var(--accent);
+}
+
 .np-buttons {
   display: flex;
   align-items: center;
@@ -1362,6 +1482,17 @@ p {
 .np-buttons .play-btn {
   width: 56px;
   height: 56px;
+}
+
+/* The expanded player's play/pause carries clearly dominant weight: the
+   accent-filled circle in the metadata column. */
+.np-buttons .play-btn:not(.loading) {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.np-buttons .play-btn:not(.loading):hover {
+  filter: brightness(1.06);
 }
 
 /* Small setting clusters (speed, sleep timer) inside the transport row. */
@@ -1419,7 +1550,7 @@ p {
 }
 
 .lyric-line.active {
-  color: var(--text);
+  color: var(--accent);
   font-weight: 680;
   transform: scale(1.015);
 }
@@ -1486,8 +1617,8 @@ p {
   border-radius: var(--radius-full);
   display: grid;
   place-items: center;
-  background: var(--surface-2);
-  color: var(--text-3);
+  background: var(--accent-soft);
+  color: var(--text-2);
   margin-bottom: 4px;
 }
 
@@ -1569,6 +1700,45 @@ p {
   box-shadow: var(--shadow-2);
 }
 
+/* Artist pages open on a wide hero: the artist's own artwork, heavily
+   blurred, sits behind the identity block under a functional scrim that
+   guarantees text contrast (a readability gradient, not decoration). */
+.detail-head.artist-hero {
+  position: relative;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  padding: 44px 28px 28px;
+  margin-top: 12px;
+  isolation: isolate;
+}
+
+.artist-hero .hero-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+}
+
+.artist-hero .hero-backdrop img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.5);
+  filter: blur(46px) saturate(1.15) brightness(0.55);
+  opacity: 0.55;
+}
+
+.artist-hero .hero-backdrop::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to top,
+    var(--surface) 2%,
+    color-mix(in srgb, var(--surface) 62%, transparent) 46%,
+    color-mix(in srgb, var(--surface) 24%, transparent)
+  );
+}
+
 .detail-meta {
   min-width: 0;
   padding-bottom: 6px;
@@ -1579,7 +1749,7 @@ p {
   font-weight: 660;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--text-3);
+  color: var(--accent);
 }
 
 .detail-meta h1 {
@@ -1640,8 +1810,9 @@ p {
 }
 
 .chip[aria-selected='true'] {
-  background: var(--text);
-  color: var(--bg);
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .chip.removable {

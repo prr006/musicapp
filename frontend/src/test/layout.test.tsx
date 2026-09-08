@@ -14,13 +14,13 @@
 // makes `?raw` CSS imports empty — see test/node-api.d.ts for the shims.)
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
 import { setBackend, type Backend } from '../bridge/backend'
 import type { Track } from '../bridge/types'
-import { defaultSettings } from '../lib/defaults'
+import { ACCENTS, defaultSettings } from '../lib/defaults'
 import { useLibraryStore } from '../state/libraryStore'
 import { usePlayerStore } from '../state/playerStore'
 import { useUIStore } from '../state/uiStore'
@@ -428,5 +428,100 @@ describe('layout: rendered Now Playing composition', () => {
     const body = section().querySelector('.np-body')!
     expect(body.classList.contains('empty')).toBe(true)
     expect(body.querySelector('.state')).toBeTruthy()
+  })
+})
+
+/* ---------------- visual system integration ---------------- */
+
+describe('visual system integration (cinematic MELO direction)', () => {
+  it('restrained teal accent, warm orange reserved for contextual moments', () => {
+    const root = rule(':root')
+    expect(root).toContain('--accent: #2dd4bf')
+    expect(root).toContain('--accent-warm: #ff6a3d')
+    expect(root).toContain('--accent-soft')
+    // The light theme keeps a readable teal.
+    expect(css).toContain('html[data-theme=\'light\']') // presence sanity
+  })
+
+  it('the runtime accent system defaults to the teal palette (matches the CSS tokens)', () => {
+    // main.tsx overrides --accent at runtime from the setting; the DEFAULT
+    // must be the same restrained teal the stylesheet ships with, or the
+    // whole system would silently fall back to the old orange.
+    expect(defaultSettings().accent).toBe('tide')
+    expect(ACCENTS.tide.value).toBe('#2dd4bf')
+    expect(ACCENTS.ember.value).toBe('#ff6a3d') // the warm accent stays selectable
+  })
+
+  it('typography: Sora-style display face over a Manrope-style UI face, local-safe', () => {
+    const root = rule(':root')
+    expect(root).toContain("--font-display: 'Sora'")
+    expect(root).toContain("--font: 'Manrope'")
+    // No font is downloaded: index.html stays free of font links.
+    // Headings and brand carry the display face.
+    expect(css.match(/font-family: var\(--font-display\)/g)?.length ?? 0).toBeGreaterThanOrEqual(3)
+  })
+
+  it('sidebar covers Home/Search/Library/Artists/Albums/Settings with an active indicator', async () => {
+    const { container } = render(<App />)
+    const sidebar = container.querySelector('.app > .sidebar') as HTMLElement
+    expect(sidebar).toBeTruthy()
+    for (const name of ['Home', 'Search', 'Your Library', 'Artists', 'Albums', 'Settings']) {
+      expect(within(sidebar).getByRole('button', { name })).toBeTruthy()
+    }
+    // Artists/Albums navigate the EXISTING library tabs — no duplicate nav state.
+    await userEvent.click(within(sidebar).getByRole('button', { name: 'Artists' }))
+    await waitFor(() => expect(useUIStore.getState().route).toMatchObject({ name: 'library', tab: 'artists' }))
+    await userEvent.click(within(sidebar).getByRole('button', { name: 'Albums' }))
+    await waitFor(() => expect(useUIStore.getState().route).toMatchObject({ name: 'library', tab: 'albums' }))
+    // The active-state indicator is a styled accent bar.
+    expect(css).toContain(".nav-item[aria-current='true']::before")
+  })
+
+  it('top bar exposes lyrics and queue shortcuts wired to the real UI state', () => {
+    render(<App />)
+    const topbar = document.querySelector('.topbar') as HTMLElement
+    expect(topbar).toBeTruthy()
+    const queueBtn = within(topbar).getByRole('button', { name: 'Queue' })
+    fireEvent.click(queueBtn)
+    expect(useUIStore.getState().queueOpen).toBe(true)
+    fireEvent.click(queueBtn)
+    expect(useUIStore.getState().queueOpen).toBe(false)
+    const lyricsBtn = within(topbar).getByRole('button', { name: 'Toggle lyrics' })
+    fireEvent.click(lyricsBtn)
+    expect(useUIStore.getState().lyricsOpen).toBe(true)
+    fireEvent.click(lyricsBtn)
+    expect(useUIStore.getState().lyricsOpen).toBe(false)
+  })
+
+  it('queue sections: uppercase group titles with the warm radio glyph', () => {
+    expect(rule('.queue-group-title')).toContain('text-transform: uppercase')
+    expect(rule('.radio-glyph')).toContain('var(--accent-warm)')
+  })
+
+  it('artist pages carry a wide hero backdrop with a functional scrim', () => {
+    expect(css).toContain('.detail-head.artist-hero')
+    expect(css).toContain('.hero-backdrop')
+    expect(css).toContain('filter: blur(46px)')
+  })
+
+  it('home "made for you" tiles use the mix-card treatment (warm contextual accent)', () => {
+    expect(rule('.mix-card')).toContain('display: flex')
+    expect(rule('.mix-glyph.warm')).toContain('var(--accent-warm)')
+  })
+
+  it('selected tabs are accent-tinted; the current row carries an accent edge', () => {
+    expect(rule(".chip[aria-selected='true']")).toContain('var(--accent-soft)')
+    expect(css).toContain(".track-row[data-current='true'] {")
+    expect(css).toContain('inset 2px 0 0 var(--accent)')
+  })
+
+  it('expanded player: accent-filled play button and accent progress', () => {
+    expect(css).toContain('.np-buttons .play-btn:not(.loading)')
+    expect(css).toContain('.now-playing .scrubber .fill')
+  })
+
+  it('lyrics: current line accented, passed lines subdued', () => {
+    expect(rule('.lyric-line.active')).toContain('var(--accent)')
+    expect(rule('.lyric-line.passed')).toContain('opacity: 0.45')
   })
 })

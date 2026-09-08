@@ -3,7 +3,7 @@ import type { Settings } from '../bridge/types'
 export function defaultSettings(): Settings {
   return {
     theme: 'dark',
-    accent: 'ember',
+    accent: 'tide',
     autoplay: true,
     defaultSpeed: 1,
     audioQuality: 'high',
@@ -35,6 +35,10 @@ export function defaultSettings(): Settings {
 }
 
 export const ACCENTS: Record<string, { label: string; value: string; contrast: string }> = {
+  // Tide is the default: the restrained teal of the cinematic direction.
+  // Ember (the warm orange) remains available and still lives as the
+  // CONTEXTUAL accent (--accent-warm) for radio moments.
+  tide: { label: 'Tide', value: '#2dd4bf', contrast: '#04201b' },
   ember: { label: 'Ember', value: '#ff6a3d', contrast: '#1a0b05' },
   iris: { label: 'Iris', value: '#7c6cff', contrast: '#0b0919' },
   mint: { label: 'Mint', value: '#31c48d', contrast: '#04150e' },

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { ui, useUIStore } from '../state/uiStore'
-import { HomeIcon, LibraryIcon, MusicIcon, PlusIcon, SearchIcon, SettingsIcon } from './Icons'
+import { AlbumIcon, ArtistIcon, HomeIcon, LibraryIcon, MusicIcon, PlusIcon, SearchIcon, SettingsIcon } from './Icons'
 
 export function Sidebar() {
   const route = useUIStore((s) => s.route)
@@ -31,7 +31,23 @@ export function Sidebar() {
           'Your Library',
           <LibraryIcon size={19} />,
           () => ui.navigate({ name: 'library', tab: 'songs' }),
-          route.name === 'library' || route.name === 'album' || route.name === 'artist',
+          (route.name === 'library' && route.tab !== 'artists' && route.tab !== 'albums') ||
+            route.name === 'album' ||
+            route.name === 'artist',
+        )}
+        {item(
+          'artists',
+          'Artists',
+          <ArtistIcon size={19} />,
+          () => ui.navigate({ name: 'library', tab: 'artists' }),
+          route.name === 'library' && route.tab === 'artists',
+        )}
+        {item(
+          'albums',
+          'Albums',
+          <AlbumIcon size={19} />,
+          () => ui.navigate({ name: 'library', tab: 'albums' }),
+          route.name === 'library' && route.tab === 'albums',
         )}
         {item('settings', 'Settings', <SettingsIcon size={19} />, () => ui.navigate({ name: 'settings' }), route.name === 'settings')}
       </div>

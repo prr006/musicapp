@@ -4,7 +4,7 @@
  * mini player, queue, like, EOF advance — through the real stores, the real
  * playback controller and the real engine.
  */
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
@@ -26,6 +26,7 @@ function song(id: string, title: string): Track {
 
 const a = song('a', 'Nightfall')
 const b = song('b', 'Paper Lanterns')
+const c = song('c', 'Ember Nights')
 
 let liked: Track[] = []
 
@@ -179,6 +180,38 @@ describe('MELO application', () => {
     }
   })
 
+  it('Home curates real listening data: quick picks, made-for-you radio, because-you-listened-to', async () => {
+    stubBackend()
+    const now = Date.now()
+    useLibraryStore.setState({
+      liked: [a, b, c],
+      playlists: [{ id: 'pl1', name: 'Evening Drive', description: '', tracks: [a], createdAt: 0, updatedAt: 0 }],
+      history: [
+        { track: a, playedAt: now - 1000 },
+        { track: a, playedAt: now - 2000 },
+        { track: a, playedAt: now - 3000 },
+        { track: b, playedAt: now - 4000 },
+      ],
+      stats: { 'yt:a': { playCount: 3, significantCount: 0, completeCount: 0, skipCount: 0, lastPlayedAt: now } },
+    })
+    render(<App />)
+
+    // Every section header comes from real data — nothing is fabricated.
+    expect(await screen.findByText('Quick picks')).toBeInTheDocument()
+    expect(screen.getByText('Recently played')).toBeInTheDocument()
+    expect(screen.getByText('Made for you')).toBeInTheDocument()
+    expect(screen.getByText('Your favorites')).toBeInTheDocument()
+    expect(screen.getByText('Because you listened to Halcyon')).toBeInTheDocument()
+    expect(screen.getByText('Your playlists')).toBeInTheDocument()
+    // The playlist appears both in the sidebar and on the Home card.
+    expect(screen.getAllByText('Evening Drive').length).toBeGreaterThanOrEqual(2)
+
+    // The "Made for you" tiles are real radio actions, not visual mockups.
+    fireEvent.click(screen.getByRole('button', { name: /Liked Songs Radio/i }))
+    await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe(a.id))
+    expect(usePlayerStore.getState().contextLabel).toMatch(/Liked Songs/i)
+  })
+
   it('labels the queue sections Now playing / Up next / Autoplay (MELO radio)', async () => {
     stubBackend()
     render(<App />)
@@ -190,7 +223,7 @@ describe('MELO application', () => {
     const panel = await screen.findByRole('complementary', { name: /Play queue/i })
     expect(within(panel).getByText('Now playing')).toBeInTheDocument()
     expect(within(panel).getByText(/^Up next/)).toBeInTheDocument()
-    await waitFor(() => expect(within(panel).getByText(/Autoplay · MELO radio/i)).toBeInTheDocument())
+    await waitFor(() => expect(within(panel).getByText(/^MELO radio$/)).toBeInTheDocument())
   })
 
   it('saves the visible queue — explicit plus autoplay — as a playlist', async () => {

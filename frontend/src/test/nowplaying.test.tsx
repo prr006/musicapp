@@ -248,7 +248,7 @@ describe('NOW PLAYING', () => {
     const panel = within(panels[0])
     expect(panel.getByText(/now playing/i)).toBeInTheDocument()
     expect(panel.getByText(/up next/i)).toBeInTheDocument()
-    expect(panel.getByText(/autoplay/i)).toBeInTheDocument()
+    expect(panel.getByText(/MELO radio/i)).toBeInTheDocument()
     // Now Playing itself never embeds a second copy of the queue contents.
     expect(npSection().querySelectorAll('.track-row').length).toBe(0)
   })
@@ -619,7 +619,8 @@ describe('NAVIGATION & OVERLAYS', () => {
     await waitFor(() => expect(screen.getByLabelText('Synced lyrics')).toBeInTheDocument())
     expect(npSection()).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle lyrics' }))
+    // Scoped: the top bar exposes a lyrics shortcut with the same label.
+    fireEvent.click(within(npSection()).getByRole('button', { name: 'Toggle lyrics' }))
     await waitFor(() => expect(screen.queryByLabelText('Synced lyrics')).toBeNull())
     // The expanded player itself stays open, playback untouched.
     expect(npSection()).toBeInTheDocument()

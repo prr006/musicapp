@@ -2,14 +2,17 @@ import { useMemo } from 'react'
 import { MediaCard } from '../components/MediaCard'
 import { EmptyState } from '../components/States'
 import { TrackRow } from '../components/TrackRow'
-import { HomeIcon, SearchIcon } from '../components/Icons'
-import { deriveAlbums } from '../lib/derive'
+import { HomeIcon, RadioIcon, SearchIcon } from '../components/Icons'
+import { primaryArtist } from '../lib/derive'
 import { relativeTime } from '../lib/format'
 import { mostPlayed } from '../lib/taste'
 import { useLibraryStore } from '../state/libraryStore'
 import { playback } from '../state/playback'
 import { search } from '../state/searchStore'
 import { ui } from '../state/uiStore'
+
+/** Radio mixes need a few seeds to be worth starting. */
+const MIN_RADIO_SEEDS = 3
 
 export function HomeView() {
   const history = useLibraryStore((s) => s.history)
@@ -23,9 +26,40 @@ export function HomeView() {
     return history.filter((h) => (seen.has(h.track.id) ? false : (seen.add(h.track.id), true))).slice(0, 12)
   }, [history])
 
-  const top = useMemo(() => mostPlayed(history, stats, 5).filter((t) => t.playCount > 1), [history, stats])
+  // The whole local library (same derivation the Library page uses).
+  const allTracks = useMemo(() => {
+    const seen = new Set<string>()
+    const out = []
+    for (const t of [...liked, ...playlists.flatMap((p) => p.tracks), ...history.map((h) => h.track)]) {
+      if (seen.has(t.id)) continue
+      seen.add(t.id)
+      out.push(t)
+    }
+    return out
+  }, [liked, playlists, history])
 
-  const albums = useMemo(() => deriveAlbums([...liked, ...history.map((h) => h.track)]).slice(0, 12), [liked, history])
+  const quickPicks = useMemo(() => mostPlayed(history, stats, 8).filter((t) => t.playCount > 1), [history, stats])
+
+  // "Because you listened to …" — the most-played primary artist in the
+  // recent listening window; pure view-level derivation from history.
+  const recentArtist = useMemo(() => {
+    const counts = new Map<string, { count: number; tracks: typeof history }>()
+    for (const record of history.slice(0, 80)) {
+      const name = primaryArtist(record.track.artist || '')
+      if (!name) continue
+      const entry = counts.get(name) ?? { count: 0, tracks: [] }
+      entry.count += 1
+      if (!entry.tracks.some((t) => t.track.id === record.track.id)) entry.tracks.push(record)
+      counts.set(name, entry)
+    }
+    let best: { artist: string; tracks: typeof history } | null = null
+    for (const [artist, entry] of counts) {
+      if (entry.count >= 3 && (!best || entry.count > counts.get(best.artist)!.count)) {
+        best = { artist, tracks: entry.tracks }
+      }
+    }
+    return best
+  }, [history])
 
   const hour = new Date().getHours()
   const greeting = hour < 5 ? 'Late night' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
@@ -52,6 +86,39 @@ export function HomeView() {
         />
       )}
 
+      {quickPicks.length > 0 && (
+        <section className="section">
+          <div className="section-head">
+            <h2>Quick picks</h2>
+            <button className="link" onClick={() => ui.navigate({ name: 'library', tab: 'most-played' })} type="button">
+              See all
+            </button>
+          </div>
+          <div className="card-grid">
+            {quickPicks.slice(0, 6).map((entry) => (
+              <MediaCard
+                key={entry.track.id}
+                title={entry.track.title}
+                subtitle={`${entry.playCount} plays`}
+                artwork={entry.track.artwork}
+                onOpen={() =>
+                  void playback.play(entry.track, {
+                    tracks: quickPicks.map((t) => t.track),
+                    label: 'Quick picks',
+                  })
+                }
+                onPlay={() =>
+                  void playback.play(entry.track, {
+                    tracks: quickPicks.map((t) => t.track),
+                    label: 'Quick picks',
+                  })
+                }
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       {recent.length > 0 && (
         <section className="section">
           <div className="section-head">
@@ -75,27 +142,42 @@ export function HomeView() {
         </section>
       )}
 
-      {top.length > 0 && (
+      {(liked.length >= MIN_RADIO_SEEDS || allTracks.length >= MIN_RADIO_SEEDS) && (
         <section className="section">
           <div className="section-head">
-            <h2>Most played</h2>
+            <h2>Made for you</h2>
           </div>
-          <div className="track-list">
-            {top.map((entry, i) => (
-              <TrackRow
-                key={entry.track.id}
-                track={entry.track}
-                index={i}
-                onPlay={() =>
-                  void playback.play(entry.track, {
-                    tracks: top.map((t) => t.track),
-                    index: i,
-                    label: 'Most played',
-                  })
-                }
-                trailing={<span className="muted">{entry.playCount} plays</span>}
-              />
-            ))}
+          <div className="mix-grid">
+            {liked.length >= MIN_RADIO_SEEDS && (
+              <button
+                className="mix-card"
+                onClick={() => void playback.startListRadio(liked, 'Liked Songs')}
+                type="button"
+              >
+                <span className="mix-glyph warm">
+                  <RadioIcon size={18} />
+                </span>
+                <span className="mix-text">
+                  <span className="mix-title">Liked Songs Radio</span>
+                  <span className="mix-sub">Endless mix from the {liked.length} songs you’ve liked</span>
+                </span>
+              </button>
+            )}
+            {allTracks.length >= MIN_RADIO_SEEDS && (
+              <button
+                className="mix-card"
+                onClick={() => void playback.startListRadio(allTracks, 'Your Library')}
+                type="button"
+              >
+                <span className="mix-glyph">
+                  <RadioIcon size={18} />
+                </span>
+                <span className="mix-text">
+                  <span className="mix-title">Your Library Radio</span>
+                  <span className="mix-sub">Everything you play, like and save, shuffled endlessly</span>
+                </span>
+              </button>
+            )}
           </div>
         </section>
       )}
@@ -103,7 +185,7 @@ export function HomeView() {
       {liked.length > 0 && (
         <section className="section">
           <div className="section-head">
-            <h2>Liked songs</h2>
+            <h2>Your favorites</h2>
             <button className="link" onClick={() => ui.navigate({ name: 'library', tab: 'liked' })} type="button">
               See all
             </button>
@@ -115,6 +197,33 @@ export function HomeView() {
                 track={track}
                 index={i}
                 onPlay={() => void playback.play(track, { tracks: liked, index: i, label: 'Liked Songs' })}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {recentArtist && recentArtist.tracks.length > 0 && (
+        <section className="section">
+          <div className="section-head">
+            <h2>Because you listened to {recentArtist.artist}</h2>
+            <button className="link" onClick={() => ui.navigate({ name: 'artist', artist: recentArtist.artist })} type="button">
+              See artist
+            </button>
+          </div>
+          <div className="track-list">
+            {recentArtist.tracks.slice(0, 5).map((record, i) => (
+              <TrackRow
+                key={record.track.id}
+                track={record.track}
+                index={i}
+                onPlay={() =>
+                  void playback.play(record.track, {
+                    tracks: recentArtist.tracks.map((r) => r.track),
+                    index: i,
+                    label: recentArtist!.artist,
+                  })
+                }
               />
             ))}
           </div>
@@ -138,29 +247,6 @@ export function HomeView() {
                 artwork={pl.tracks[0]?.artwork}
                 onOpen={() => ui.navigate({ name: 'playlist', id: pl.id })}
                 onPlay={pl.tracks.length > 0 ? () => void playback.playAll(pl.tracks, pl.name) : undefined}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {albums.length > 0 && (
-        <section className="section">
-          <div className="section-head">
-            <h2>Albums in your library</h2>
-            <button className="link" onClick={() => ui.navigate({ name: 'library', tab: 'albums' })} type="button">
-              See all
-            </button>
-          </div>
-          <div className="card-grid">
-            {albums.slice(0, 6).map((album) => (
-              <MediaCard
-                key={album.id}
-                title={album.title}
-                subtitle={album.artist}
-                artwork={album.artwork}
-                onOpen={() => ui.navigate({ name: 'album', key: album.id })}
-                onPlay={() => void playback.playAll(album.tracks ?? [], album.title)}
               />
             ))}
           </div>

@@ -18,7 +18,7 @@ function applyTheme(): void {
         : 'dark'
       : theme
   document.documentElement.dataset.theme = resolved
-  const palette = ACCENTS[accent] ?? ACCENTS.ember
+  const palette = ACCENTS[accent] ?? ACCENTS.tide
   document.documentElement.style.setProperty('--accent', palette.value)
   document.documentElement.style.setProperty('--accent-contrast', palette.contrast)
 }

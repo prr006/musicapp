@@ -255,8 +255,9 @@ session restore (queue + track + position), and a clean shutdown that flushes
 state and stops the proxy. All of it is plain `user32`/`shell32` syscalls — no
 extra dependencies — and each piece degrades to "off" if Windows refuses it.
 
-**UI** — MELO's own dark/light identity (deep slate + ember accent, seven
-selectable accents), keyboard shortcuts, persistent mini player, Now Playing
+**UI** — MELO's own dark/light identity (cinematic dark surfaces, a restrained
+teal accent with warm orange reserved for radio moments, six selectable
+accents), keyboard shortcuts, persistent mini player, Now Playing
 view, Home, Artist and Album pages. The mini player and the expanded Now
 Playing view are two presentations of one playback store — current track,
 play/pause, shuffle, repeat, like state and progress update instantly in both.

@@ -4,7 +4,7 @@ import { search, useSearchStore } from '../state/searchStore'
 import { suggest, useSuggestStore, type Suggestion } from '../state/suggestStore'
 import { ui, useUIStore } from '../state/uiStore'
 import { Artwork } from './Artwork'
-import { ChevronLeft, ChevronRight, CloseIcon, SearchIcon } from './Icons'
+import { ChevronLeft, ChevronRight, CloseIcon, LyricsIcon, QueueIcon, SearchIcon } from './Icons'
 
 export function TopBar({ scrolled }: { scrolled: boolean }) {
   const query = useSearchStore((s) => s.query)
@@ -14,6 +14,9 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
   const canBack = useUIStore((s) => s.history.length > 0)
   const canForward = useUIStore((s) => s.future.length > 0)
   const route = useUIStore((s) => s.route)
+  const lyricsOpen = useUIStore((s) => s.lyricsOpen)
+  const queueOpen = useUIStore((s) => s.queueOpen)
+  const showLyrics = useLibraryStore((s) => s.settings.showLyrics)
   const inputRef = useRef<HTMLInputElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -162,7 +165,6 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
           )}
           {!query && <span className="kbd">Ctrl K</span>}
         </form>
-
         {open && items.length > 0 && (
           <div className="suggest-dropdown" id="search-suggestions" role="listbox" aria-label="Search suggestions">
             <div className="suggest-head">
@@ -191,6 +193,31 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
             ))}
           </div>
         )}
+      </div>
+
+      <div className="topbar-actions">
+        {showLyrics && (
+          <button
+            className={`icon-btn ${lyricsOpen ? 'active' : ''}`}
+            onClick={() => ui.toggleLyrics(!lyricsOpen)}
+            aria-label="Toggle lyrics"
+            aria-pressed={lyricsOpen}
+            title={lyricsOpen ? 'Hide lyrics (Y)' : 'Show lyrics (Y)'}
+            type="button"
+          >
+            <LyricsIcon size={17} />
+          </button>
+        )}
+        <button
+          className={`icon-btn ${queueOpen ? 'active' : ''}`}
+          onClick={() => ui.toggleQueue()}
+          aria-label="Queue"
+          aria-pressed={queueOpen}
+          title="Queue (Q)"
+          type="button"
+        >
+          <QueueIcon size={17} />
+        </button>
       </div>
     </header>
   )

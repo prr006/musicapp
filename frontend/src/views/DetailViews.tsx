@@ -136,7 +136,12 @@ export function ArtistView({ name }: { name: string }) {
 
   return (
     <div className="page">
-      <header className="detail-head">
+      <header className="detail-head artist-hero">
+        {artist.artwork && (
+          <div className="hero-backdrop" aria-hidden="true">
+            <img src={artist.artwork} alt="" draggable={false} />
+          </div>
+        )}
         <Artwork src={artist.artwork} alt={artist.name} round style={{ width: 208, height: 208 }} />
         <div className="detail-meta">
           <div className="kind">Artist</div>
