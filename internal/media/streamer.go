@@ -55,6 +55,8 @@ func FailureClass(err error) string {
 		return "canceled"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
+	case errors.Is(err, ErrProviderNetwork):
+		return "provider_network"
 	case errors.Is(err, ErrUnavailable):
 		return "media_unavailable"
 	case errors.Is(err, ErrNoAudio):

@@ -1125,6 +1125,8 @@ func providerErrorStatus(err error) (int, string) {
 		return http.StatusServiceUnavailable, "provider_backoff"
 	case errors.Is(err, media.ErrUnavailable), errors.Is(err, media.ErrNoAudio):
 		return http.StatusNotFound, "media_unavailable"
+	case errors.Is(err, media.ErrProviderNetwork):
+		return http.StatusBadGateway, "provider_network"
 	default:
 		return http.StatusBadGateway, "provider_error"
 	}

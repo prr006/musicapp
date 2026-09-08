@@ -431,8 +431,8 @@ func TestResolverSurfacesRealErrors(t *testing.T) {
 	}
 	res2 := NewResolver(&fakeRunner{err: errors.New("unable to resolve host name")})
 	_, err = res2.Resolve(context.Background(), "vid", "high")
-	if err == nil || !strings.Contains(err.Error(), "couldn't reach YouTube") {
-		t.Fatalf("expected a network message, got %v", err)
+	if !errors.Is(err, ErrProviderNetwork) {
+		t.Fatalf("expected a provider network error, got %v", err)
 	}
 	// The extractor raises "No video formats found" when every candidate was
 	// dropped (PO-token/SABR-gated, DRM-skipped, or nothing downloadable).
@@ -454,6 +454,25 @@ func TestStreamErrorsNeverExposeProviderURLs(t *testing.T) {
 	}
 	if got := FailureClass(fmt.Errorf("wrapped: %w", ErrUpstreamStream)); got != "upstream_unavailable" {
 		t.Fatalf("unexpected safe failure class %q", got)
+	}
+}
+
+func TestResolverDoesNotMistakeAPIPageNetworkFailureForAgeRestriction(t *testing.T) {
+	runner := &fakeRunner{err: errors.New("ERROR: Unable to download API page: TLS/SSL connection has been closed (EOF)")}
+	_, err := NewResolver(runner).Resolve(context.Background(), "Kx7B-XvmFtE", "high")
+	if !errors.Is(err, ErrProviderNetwork) {
+		t.Fatalf("API page transport failure was misclassified: %v", err)
+	}
+	if errors.Is(err, ErrUnavailable) {
+		t.Fatalf("the substring 'age' in 'page' must not classify media as unavailable: %v", err)
+	}
+}
+
+func TestResolverRecognizesSpecificAgeRestriction(t *testing.T) {
+	runner := &fakeRunner{err: errors.New("ERROR: Sign in to confirm your age; this video is age-restricted")}
+	_, err := NewResolver(runner).Resolve(context.Background(), "vid", "high")
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("expected a genuine age restriction to be unavailable, got %v", err)
 	}
 }
 

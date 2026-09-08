@@ -37,9 +37,10 @@ import (
 )
 
 var (
-	ErrResolve     = errors.New("couldn't load this song")
-	ErrNoAudio     = errors.New("this song has no playable audio stream")
-	ErrUnavailable = errors.New("media unavailable")
+	ErrResolve         = errors.New("couldn't load this song")
+	ErrNoAudio         = errors.New("this song has no playable audio stream")
+	ErrUnavailable     = errors.New("media unavailable")
+	ErrProviderNetwork = errors.New("provider network unavailable")
 )
 
 // ---- temporary diagnostics (MELO_RESOLVER_DIAG=1) ----
@@ -264,20 +265,18 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 		out, err := r.runner.Run(ctx, args...)
 		if err != nil {
 			diagf("resolve %s: yt-dlp exited with error: %s", sourceID, err.Error())
-			msg := strings.ToLower(err.Error())
-			switch {
-			case strings.Contains(msg, "private") || strings.Contains(msg, "unavailable") ||
-				strings.Contains(msg, "removed") || strings.Contains(msg, "age"):
-				return Resolved{}, fmt.Errorf("%w: %s", ErrUnavailable, firstLine(err.Error()))
-			case strings.Contains(msg, "requested format is not available") || strings.Contains(msg, "no video formats"):
+			switch classifyResolverError(err) {
+			case ErrNoAudio:
 				// This client set exposed no downloadable formats; try the next.
 				lastErr = fmt.Errorf("%w: %s", ErrNoAudio, firstLine(err.Error()))
 				continue
-			case strings.Contains(msg, "resolve host") || strings.Contains(msg, "network") ||
-				strings.Contains(msg, "timed out") || strings.Contains(msg, "urlopen"):
-				return Resolved{}, fmt.Errorf("couldn't reach YouTube: %s", firstLine(err.Error()))
+			case ErrProviderNetwork:
+				return Resolved{}, fmt.Errorf("%w: resolver request failed", ErrProviderNetwork)
+			case ErrUnavailable:
+				return Resolved{}, fmt.Errorf("%w: provider rejected this media", ErrUnavailable)
+			default:
+				return Resolved{}, fmt.Errorf("%w: resolver process failed", ErrResolve)
 			}
-			return Resolved{}, fmt.Errorf("%w: %s", ErrResolve, firstLine(err.Error()))
 		}
 		res, perr := ParseResolved(out, sourceID, quality)
 		if perr == nil {
@@ -295,6 +294,50 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 		return Resolved{}, lastErr
 	}
 	return Resolved{}, ErrNoAudio
+}
+
+func classifyResolverError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return ErrProviderNetwork
+	}
+	message := strings.ToLower(err.Error())
+	if containsAny(message,
+		"requested format is not available",
+		"no video formats",
+		"no formats found",
+	) {
+		return ErrNoAudio
+	}
+	// Check transport failures before media status. In particular, the old
+	// `strings.Contains(message, "age")` check matched the word "page" in
+	// yt-dlp's common "Unable to download API page" network error and falsely
+	// reported ordinary TLS failures as age-restricted media.
+	if containsAny(message,
+		"resolve host", "network", "timed out", "timeout", "urlopen",
+		"tls", "ssl", "connection reset", "connection refused",
+		"connection closed", "remote end closed", "unexpected eof",
+		"temporary failure in name resolution",
+	) {
+		return ErrProviderNetwork
+	}
+	if containsAny(message,
+		"video unavailable", "media unavailable", "private video",
+		"this video is private", "removed by the uploader", "has been removed",
+		"not available in your country", "age-restricted", "age restricted",
+		"confirm your age",
+	) {
+		return ErrUnavailable
+	}
+	return ErrResolve
+}
+
+func containsAny(message string, fragments ...string) bool {
+	for _, fragment := range fragments {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstLine(s string) string {

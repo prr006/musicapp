@@ -90,8 +90,9 @@ jobs:
           grep -qi '^Access-Control-Allow-Origin: https://ci-frontend.invalid' "$headers"
           grep -qi '^X-Request-Id:' "$headers"
           test -d "$data_dir/accounts"
-          docker exec --user melo melo-api-ci sh -c \
-            'test -w /data/accounts && test -r /data/accounts/.existing-root-owned-data'
+          # /ready is executed by the gosu-dropped MELO process and now performs
+          # an actual create/remove write probe. Its 200 is the authoritative
+          # unprivileged-volume check; avoid a second docker-exec user model.
 
   frontend:
     runs-on: ubuntu-latest
