@@ -24,8 +24,12 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	addr, err := listenAddress()
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
-		Addr:           env("ADDR", ":8080"),
+		Addr:           addr,
 		DataDir:        env("MELO_DATA_DIR", "./data"),
 		CORSOrigins:    splitCSV(env("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")),
 		CookieSecure:   envBool("COOKIE_SECURE", false),
@@ -60,6 +64,21 @@ func Load() (Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func listenAddress() (string, error) {
+	// Railway and similar platforms route to their injected PORT. It must win
+	// over the image's ADDR fallback so the service binds to the port selected
+	// for this allocation, on every interface rather than loopback.
+	port := strings.TrimSpace(os.Getenv("PORT"))
+	if port == "" {
+		return env("ADDR", ":8080"), nil
+	}
+	parsed, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || parsed == 0 {
+		return "", fmt.Errorf("PORT must be a number between 1 and 65535")
+	}
+	return "0.0.0.0:" + strconv.FormatUint(parsed, 10), nil
 }
 
 func env(key, fallback string) string {

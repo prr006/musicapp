@@ -50,10 +50,15 @@ jobs:
           set -euo pipefail
           session_secret=$(openssl rand -hex 32)
           playback_secret=$(openssl rand -hex 32)
+          data_dir=$(mktemp -d)
+          chmod 0755 "$data_dir"
           docker run --detach --rm --name melo-api-ci \
             --publish 18080:8080 \
+            --mount "type=bind,src=$data_dir,dst=/data" \
             --env MELO_ENV=production \
             --env MELO_DATA_DIR=/data \
+            --env ADDR=127.0.0.1:9999 \
+            --env PORT=8080 \
             --env COOKIE_SECURE=true \
             --env TRUST_PROXY_HEADERS=true \
             --env CORS_ORIGINS=https://ci-frontend.invalid \
@@ -70,6 +75,8 @@ jobs:
             http://127.0.0.1:18080/api/v1/state
           grep -qi '^Access-Control-Allow-Origin: https://ci-frontend.invalid' "$headers"
           grep -qi '^X-Request-Id:' "$headers"
+          test "$(stat --format=%u "$data_dir")" = 10001
+          test -d "$data_dir/accounts"
 
   frontend:
     runs-on: ubuntu-latest

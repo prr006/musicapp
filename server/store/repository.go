@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -72,7 +73,29 @@ func (r *FileRepository) ForSubject(_ context.Context, subject string) (Library,
 	return opened, nil
 }
 
-func (r *FileRepository) Ready(context.Context) error { return nil }
+func (r *FileRepository) Ready(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if err := os.MkdirAll(r.root, 0o700); err != nil {
+		return fmt.Errorf("create account storage: %w", err)
+	}
+	probe, err := os.CreateTemp(r.root, ".ready-*")
+	if err != nil {
+		return fmt.Errorf("account storage is not writable: %w", err)
+	}
+	name := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(name)
+		return fmt.Errorf("close storage readiness probe: %w", err)
+	}
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("remove storage readiness probe: %w", err)
+	}
+	return nil
+}
 
 func (r *FileRepository) Close() error {
 	r.mu.Lock()
