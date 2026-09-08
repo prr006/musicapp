@@ -310,7 +310,7 @@ func TestFetchCaches(t *testing.T) {
 	var hits int
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		hits++
-		_ = json.NewEncoder(w).Encode(apiRecord{TrackName: "T", SyncedLyrics: "[00:01.00]a"})
+		_ = json.NewEncoder(w).Encode(apiRecord{TrackName: "T", ArtistName: "A", SyncedLyrics: "[00:01.00]a"})
 	})
 	q := Query{TrackID: "yt:7", Title: "T", Artist: "A"}
 	if _, err := c.Fetch(context.Background(), q); err != nil {
@@ -370,7 +370,7 @@ func TestFetchNoMatchForUnrelatedSong(t *testing.T) {
 
 func TestInstrumentalIsNotAnError(t *testing.T) {
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(apiRecord{TrackName: "T", Instrumental: true})
+		_ = json.NewEncoder(w).Encode(apiRecord{TrackName: "T", ArtistName: "A", Instrumental: true})
 	})
 	res, err := c.Fetch(context.Background(), Query{TrackID: "yt:8", Title: "T", Artist: "A"})
 	if err != nil {
