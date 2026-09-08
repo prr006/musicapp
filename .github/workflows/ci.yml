@@ -16,7 +16,18 @@ jobs:
         with:
           go-version: '1.23.x'
           cache: true
-      - run: go test ./...
+      - name: Run Go tests
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! go test ./... 2>&1 | tee /tmp/go-test.log; then
+            message=$(tail -c 6000 /tmp/go-test.log)
+            message=${message//'%'/'%25'}
+            message=${message//$'\n'/'%0A'}
+            message=${message//$'\r'/'%0D'}
+            echo "::error title=Go test failure::$message"
+            exit 1
+          fi
       - run: go vet ./...
       - run: go build -trimpath -o /tmp/melo-api ./server
 
