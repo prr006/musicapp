@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type ResolvedConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -8,6 +8,26 @@ import { resolve } from 'node:path'
  * clone where the build output is gitignored. Vite wipes the folder on every
  * build, so the placeholder is rewritten afterwards.
  */
+function requireVercelAPI() {
+  return {
+    name: 'melo-require-vercel-api',
+    configResolved(config: ResolvedConfig) {
+      if (config.mode !== 'production' || !process.env.VERCEL) return
+      const value = process.env.VITE_MELO_API_URL?.trim()
+      let valid = false
+      try {
+        const url = new URL(value ?? '')
+        valid = url.protocol === 'https:' && url.pathname.replace(/\/$/, '').endsWith('/api/v1')
+      } catch {
+        valid = false
+      }
+      if (!valid) {
+        throw new Error('VITE_MELO_API_URL must be an HTTPS /api/v1 URL for Vercel production builds')
+      }
+    },
+  }
+}
+
 function keepDistTracked() {
   return {
     name: 'melo-keep-dist-tracked',
@@ -18,7 +38,7 @@ function keepDistTracked() {
 }
 
 export default defineConfig({
-  plugins: [react(), keepDistTracked()],
+  plugins: [react(), requireVercelAPI(), keepDistTracked()],
   server: {
     host: '0.0.0.0',
     port: 5173,

@@ -77,9 +77,9 @@ jobs:
             http://127.0.0.1:18080/api/v1/state
           grep -qi '^Access-Control-Allow-Origin: https://ci-frontend.invalid' "$headers"
           grep -qi '^X-Request-Id:' "$headers"
-          test "$(stat --format=%u "$data_dir")" = 10001
           test -d "$data_dir/accounts"
-          test -z "$(find "$data_dir" ! -uid 10001 -print -quit)"
+          docker exec --user melo melo-api-ci sh -c \
+            'test -w /data/accounts && test -r /data/accounts/.existing-root-owned-data'
 
   frontend:
     runs-on: ubuntu-latest
