@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { PlayRecord, Track } from '../bridge/types'
-import { mostPlayed, recentArtists, recentTracks } from './taste'
+import { mostPlayed, recentArtists, recentTracks, representativeTrack } from './taste'
 
 function track(id: string, extra: Partial<Track> = {}): Track {
   return {
@@ -49,5 +49,38 @@ describe('recentArtists', () => {
     const marlow = artists.find((a) => a.name === 'Marlow')
     expect(marlow?.playCount).toBe(2)
     expect(artists.find((a) => a.name === 'Neon Atlas')?.playCount).toBe(1)
+  })
+})
+
+describe('representativeTrack', () => {
+  it('picks the track with the strongest completion-weighted affinity', () => {
+    const list = [track('a'), track('b'), track('c')]
+    const stats = {
+      'yt:a': { playCount: 2, significantCount: 0, completeCount: 0, skipCount: 0, lastPlayedAt: 3 },
+      'yt:c': { playCount: 9, significantCount: 4, completeCount: 5, skipCount: 0, lastPlayedAt: 4 },
+    }
+    expect(representativeTrack(list, stats)?.id).toBe('yt:c')
+  })
+
+  it('prefers a liked track when affinity ties', () => {
+    const list = [track('a'), track('b')]
+    const liked = new Set(['yt:b'])
+    expect(representativeTrack(list, {}, liked)?.id).toBe('yt:b')
+  })
+
+  it('breaks remaining ties by recency, then by list position', () => {
+    const list = [track('a'), track('b'), track('c')]
+    const stats = {
+      'yt:a': { playCount: 1, significantCount: 0, completeCount: 0, skipCount: 0, lastPlayedAt: 2 },
+      'yt:b': { playCount: 1, significantCount: 0, completeCount: 0, skipCount: 0, lastPlayedAt: 9 },
+      'yt:c': { playCount: 1, significantCount: 0, completeCount: 0, skipCount: 0, lastPlayedAt: 9 },
+    }
+    // b and c tie on everything except position — b comes first in the list.
+    expect(representativeTrack(list, stats)?.id).toBe('yt:b')
+  })
+
+  it('falls back to the first entry with no taste data, null on empty', () => {
+    expect(representativeTrack([track('a'), track('b')])?.id).toBe('yt:a')
+    expect(representativeTrack([])).toBeNull()
   })
 })

@@ -66,6 +66,12 @@ Total native surface: one HTTP handler and one yt-dlp invocation.
 
 **Playback** — play / pause / resume / stop / next / previous / seek / volume /
 mute / speed (0.5×–2×), shuffle, repeat off-one-all, natural EOF auto-advance.
+Shuffle is **Smart Shuffle**: a real shuffle of your own tracks that layers the
+local taste profile on top of the dice — artists are spaced (no back-to-back
+same-artist runs when the list admits a spaced arrangement), liked and
+repeatedly-completed tracks are spread across the whole queue instead of
+clumping, and a just-heard song does not open a fresh queue. Shuffling an
+existing queue never moves the current track or the history before it.
 Manual **Stop never advances** the queue. EOF and manual Next each advance
 exactly once. Previous restarts the track if more than 3 s have elapsed.
 Rapid track switching is safe: A is stopped and its state (metadata, artwork,
@@ -78,7 +84,8 @@ more) that never trigger playback. Loading, results, empty, error + retry states
 Search history is persisted and removable.
 
 **Queue** — real queue with play next, add to end, remove, drag-free reorder,
-clear upcoming, shuffle upcoming (current track never moves), dedupe. Autoplay
+clear upcoming, shuffle upcoming (current track never moves; Smart Shuffle is
+applied here too), dedupe. Autoplay
 ("keep playing similar music") is a **separate** auto-queue, clearly labelled and
 switchable off in settings.
 
@@ -188,6 +195,17 @@ next batch.
 rebuilds the session around one seed; a 👎 *don't recommend* excludes a song
 from autoplay immediately.
 
+**List radios** — the playlist page, Liked Songs and the library's Songs
+section each offer a **Radio** action: an endless radio built from that
+list's identity by the *same* engine (no second radio system). The list's
+most representative track — completion-weighted affinity, then likes, then
+recency — becomes the seed, exactly like Start Radio on that track, and an
+even sample of the remaining entries is seeded into the session context so
+the existing drift/taste anchors draw on the whole list's recommendation
+graph from the very first batch. The list itself is never enqueued: the
+explicit queue holds only the anchor, everything after it is generated, and
+the autoplay setting is respected as with every radio.
+
 **Local taste** — a lightweight, login-free listening profile: every track
 records `play_started` / `played_significantly` (30 s or half the song) /
 `completed` / `skipped` events into bounded local history + per-track stats
@@ -217,8 +235,8 @@ invented to fill a grid. Opening an album or artist you don't actually have show
 an explicit empty state.
 
 **Playlists** — create, rename, delete, add, remove, reorder, duplicate, play,
-shuffle-play, and save the current queue (explicit + autoplay, in the visible
-order) as a playlist.
+shuffle-play, start a playlist radio (see List radios above), and save the
+current queue (explicit + autoplay, in the visible order) as a playlist.
 
 **Lyrics** — LRCLIB, synced (LRC) and plain, with instrumental / not-found /
 network-failure states handled distinctly. Highlighting is driven purely by the

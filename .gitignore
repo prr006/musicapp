@@ -9,3 +9,6 @@ frontend/wailsjs/
 # local tooling
 .env.local
 .env.*.local
+
+# wails build bookkeeping (frontend dependency tracker)
+frontend/package.json.md5

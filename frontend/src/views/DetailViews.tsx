@@ -319,13 +319,17 @@ export function PlaylistView({ id }: { id: string }) {
         >
           Play
         </button>
+        <button className="btn ghost" onClick={() => void playback.playAll(list, playlist.name, true)} disabled={list.length === 0} type="button">
+          Shuffle
+        </button>
         <button
           className="btn ghost"
-          onClick={() => void playback.playAll(list, playlist.name, true)}
+          onClick={() => void playback.startListRadio(list, playlist.name)}
           disabled={list.length === 0}
+          title="Endless radio built from this playlist's songs"
           type="button"
         >
-          Shuffle
+          <RadioIcon size={15} /> Radio
         </button>
         <button className="btn ghost" onClick={() => playback.addToQueue(list)} disabled={list.length === 0} type="button">
           Add to queue

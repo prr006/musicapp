@@ -165,3 +165,51 @@ export function recentArtists(history: PlayRecord[], limit = 12): RecentArtist[]
   }
   return [...byArtist.values()].slice(0, limit)
 }
+
+export interface RepresentativeCandidate {
+  track: Track
+  /** Completion-weighted local affinity of the track. */
+  affinity: number
+  /** Whether the track is explicitly liked. */
+  liked: boolean
+  /** When it was last played (0 when never). */
+  lastPlayedAt: number
+  /** Position in the input list — the final, stable tiebreak. */
+  position: number
+}
+
+/**
+ * The most representative track of a list — the natural radio anchor for
+ * "playlist radio" / "liked radio" / "library radio". Preference order:
+ * completion-weighted affinity, then explicitly liked, then most recently
+ * played, then earliest position in the list. Deterministic: the same list
+ * and taste data always choose the same anchor.
+ */
+export function representativeTrack(
+  tracks: Track[],
+  stats: Record<string, PlayStats> = {},
+  likedIds: ReadonlySet<string> = new Set(),
+): Track | null {
+  if (tracks.length === 0) return null
+  const keyOf = (track: Track, position: number): RepresentativeCandidate => ({
+    track,
+    affinity: trackAffinity(stats[track.id]),
+    liked: likedIds.has(track.id),
+    lastPlayedAt: stats[track.id]?.lastPlayedAt ?? 0,
+    position,
+  })
+  let best = keyOf(tracks[0], 0)
+  for (let i = 1; i < tracks.length; i += 1) {
+    const candidate = keyOf(tracks[i], i)
+    const better =
+      candidate.affinity !== best.affinity
+        ? candidate.affinity > best.affinity
+        : candidate.liked !== best.liked
+          ? candidate.liked
+          : candidate.lastPlayedAt !== best.lastPlayedAt
+            ? candidate.lastPlayedAt > best.lastPlayedAt
+            : candidate.position < best.position
+    if (better) best = candidate
+  }
+  return best.track
+}

@@ -32,6 +32,22 @@ export function moveItem<T>(items: T[], from: number, to: number): T[] {
   return out
 }
 
+/**
+ * Up to `max` items spread evenly across the list — a bounded sample that
+ * represents the whole list, not just its head. Order follows the input; a
+ * list of `max` or fewer items is returned in full (a copy).
+ */
+export function spreadSample<T>(items: T[], max: number): T[] {
+  if (max <= 0) return []
+  if (items.length <= max) return items.slice()
+  const out: T[] = []
+  const step = items.length / max
+  for (let i = 0; i < max; i += 1) {
+    out.push(items[Math.min(items.length - 1, Math.floor(i * step))])
+  }
+  return out
+}
+
 /** Removes duplicates by track id, keeping the first occurrence. */
 export function dedupeTracks(tracks: Track[]): Track[] {
   const seen = new Set<string>()

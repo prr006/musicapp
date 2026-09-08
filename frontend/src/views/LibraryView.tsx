@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { AlbumIcon, ArtistIcon, ClockIcon, HeartIcon, MusicIcon, PlusIcon, SearchIcon, TrendingIcon } from '../components/Icons'
+import { AlbumIcon, ArtistIcon, ClockIcon, HeartIcon, MusicIcon, PlusIcon, RadioIcon, SearchIcon, TrendingIcon } from '../components/Icons'
 import { MediaCard } from '../components/MediaCard'
 import { EmptyState } from '../components/States'
 import { TrackRow } from '../components/TrackRow'
@@ -111,6 +111,15 @@ export function LibraryView({ tab }: { tab: Tab }) {
               <button className="btn ghost" onClick={() => void playback.playAll(allTracks, 'Songs', true)} type="button">
                 Shuffle
               </button>
+              <button
+                className="btn ghost"
+                onClick={() => void playback.startListRadio(visibleTracks, 'Your Library')}
+                disabled={visibleTracks.length === 0}
+                title="Endless radio built from your library's songs"
+                type="button"
+              >
+                <RadioIcon size={15} /> Radio
+              </button>
             </div>
             <div className="track-list">
               {visibleTracks.map((track, i) => (
@@ -140,6 +149,15 @@ export function LibraryView({ tab }: { tab: Tab }) {
               </button>
               <button className="btn ghost" onClick={() => void playback.playAll(liked, 'Liked Songs', true)} type="button">
                 Shuffle
+              </button>
+              <button
+                className="btn ghost"
+                onClick={() => void playback.startListRadio(liked, 'Liked Songs')}
+                disabled={liked.length === 0}
+                title="Endless radio built from your liked songs"
+                type="button"
+              >
+                <RadioIcon size={15} /> Radio
               </button>
               <button
                 className="btn ghost"

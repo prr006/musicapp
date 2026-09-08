@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { deriveAlbums, deriveArtists, findAlbum, primaryArtist } from './derive'
 import { formatLongDuration, formatTime, initials, relativeTime } from './format'
-import { dedupeTracks, moveItem, shuffleUpcoming, shuffled } from './queue'
+import { dedupeTracks, moveItem, shuffleUpcoming, shuffled, spreadSample } from './queue'
 import type { Track } from '../bridge/types'
 
 function track(id: string, over: Partial<Track> = {}): Track {
@@ -107,5 +107,22 @@ describe('formatting', () => {
     expect(initials('Nightfall')).toBe('NI')
     expect(initials('Paper Lanterns')).toBe('PL')
     expect(initials('   ')).toBe('?')
+  })
+})
+
+describe('spreadSample', () => {
+  it('returns small lists in full and never exceeds the maximum', () => {
+    expect(spreadSample([1, 2, 3], 5)).toEqual([1, 2, 3])
+    expect(spreadSample([1, 2, 3, 4, 5, 6], 3)).toHaveLength(3)
+    expect(spreadSample([1, 2], 0)).toEqual([])
+  })
+
+  it('samples across the whole list, not just its head', () => {
+    const items = Array.from({ length: 30 }, (_, i) => i)
+    const sample = spreadSample(items, 12)
+    expect(sample[0]).toBe(0)
+    expect(sample[sample.length - 1]).toBeGreaterThanOrEqual(25)
+    // Every sampled index is distinct.
+    expect(new Set(sample).size).toBe(sample.length)
   })
 })

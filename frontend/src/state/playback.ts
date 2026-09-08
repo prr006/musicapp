@@ -21,7 +21,9 @@ import {
   type CandidatePool, type RadioContext, type RadioKind, type RadioSeed,
 } from '../lib/radio'
 import { tasteSnapshot, type TasteSnapshot } from '../lib/taste'
-import { dedupeTracks, moveItem, shuffleUpcoming } from '../lib/queue'
+import { representativeTrack } from '../lib/taste'
+import { dedupeTracks, moveItem, spreadSample } from '../lib/queue'
+import { smartShuffle } from '../lib/smartshuffle'
 import { library, useLibraryStore } from './libraryStore'
 import { lyrics } from './lyricsStore'
 import { playerState, setPlayerState, usePlayerStore } from './playerStore'
@@ -300,10 +302,30 @@ export class PlaybackController {
     this.sessionRecent = [track, ...this.sessionRecent.filter((t) => t.id !== track.id)].slice(0, SESSION_WINDOW)
   }
 
-  /** Starts a fresh session context (new radio / stop). */
-  private resetSessionContext(): void {
-    this.sessionRecent = []
+  /**
+   * Starts a fresh session context (new radio / stop). `seed` pre-populates
+   * the session's drift context — used by list radio so the whole list, not
+   * just the anchor, steers the first broader generations.
+   */
+  private resetSessionContext(seed: Track[] = []): void {
+    this.sessionRecent = seed.slice(0, SESSION_WINDOW)
     this.sessionAnchorsTried = new Set()
+  }
+
+  /**
+   * Smart Shuffle over a list, preserving everything up to and including
+   * `currentIndex` (the current-track head). Gathers the local taste context
+   * once, so every shuffle surface — play-all, the shuffle toggle, a context
+   * play with shuffle on — applies the same taste-aware ordering.
+   */
+  private smartShuffleList(tracks: Track[], currentIndex: number): Track[] {
+    const lib = useLibraryStore.getState()
+    return smartShuffle(tracks, {
+      stats: lib.stats,
+      likedIds: new Set(lib.liked.map((t) => t.id)),
+      recentIds: new Set(lib.history.slice(0, 6).map((h) => h.track.id)),
+      keepFirst: currentIndex + 1,
+    })
   }
 
   /**
@@ -369,7 +391,7 @@ export class PlaybackController {
       queue = tracks
       index = context.index ?? tracks.findIndex((t) => t.id === track.id)
       if (index < 0) index = 0
-      if (playerState().shuffle) queue = shuffleUpcoming(queue, index)
+      if (playerState().shuffle) queue = this.smartShuffleList(tracks, index)
     } else {
       // Play now: this single track replaces the session.
       queue = [track]
@@ -420,6 +442,36 @@ export class PlaybackController {
           : `Radio · ${track.title}`)
     setPlayerState({ queue: [track], index: 0, contextLabel: label, playingFrom: 'queue' })
     await this.start(track)
+  }
+
+  /**
+   * LIST RADIO (playlist / liked songs / library): an endless radio built
+   * from a list's own identity, using the existing radio engine only. The
+   * list's most representative track (completion-weighted affinity, then
+   * likes) becomes the seed — exactly like Start Radio on that track — and
+   * an even sample of the remaining entries is seeded into the session
+   * context, so the engine's existing drift anchors draw on the whole list's
+   * recommendation graph from the very first batch. The list itself is never
+   * enqueued: a radio plays radio, the explicit queue stays the user's own.
+   * Like every radio, it respects the autoplay setting.
+   */
+  async startListRadio(tracks: Track[], label: string): Promise<void> {
+    const list = dedupeTracks(tracks).filter((t) => t.sourceId)
+    if (list.length === 0) return
+    const lib = useLibraryStore.getState()
+    const anchor =
+      representativeTrack(list, lib.stats, new Set(lib.liked.map((t) => t.id))) ?? list[0]
+    this.markLatencyClick('CLICK', `list=${label} tracks=${list.length} via=list-radio anchor=${anchor.id}`)
+    this.resetDiscovery()
+    this.resetSessionContext(spreadSample(list.filter((t) => t.id !== anchor.id), SESSION_WINDOW))
+    this.explicitSeed = radioSeedFromTrack(anchor)
+    setPlayerState({
+      queue: [anchor],
+      index: 0,
+      contextLabel: `${label} radio`,
+      playingFrom: 'queue',
+    })
+    await this.start(anchor)
   }
 
   /** Records the user-intent instant (the click handler calls play()
@@ -853,7 +905,9 @@ export class PlaybackController {
   toggleShuffle(): void {
     const state = playerState()
     const shuffle = !state.shuffle
-    const queue = shuffle ? shuffleUpcoming(state.queue, state.index) : state.queue
+    // Smart Shuffle: the current track (and the history before it) stays put,
+    // the upcoming order becomes taste-aware.
+    const queue = shuffle ? this.smartShuffleList(state.queue, state.index) : state.queue
     setPlayerState({ shuffle, queue })
     this.queueSessionSave()
   }
@@ -875,7 +929,9 @@ export class PlaybackController {
     const list = dedupeTracks(tracks)
     if (list.length === 0) return
     if (shuffle) {
-      const order = shuffleUpcoming(list, -1)
+      // Smart Shuffle from the top: nothing is pinned, so the opener is
+      // chosen too (a just-heard track does not start the queue).
+      const order = this.smartShuffleList(list, -1)
       setPlayerState({ shuffle: true })
       await this.play(order[0], { tracks: order, index: 0, label })
       return

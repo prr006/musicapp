@@ -1479,3 +1479,126 @@ describe('desktop mirroring', () => {
     expect(h.backend.setNowPlaying).toHaveBeenLastCalledWith('', '')
   })
 })
+
+describe('smart shuffle', () => {
+  it('toggleShuffle keeps the head, loses nothing and spaces artists', async () => {
+    const h = harness()
+    // A distinct-artist opener, then three identities in the body — the
+    // pattern where clumping hurts and spacing is always achievable.
+    const head = track('head', { artist: 'Delta' })
+    const body = [
+      ...Array.from({ length: 3 }, (_, i) => track(`a${i}`, { artist: 'Alpha' })),
+      ...Array.from({ length: 2 }, (_, i) => track(`b${i}`, { artist: 'Beta' })),
+      ...Array.from({ length: 2 }, (_, i) => track(`c${i}`, { artist: 'Gamma' })),
+    ]
+    const tracks = [head, ...body]
+    await h.controller.play(head, { tracks, index: 0 })
+    h.controller.toggleShuffle()
+    const after = state().queue
+    expect(state().shuffle).toBe(true)
+    expect(after[0].id).toBe(head.id) // the current track never moves
+    expect(after).toHaveLength(8)
+    expect(new Set(after.map((t) => t.id)).size).toBe(8)
+    for (let i = 2; i < after.length; i++) {
+      // No two adjacent upcoming tracks share an artist identity.
+      expect(`${after[i].artist}:${after[i].uploader ?? ''}`).not.toBe(`${after[i - 1].artist}:${after[i - 1].uploader ?? ''}`)
+    }
+  })
+
+  it('playAll(shuffle) keeps every track once and avoids a just-heard opener', async () => {
+    const h = harness()
+    const list = ['a', 'b', 'c', 'd', 'e'].map((id) => track(id, { artist: `A-${id}` }))
+    useLibraryStore.setState({
+      ...useLibraryStore.getState(),
+      history: [{ track: track('a'), playedAt: Date.now() }],
+    })
+    await h.controller.playAll(list, 'Test list', true)
+    expect(state().shuffle).toBe(true)
+    expect(state().current?.id).not.toBe('yt:a')
+    expect(new Set(state().queue.map((t) => t.id)).size).toBe(5)
+    expect(state().queue).toHaveLength(5)
+  })
+
+  it('context play with shuffle on pins the chosen head and reorders the rest', async () => {
+    const h = harness()
+    const tracks = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => track(id, { artist: `A-${id}` }))
+    await h.controller.play(tracks[2], { tracks, index: 2 })
+    expect(state().shuffle).toBe(false)
+    usePlayerStore.setState({ shuffle: true })
+    await h.controller.play(tracks[0], { tracks, index: 0 })
+    const after = state().queue
+    expect(after[0].id).toBe('yt:a')
+    expect(new Set(after.map((t) => t.id)).size).toBe(6)
+    expect(after).toHaveLength(6)
+  })
+})
+
+describe('list radio', () => {
+  it('plays the most representative track and never enqueues the list', async () => {
+    const h = harness()
+    const list = [track('p1'), track('p2'), track('p3')]
+    useLibraryStore.setState({
+      ...useLibraryStore.getState(),
+      stats: {
+        'yt:p2': { playCount: 5, significantCount: 3, completeCount: 4, skipCount: 0, lastPlayedAt: 9 },
+      },
+    })
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      tracks: [track('r1'), track('r2')],
+      source: 'ytmusic-next',
+    })
+    await h.controller.startListRadio(list, 'Road Trip')
+    // The list's strongest track is the anchor...
+    expect(state().current?.id).toBe('yt:p2')
+    // ...and the explicit queue holds ONLY the anchor: a radio plays radio,
+    // the list itself is session context, never queue content.
+    expect(state().queue.map((t) => t.id)).toEqual(['yt:p2'])
+    expect(state().contextLabel).toBe('Road Trip radio')
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:r1', 'yt:r2']))
+  })
+
+  it('seeds the session with the list so drift anchors come from its tracks', async () => {
+    const h = harness()
+    const list = [track('p1'), track('p2'), track('p3'), track('p4')]
+    // The anchor's own feed answers nothing; a LIST MEMBER's feed answers.
+    // Without session seeding the radio would stay empty (song radio never
+    // falls back to artist search).
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockImplementation(async (t: Track) =>
+      t.id === 'yt:p2' ? { tracks: [track('from-list')], source: 'ytmusic-next' } : { tracks: [], source: '' },
+    )
+    await h.controller.startListRadio(list, 'Road Trip')
+    expect(state().current?.id).toBe('yt:p1') // no taste data: first entry anchors
+    await vi.waitFor(() => expect(state().autoQueue.map((t) => t.id)).toEqual(['yt:from-list']))
+    // The list member's feed was genuinely consulted.
+    expect(h.backend.relatedTracks).toHaveBeenCalledWith(expect.objectContaining({ id: 'yt:p2' }))
+  })
+
+  it('respects the autoplay setting: no fetch, empty autoplay list', async () => {
+    const h = harness()
+    useLibraryStore.setState({
+      ...useLibraryStore.getState(),
+      settings: { ...defaultSettings(), autoplay: false },
+    })
+    ;(h.backend.relatedTracks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      tracks: [track('r1')],
+      source: 'ytmusic-next',
+    })
+    await h.controller.startListRadio([track('p1'), track('p2')], 'Road Trip')
+    expect(state().current?.id).toBe('yt:p1')
+    expect(h.backend.relatedTracks).not.toHaveBeenCalled()
+    expect(state().autoQueue).toEqual([])
+  })
+
+  it('is a no-op on an empty or unresolvable list', async () => {
+    const h = harness()
+    await h.controller.startListRadio([], 'Nothing')
+    expect(state().current).toBeNull()
+    expect(state().queue).toEqual([])
+    // Tracks without a source id cannot anchor a radio either.
+    await h.controller.startListRadio(
+      [{ ...track('x'), sourceId: '' }, { ...track('y'), sourceId: '' }],
+      'No ids',
+    )
+    expect(state().current).toBeNull()
+  })
+})
