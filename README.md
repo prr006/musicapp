@@ -262,7 +262,14 @@ Playing view are two presentations of one playback store — current track,
 play/pause, shuffle, repeat, like state and progress update instantly in both.
 The progress readout can flip between total duration and time remaining, and a
 focused scrubber owns its arrow keys (a global shortcut never double-applies
-them).
+them). On desktop the expanded Now Playing is a true two-column composition —
+large square artwork bounded by both viewport width and height, with the
+title, transport and a full-column scrubber beside it — fluid across the
+spacious (1600px+), balanced and compact tiers, collapsing to one column
+below 900px; when the queue panel is open the player reflows beside it rather
+than hiding underneath. While a track loads, the mini player and Now Playing
+say what is actually happening — resolving (yt-dlp work) vs buffering (audio
+fetch) — and a prefetched next-track transition never claims resolving.
 
 **Playback quality of life** — a sleep timer (15/30/45/60 min or "end of
 track": wall-clock timers pause playback at expiry, end-of-track waits for
@@ -303,14 +310,32 @@ delays a resolution), per-attempt timings, process stdout/stderr sizes, and
 parse time. `go run ./tools/playbench -ids <id1>,<id2>` produces the full
 matrix (spawn probe, cold, warm, expired-URL refresh, cache hit, failure) and
 can A/B candidate extractor arguments through the real resolver via
-`-extra "--extractor-args youtube:player_skip=…"`. Windows installs the
-**onedir** yt-dlp build (`yt-dlp_win.zip`, extracted into its own directory)
-instead of the self-extracting onefile exe — the onefile unpacks itself into a
-temp directory on *every* spawn, which is pure per-request overhead the onedir
-build eliminates; a persistent resolver worker was prototyped and rejected
-(it only recovers the same spawn slice while adding process-lifecycle
-complexity). Risky extractor shortcuts (`player_skip=js` throttled-URL risk,
-`player_skip=initial_data`) are deliberately not used.
+`-extra "--extractor-args youtube:player_skip=…"`. **Every platform** installs
+the **onedir** yt-dlp build (the platform `.zip` assets, extracted into their
+own directory) instead of the self-extracting onefile executables — the
+onefile unpacks its entire payload into a temp directory on *every* spawn,
+which measured ≈2.15 s vs ≈0.3 s per invocation on Linux (145 MB / ~7,400
+files inflated each time; see the task-21 benchmark below): pure per-request
+overhead the onedir build eliminates. Windows moved to onedir first (it was
+measured at the heart of its slow-startup report); task 21 extended the same
+fix to Linux and macOS, whose onefile payloads are even larger (38.6 MB
+compressed vs Windows' 17 MB). A persistent resolver worker was prototyped
+and rejected (it only recovers the same spawn slice while adding
+process-lifecycle complexity). Risky extractor shortcuts (`player_skip=js`
+throttled-URL risk, `player_skip=initial_data`) are deliberately not used.
+
+The task-21 spawn benchmark (Linux, yt-dlp 2026.08.19, `--version`, median
+of repeated runs through `tools/playbench -probe`): a mechanism-faithful
+onefile replica — same payload scale as the official build, 145 MB /
+~7,400 files inflated to a fresh temp dir on every spawn — took **≈2.15 s
+per invocation**, while the same payload pre-extracted once (onedir
+behaviour) took **≈0.30 s**. The ≈1.85 s difference is pure per-spawn
+self-extraction, paid on every cache-missing resolve, and it is what the
+onedir switch removes. (Measured with a replica because GitHub release
+asset downloads were unreachable from the benchmark environment; the real
+network stage of a resolve cannot be measured offline and is not included.)
+The in-process stream proxy adds ≈0.1 ms per request (loopback benchmark of
+the real handler), so src-handoff contributes nothing measurable.
 
 Keyboard: `Ctrl/⌘+K` search · `Space` play/pause · `←/→` seek 5 s ·
 `Ctrl+←/→` prev/next · `↑/↓` volume · `M` mute · `S` shuffle · `R` repeat ·

@@ -26,6 +26,7 @@ function SleepTimerStatus() {
 export function NowPlaying() {
   const current = usePlayer((s) => s.current)
   const status = usePlayer((s) => s.status)
+  const loadStage = usePlayer((s) => s.loadStage)
   const error = usePlayer((s) => s.error)
   const speed = usePlayer((s) => s.speed)
   const lyricsOpen = useUIStore((s) => s.lyricsOpen)
@@ -38,13 +39,21 @@ export function NowPlaying() {
   const withLyrics = lyricsOpen && showLyrics
 
   return (
-    <section className="now-playing" aria-label="Now playing">
+    <section className={`now-playing ${queueOpen ? 'with-queue' : ''}`} aria-label="Now playing">
       <div className="np-head">
         <button className="icon-btn" onClick={() => ui.toggleNowPlaying(false)} aria-label="Close now playing" type="button">
           <ChevronDown size={20} />
         </button>
         <div className="muted" style={{ fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-          {status === 'loading' ? 'Loading' : status === 'playing' ? 'Playing' : status === 'error' ? 'Error' : 'Paused'}
+          {status === 'loading'
+            ? loadStage === 'resolving'
+              ? 'Resolving'
+              : 'Buffering'
+            : status === 'playing'
+              ? 'Playing'
+              : status === 'error'
+                ? 'Error'
+                : 'Paused'}
         </div>
         <div className="row">
           {showLyrics && (
@@ -176,7 +185,7 @@ export function NowPlaying() {
                     <SleepTimerStatus />
                   </div>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <div className="np-volume-row">
                   <VolumeControl />
                 </div>
               </div>

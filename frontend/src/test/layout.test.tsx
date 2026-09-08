@@ -96,28 +96,56 @@ describe('layout: stylesheet contract (desktop viewport usage)', () => {
 })
 
 describe('layout: expanded Now Playing', () => {
-  it('artwork column scales with width AND available height', () => {
+  it('is a true two-column composition: artwork track + metadata column', () => {
     const col = rule('.np-art-col')
-    expect(col).toContain('calc(100vh - 520px)') // height-aware
-    expect(col).toContain('min(520px,') // bounded on huge windows
+    // The artwork track is a fluid share of the viewport WIDTH…
+    expect(col).toContain('minmax(280px, min(44vw, 560px))')
+    expect(col).toContain('minmax(0, 1fr)') // …beside the metadata/controls column
+    expect(col).toContain('clamp(36px, 4.5vw, 80px)') // fluid inter-column gap
+    // …while the square cover is bounded by the viewport HEIGHT too: its
+    // width may never exceed the vertical room, so short windows shrink it
+    // instead of clipping the controls.
+    expect(rule('.np-art')).toContain('min(100%, calc(100vh - 240px))')
     const body = rule('.np-body')
-    expect(body).toContain('minmax(300px, 520px)') // wider than the old 460px cap
     expect(body).toContain('clamp(32px, 4vw, 64px)') // fluid gap
+    expect(body).toContain('minmax(320px, 440px)') // lyrics column beside the composition
+  })
+
+  it('the scrubber spans the metadata column — the 780px cap is mini-player only', () => {
+    expect(rule('.scrubber-row')).toContain('max-width: 780px')
+    expect(css).toContain('.now-playing .scrubber-row {')
+    const idx = css.indexOf('.now-playing .scrubber-row {')
+    expect(css.slice(idx, css.indexOf('}', idx))).toContain('max-width: none')
+  })
+
+  it('the player reflows beside the open queue panel instead of hiding under it', () => {
+    expect(css).toContain('.now-playing.with-queue .np-body {')
+    const idx = css.indexOf('.now-playing.with-queue .np-body {')
+    expect(css.slice(idx, css.indexOf('}', idx))).toContain('clamp(320px, 30vw, 420px)')
   })
 
   it('the spacious tier (1600px+) visibly enlarges the player', () => {
     const spacious = mediaBlock('min-width: 1600px')
-    expect(spacious).toContain('minmax(340px, 600px)')
-    expect(spacious).toContain('min(600px, max(340px, calc(100vh - 560px)))')
+    expect(spacious).toContain('minmax(320px, min(46vw, 680px))') // bigger artwork track
+    expect(spacious).toContain('clamp(30px, 2.2vw, 42px)') // bigger title
     expect(spacious).toContain('.np-buttons .play-btn')
+    // Pages benefit too: roomier cards and detail heroes.
+    expect(spacious).toContain('clamp(184px, 11vw, 240px)')
+    expect(spacious).toContain('clamp(232px, 13vw, 300px)')
   })
 
-  it('collapses to a single column at small desktop widths', () => {
-    const compact = mediaBlock('max-width: 900px')
-    expect(compact).toContain('.np-body')
-    // And an intermediate reduction exists between the tiers.
-    const mid = mediaBlock('max-width: 1100px')
-    expect(mid).toContain('minmax(260px, 360px)')
+  it('compact tier (900–1199px): lyrics mode stacks beside the pane; solo keeps the split', () => {
+    const compact = mediaBlock('max-width: 1199px')
+    expect(compact).toContain('display: flex') // stacked player column with lyrics open
+    expect(compact).toContain('calc(100vh - 520px)') // …still height-bounded
+    expect(compact).toContain('justify-content: center') // controls re-centre when stacked
+  })
+
+  it('collapses to a single column at narrow widths', () => {
+    const narrow = mediaBlock('max-width: 900px')
+    expect(narrow).toContain('.np-body')
+    expect(narrow).toContain('.np-art-col') // the composition itself stacks
+    expect(narrow).toContain('grid-template-columns: minmax(0, 1fr)')
   })
 
   it('lyrics keep a readable line length on ultra-wide columns', () => {
@@ -142,9 +170,11 @@ describe('layout: breakpoints', () => {
   it('uses fluid sizing first and only the intended breakpoints', () => {
     const queries = [...css.matchAll(/@media \(([^)]+)\)/g)].map((m) => m[1])
     expect(queries).toEqual(
-      expect.arrayContaining(['min-width: 1600px', 'max-width: 1100px', 'max-width: 900px', 'prefers-reduced-motion: reduce']),
+      expect.arrayContaining(['min-width: 1600px', 'max-width: 1199px', 'max-width: 900px', 'prefers-reduced-motion: reduce']),
     )
-    // Guard against hard-coded breakpoint sprawl: exactly these four.
+    // Guard against hard-coded breakpoint sprawl: exactly these four. The
+    // tiers between them (≥1920, 1200–1599, 900–1199) stay fluid via
+    // clamp()/vw sizing rather than piling up more breakpoints.
     expect(queries).toHaveLength(4)
   })
 })

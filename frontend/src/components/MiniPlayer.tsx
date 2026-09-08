@@ -188,6 +188,7 @@ export function TransportButtons() {
 export function MiniPlayer() {
   const current = usePlayer((s) => s.current)
   const status = usePlayer((s) => s.status)
+  const loadStage = usePlayer((s) => s.loadStage)
   const error = usePlayer((s) => s.error)
   const liked = useLibraryStore((s) => (current ? s.liked.some((t) => t.id === current.id) : false))
   const queueOpen = useUIStore((s) => s.queueOpen)
@@ -215,7 +216,13 @@ export function MiniPlayer() {
                 {current.title}
               </div>
               <div className="player-artist">
-                {status === 'loading' ? 'Loading…' : error ? error : displayArtist(current) || 'Unknown artist'}
+                {status === 'loading'
+                  ? loadStage === 'resolving'
+                    ? 'Resolving…'
+                    : 'Buffering…'
+                  : error
+                    ? error
+                    : displayArtist(current) || 'Unknown artist'}
               </div>
             </div>
             <button

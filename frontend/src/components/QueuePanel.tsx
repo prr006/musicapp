@@ -29,6 +29,7 @@ export function QueuePanel() {
   const contextLabel = usePlayer((s) => s.contextLabel)
   const radioSource = usePlayer((s) => s.radioSource)
   const status = usePlayer((s) => s.status)
+  const loadStage = usePlayer((s) => s.loadStage)
   const current = usePlayer((s) => s.current)
   const [saving, setSaving] = useState(false)
   const [name, setName] = useState('')
@@ -70,7 +71,9 @@ export function QueuePanel() {
               <Artwork src={current.artwork} alt={current.title} style={{ width: 44, height: 44 }} />
               <div className="track-main">
                 <div className="track-title">{current.title}</div>
-                <div className="track-sub">{status === 'loading' ? 'Loading…' : displayArtist(current)}</div>
+                <div className="track-sub">
+                  {status === 'loading' ? (loadStage === 'resolving' ? 'Resolving…' : 'Buffering…') : displayArtist(current)}
+                </div>
               </div>
             </div>
           </>

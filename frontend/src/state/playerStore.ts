@@ -20,6 +20,16 @@ export interface PlayerState {
   index: number
   current: Track | null
   status: PlayerStatus
+  /**
+   * Fine-grained loading stage, only meaningful while status is 'loading':
+   * 'resolving' = the backend is resolving the stream URL (yt-dlp work —
+   * this is the stage that can take seconds on a cache miss), 'buffering' =
+   * the source is set and the audio element is fetching data. A prefetched
+   * transition never shows 'resolving': no resolver work is happening, and
+   * faking it would be exactly the "frozen look" this field exists to
+   * prevent. Null whenever the player is not loading.
+   */
+  loadStage: 'resolving' | 'buffering' | null
   error: string | null
   shuffle: boolean
   repeat: RepeatMode
@@ -41,6 +51,7 @@ export const usePlayerStore = create<PlayerState>(() => ({
   index: -1,
   current: null,
   status: 'idle',
+  loadStage: null,
   error: null,
   shuffle: false,
   repeat: 'off',

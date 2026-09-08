@@ -6,9 +6,9 @@
   "assets": {
     "windows/amd64": { "name": "yt-dlp_win.zip", "entry": "yt-dlp.exe", "sha256": "" },
     "windows/arm64": { "name": "yt-dlp_win_arm64.zip", "entry": "yt-dlp.exe", "sha256": "" },
-    "linux/amd64": { "name": "yt-dlp_linux", "sha256": "" },
-    "linux/arm64": { "name": "yt-dlp_linux_aarch64", "sha256": "" },
-    "darwin/amd64": { "name": "yt-dlp_macos", "sha256": "" },
-    "darwin/arm64": { "name": "yt-dlp_macos", "sha256": "" }
+    "linux/amd64": { "name": "yt-dlp_linux.zip", "entry": "yt-dlp_linux", "sha256": "" },
+    "linux/arm64": { "name": "yt-dlp_linux_aarch64.zip", "entry": "yt-dlp_linux_aarch64", "sha256": "" },
+    "darwin/amd64": { "name": "yt-dlp_macos.zip", "entry": "yt-dlp_macos", "sha256": "" },
+    "darwin/arm64": { "name": "yt-dlp_macos.zip", "entry": "yt-dlp_macos", "sha256": "" }
   }
 }

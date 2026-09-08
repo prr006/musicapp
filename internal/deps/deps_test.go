@@ -55,7 +55,8 @@ func fakeRelease(t *testing.T, content []byte, sumOverride string) *httptest.Ser
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "SHA2-256SUMS"):
-			for _, name := range []string{"yt-dlp.exe", "yt-dlp_linux", "yt-dlp_macos", "yt-dlp_arm64.exe", "yt-dlp_linux_aarch64"} {
+			for _, name := range []string{"yt-dlp.exe", "yt-dlp_linux", "yt-dlp_macos", "yt-dlp_arm64.exe", "yt-dlp_linux_aarch64",
+				"yt-dlp_win.zip", "yt-dlp_win_arm64.zip", "yt-dlp_linux.zip", "yt-dlp_linux_aarch64.zip", "yt-dlp_macos.zip"} {
 				fmt.Fprintf(w, "%s  %s\n", digest, name)
 			}
 		default:
@@ -75,7 +76,9 @@ func TestEnsureDownloadsVerifiesAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := []byte("#!/bin/sh\necho 2026.08.19\n")
+	// Every platform now pins an onedir zip, so serve a real zip payload
+	// shaped like the current platform's asset.
+	content := buildOnedirZipEntry(t, false, m.manifest.Assets[runtime.GOOS+"/"+runtime.GOARCH].Entry)
 	srv := fakeRelease(t, content, "")
 	m.manifest.BaseURL = srv.URL
 
@@ -84,10 +87,10 @@ func TestEnsureDownloadsVerifiesAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if filepath.Dir(path) != dir {
+	if filepath.Dir(filepath.Dir(path)) != dir {
 		t.Fatalf("binary installed outside the managed dir: %s", path)
 	}
-	if !strings.Contains(filepath.Base(path), m.Version()) {
+	if !strings.Contains(path, m.Version()) {
 		t.Fatalf("install path must be version-scoped: %s", path)
 	}
 	if !progressSeen {
@@ -126,10 +129,11 @@ func TestEnsureRejectsCorruptDownload(t *testing.T) {
 func TestEnsureUsesPinnedDigestWhenPresent(t *testing.T) {
 	dir := t.TempDir()
 	m, _ := NewManager(dir)
-	content := []byte("binary")
-	sum := sha256.Sum256(content)
 	key := runtime.GOOS + "/" + runtime.GOARCH
 	asset := m.manifest.Assets[key]
+	// Every platform now pins an onedir zip, so serve a real zip payload.
+	content := buildOnedirZipEntry(t, false, asset.Entry)
+	sum := sha256.Sum256(content)
 	asset.SHA256 = hex.EncodeToString(sum[:])
 	m.manifest.Assets[key] = asset
 
@@ -175,7 +179,8 @@ func zipRelease(t *testing.T, zipBytes []byte) *httptest.Server {
 	digest := hex.EncodeToString(sum[:])
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "SHA2-256SUMS") {
-			for _, name := range []string{"yt-dlp.exe", "yt-dlp_linux", "yt-dlp_macos", "yt-dlp_arm64.exe", "yt-dlp_linux_aarch64", "yt-dlp_win.zip", "yt-dlp_win_arm64.zip"} {
+			for _, name := range []string{"yt-dlp.exe", "yt-dlp_linux", "yt-dlp_macos", "yt-dlp_arm64.exe", "yt-dlp_linux_aarch64",
+				"yt-dlp_win.zip", "yt-dlp_win_arm64.zip", "yt-dlp_linux.zip", "yt-dlp_linux_aarch64.zip", "yt-dlp_macos.zip"} {
 				fmt.Fprintf(w, "%s  %s\n", digest, name)
 			}
 			return
@@ -188,16 +193,23 @@ func zipRelease(t *testing.T, zipBytes []byte) *httptest.Server {
 
 // buildOnedirZip builds a deterministic onedir-style archive: yt-dlp.exe plus
 // an _internal/ tree. When nested is true everything is wrapped in one folder.
+// buildOnedipZip builds a synthetic onedir zip shaped like the official
+// yt-dlp release zips: the entry executable plus an _internal/ tree, either
+// at the archive root or nested inside a single wrapper folder.
 func buildOnedipZip(t *testing.T, nested bool) []byte {
+	return buildOnedirZipEntry(t, nested, "yt-dlp.exe")
+}
+
+func buildOnedirZipEntry(t *testing.T, nested bool, entry string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	prefix := ""
 	if nested {
-		prefix = "yt-dlp-win/"
+		prefix = "yt-dlp-bundle/"
 	}
 	files := map[string]string{
-		prefix + "yt-dlp.exe":           "MZ fake exe",
+		prefix + entry:                  "fake onedir executable",
 		prefix + "_internal/Cryptodome": "lib1",
 		prefix + "_internal/websockets": "lib2",
 	}
@@ -218,10 +230,10 @@ func buildOnedipZip(t *testing.T, nested bool) []byte {
 
 // forceZipAsset points THIS platform's manifest entry at the onedir zip so the
 // zip install path can be tested on any OS.
-func forceZipAsset(t *testing.T, m *Manager, name string) {
+func forceZipAsset(t *testing.T, m *Manager, name, entry string) {
 	t.Helper()
 	key := runtime.GOOS + "/" + runtime.GOARCH
-	m.manifest.Assets[key] = Asset{Name: name, Entry: "yt-dlp.exe", SHA256: ""}
+	m.manifest.Assets[key] = Asset{Name: name, Entry: entry, SHA256: ""}
 }
 
 func TestEnsureInstallsOnedirZipRootLayout(t *testing.T) {
@@ -230,7 +242,7 @@ func TestEnsureInstallsOnedirZipRootLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forceZipAsset(t, m, "yt-dlp_win.zip")
+	forceZipAsset(t, m, "yt-dlp_win.zip", "yt-dlp.exe")
 	m.manifest.BaseURL = zipRelease(t, buildOnedipZip(t, false)).URL
 
 	p, err := m.Ensure(nil)
@@ -264,7 +276,7 @@ func TestEnsureInstallsOnedirZipRootLayout(t *testing.T) {
 func TestEnsureInstallsOnedirZipNestedLayout(t *testing.T) {
 	dir := t.TempDir()
 	m, _ := NewManager(dir)
-	forceZipAsset(t, m, "yt-dlp_win.zip")
+	forceZipAsset(t, m, "yt-dlp_win.zip", "yt-dlp.exe")
 	m.manifest.BaseURL = zipRelease(t, buildOnedipZip(t, true)).URL
 
 	p, err := m.Ensure(nil)
@@ -288,7 +300,7 @@ func TestEnsureRejectsZipWithoutEntry(t *testing.T) {
 
 	dir := t.TempDir()
 	m, _ := NewManager(dir)
-	forceZipAsset(t, m, "yt-dlp_win.zip")
+	forceZipAsset(t, m, "yt-dlp_win.zip", "yt-dlp.exe")
 	m.manifest.BaseURL = zipRelease(t, buf.Bytes()).URL
 
 	if _, err := m.Ensure(nil); err == nil || !strings.Contains(err.Error(), "does not contain") {
@@ -299,7 +311,7 @@ func TestEnsureRejectsZipWithoutEntry(t *testing.T) {
 func TestEnsureRemovesLegacyOnefileAfterZipInstall(t *testing.T) {
 	dir := t.TempDir()
 	m, _ := NewManager(dir)
-	forceZipAsset(t, m, "yt-dlp_win.zip")
+	forceZipAsset(t, m, "yt-dlp_win.zip", "yt-dlp.exe")
 	m.manifest.BaseURL = zipRelease(t, buildOnedipZip(t, false)).URL
 
 	legacy := m.legacyPath()
@@ -336,5 +348,79 @@ func TestUnzipRejectsPathTraversal(t *testing.T) {
 	}
 	if err := unzip(archive, filepath.Join(dir, "out")); err == nil || !strings.Contains(err.Error(), "unsafe path") {
 		t.Fatalf("expected zip-slip rejection, got %v", err)
+	}
+}
+
+// TestManifestUsesOnedirBuildsEverywhere is the regression guard for the
+// Linux/macOS slow-startup fix: every pinned platform must use an onedir zip
+// with an explicit entry. The single-file (PyInstaller onefile) assets
+// self-extract their full payload to a temp dir on every invocation, which
+// measured ~+1.9s per yt-dlp spawn on Linux — the dominant playback-start
+// latency regression. No platform may regress to those.
+func TestManifestUsesOnedirBuildsEverywhere(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platforms := 0
+	for key, asset := range m.manifest.Assets {
+		platforms++
+		if !strings.HasSuffix(asset.Name, ".zip") {
+			t.Errorf("%s must pin an onedir .zip asset (got %q); single-file builds pay per-spawn self-extraction", key, asset.Name)
+		}
+		if strings.TrimSpace(asset.Entry) == "" {
+			t.Errorf("%s must declare the entry executable inside the zip", key)
+		}
+		if !strings.Contains(filepath.Join(dir, asset.Entry), filepath.Clean(asset.Entry)) {
+			t.Errorf("%s entry %q must be a usable relative path", key, asset.Entry)
+		}
+	}
+	if platforms < 6 {
+		t.Errorf("expected at least 6 platform assets (win amd64/arm64, linux amd64/arm64, darwin amd64/arm64), got %d", platforms)
+	}
+}
+
+// TestEnsureInstallsLinuxOnedirZipAndMigratesLegacySingleFile covers the
+// Linux/macOS upgrade path: a pre-zip install left a single-file executable
+// at exactly the path the versioned onedir directory now occupies, and Ensure
+// must replace it wholesale (no stale file left behind, no copy collision).
+func TestEnsureInstallsLinuxOnedirZipAndMigratesLegacySingleFile(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := NewManager(dir)
+	forceZipAsset(t, m, "yt-dlp_linux.zip", "yt-dlp_linux")
+	m.manifest.BaseURL = zipRelease(t, buildOnedirZipEntry(t, false, "yt-dlp_linux")).URL
+
+	// Simulate the legacy single-file install at the versioned dir path.
+	legacy := filepath.Join(dir, fmt.Sprintf("yt-dlp-%s", m.Version()))
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("old single-file onefile build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := m.Ensure(nil)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if filepath.Base(p) != "yt-dlp_linux" {
+		t.Fatalf("expected the linux entry executable, got %s", p)
+	}
+	if st, err := os.Stat(legacy); err != nil || !st.IsDir() {
+		t.Fatalf("the legacy single-file path must now be the onedir directory, stat err=%v isDir=%v", err, st != nil && st.IsDir())
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(p), "_internal", "websockets")); err != nil {
+		t.Fatalf("archive payload must be extracted: %v", err)
+	}
+	if st := m.Status(); !st.Installed {
+		t.Fatalf("status should report installed: %+v", st)
+	}
+	// Second run is idempotent and must not resurrect the legacy file.
+	if _, err := m.Ensure(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatalf("onedir dir should remain: %v", err)
 	}
 }

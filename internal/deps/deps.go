@@ -29,9 +29,13 @@ var manifestRaw []byte
 type Asset struct {
 	Name   string `json:"name"`   // release asset file name
 	SHA256 string `json:"sha256"` // pinned digest; empty => verified via release SHA2-256SUMS
-	// Entry is the executable's path inside a .zip asset (the onedir builds
-	// ship yt-dlp.exe plus an _internal/ tree at the archive root). Empty for
-	// single-file assets.
+	// Entry is the executable's path inside a .zip asset. Every platform now
+	// uses yt-dlp's ONEDIR zips (contents at the archive root: the executable
+	// plus its _internal/ tree) because the single-file builds are PyInstaller
+	// onefile executables that self-extract their whole payload to a temp dir
+	// on EVERY invocation — measured at roughly +1.9s per resolve on Linux,
+	// which is exactly the slow-startup regression this avoids. Empty for
+	// single-file assets (none remain in the manifest).
 	Entry string `json:"entry"`
 }
 
@@ -112,7 +116,9 @@ func (m *Manager) BinaryPath() (string, error) {
 
 // legacyPath is the pre-zip install location of the Windows onefile build.
 // It is removed after a successful onedir install so upgrades don't leave two
-// copies of the tool behind.
+// copies of the tool behind. (The pre-zip Linux/macOS single-file builds
+// installed at exactly the path the versioned onedir directory now occupies,
+// so the install's RemoveAll of that path migrates those automatically.)
 func (m *Manager) legacyPath() string {
 	return filepath.Join(m.dir, fmt.Sprintf("yt-dlp-%s.exe", m.manifest.Version))
 }

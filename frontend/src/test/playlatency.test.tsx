@@ -5,7 +5,7 @@
  * must surface and retry cleanly, and the [play-latency] instrumentation must
  * emit the full ordered timeline when enabled.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
@@ -89,6 +89,10 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // The playback controller is a module singleton: stop() clears its pending
+  // prefetch debounce, in-flight set, and prefetched-source cache so no state
+  // leaks between tests (a stale cached N+1 would fake a reuse pass).
+  playback.stop()
   cleanup()
   vi.restoreAllMocks()
   localStorage.removeItem('melo:play-latency')
@@ -189,5 +193,231 @@ describe('[play-latency] instrumentation', () => {
     await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe('yt:def456'))
     const noise = debugSpy.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith('[play-latency]'))
     expect(noise).toEqual([])
+  })
+})
+
+/**
+ * Next-track prefetch path (queue advance latency): while track N plays, the
+ * controller resolves the stream URL of the immediate next track in the
+ * background. The N → N+1 transition must reuse that prefetched source and
+ * NEVER re-invoke the resolver; a prefetch in flight must not be duplicated;
+ * a failed prefetch must never break the real transition; and an unsettled
+ * prefetch must never block an immediate skip.
+ */
+const callsFor = (be: Backend, sourceId: string) =>
+  (be.getPlayable as ReturnType<typeof vi.fn>).mock.calls
+    .filter((c) => (c[0] as Track).sourceId === sourceId).length
+
+async function playAWithBNext() {
+  render(<App />)
+  await searchAndClickFirst() // a playing, queue [a]
+  usePlayerStore.setState({ queue: [a, b] })
+  await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
+}
+
+describe('next-track prefetch path', () => {
+
+  it('reuses the prefetched source on advance — the N→N+1 transition never re-invokes the resolver', async () => {
+    const be = stubBackend()
+    localStorage.setItem('melo:play-latency', '1')
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    await playAWithBNext()
+
+    // The debounced background prefetch (1.5s) resolves b while a keeps playing.
+    await waitFor(() => expect(callsFor(be, 'def456')).toBe(1), { timeout: 5000 })
+    expect(usePlayerStore.getState().current?.id).toBe('yt:abc123') // a undisturbed
+    expect(usePlayerStore.getState().status).toBe('playing')
+
+    // Natural end of a: b must start from the prefetched source.
+    act(() => {
+      playback.engine.el.dispatchEvent(new Event('ended'))
+    })
+    await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe('yt:def456'))
+    await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
+    expect(playback.engine.el.getAttribute('src')).toBe('http://127.0.0.1:52134/stream/token/def456')
+
+    // THE regression assertion: a + one prefetch = two resolver invocations
+    // total. A third call would mean the cached N+1 transition went back to
+    // the resolver (the slow next-track path this prefetch exists to remove).
+    expect(be.getPlayable).toHaveBeenCalledTimes(2)
+
+    // And the instrumentation names the shortcut: the transition's resolve
+    // came from the prefetch cache, at zero cost.
+    const reused = debugSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('cache=prefetch'))
+    expect(reused).toMatch(/RESOLVE_END.*cache=prefetch/)
+  }, 15000)
+
+  it('never duplicates the prefetch while one is already in flight', async () => {
+    const be = stubBackend()
+    let releaseB: (s: PlayableSource) => void = () => {}
+    getPlayableImpl = (t) =>
+      t.sourceId === 'def456'
+        ? new Promise<PlayableSource>((resolve) => {
+            releaseB = (s) => resolve(s)
+          })
+        : Promise.resolve({
+            trackId: t.id, url: `http://127.0.0.1:52134/stream/token/${t.sourceId}`, mimeType: 'audio/mp4',
+            duration: 263, bitrate: 128, expiresAt: 0,
+          })
+    await playAWithBNext()
+
+    // Wait for the prefetch to actually be in flight.
+    await waitFor(() => expect(callsFor(be, 'def456')).toBe(1), { timeout: 5000 })
+
+    // Re-entering the playing state (pause/resume, progress ticks, any state
+    // re-emission re-arms the debounce) must not issue a second resolve for b.
+    act(() => {
+      playback.engine.el.dispatchEvent(new Event('playing'))
+    })
+    await new Promise((r) => setTimeout(r, 2200))
+    expect(callsFor(be, 'def456')).toBe(1)
+
+    // The in-flight background work never disturbed the audible track.
+    expect(usePlayerStore.getState().current?.id).toBe('yt:abc123')
+    expect(usePlayerStore.getState().status).toBe('playing')
+
+    // Let the pending promise settle so no state leaks between tests.
+    releaseB({
+      trackId: b.id, url: 'http://127.0.0.1:52134/stream/token/def456', mimeType: 'audio/mp4',
+      duration: 263, bitrate: 128, expiresAt: 0,
+    })
+    await new Promise((r) => setTimeout(r, 0))
+  }, 15000)
+
+  it('a failed prefetch stays silent and the real transition resolves fresh', async () => {
+    const be = stubBackend()
+    let failPrefetch = true
+    getPlayableImpl = async (t) => {
+      if (t.sourceId === 'def456' && failPrefetch) {
+        failPrefetch = false
+        throw new Error('offline blip during prefetch')
+      }
+      return {
+        trackId: t.id, url: `http://127.0.0.1:52134/stream/token/${t.sourceId}`, mimeType: 'audio/mp4',
+        duration: 263, bitrate: 128, expiresAt: 0,
+      }
+    }
+    await playAWithBNext()
+
+    // The prefetch for b fails silently…
+    await waitFor(() => expect(callsFor(be, 'def456')).toBe(1), { timeout: 5000 })
+    expect(usePlayerStore.getState().status).toBe('playing') // …and playback never noticed.
+
+    // …so the natural transition resolves b for real and plays it.
+    act(() => {
+      playback.engine.el.dispatchEvent(new Event('ended'))
+    })
+    await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe('yt:def456'))
+    await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
+    expect(playback.engine.el.getAttribute('src')).toBe('http://127.0.0.1:52134/stream/token/def456')
+    expect(usePlayerStore.getState().error).toBeNull() // the failure was invisible
+    expect(be.getPlayable).toHaveBeenCalledTimes(3) // a, failed prefetch, real resolve
+  }, 15000)
+
+  it('an unsettled prefetch never blocks an immediate skip', async () => {
+    const be = stubBackend()
+    // The background prefetch for b never settles; b's OWN resolve (issued by
+    // start() on the skip) answers immediately. If start() ever awaited the
+    // prefetch promise instead of issuing its own request, b could never
+    // start here. (In the real app the Go resolver dedupes concurrent
+    // requests for the same id, so the second call shares work, not fate.)
+    let prefetchStarted = false
+    getPlayableImpl = (t) => {
+      if (t.sourceId === 'def456' && !prefetchStarted) {
+        prefetchStarted = true
+        return new Promise<PlayableSource>(() => {}) // prefetch never settles
+      }
+      return Promise.resolve({
+        trackId: t.id, url: `http://127.0.0.1:52134/stream/token/${t.sourceId}`, mimeType: 'audio/mp4',
+        duration: 263, bitrate: 128, expiresAt: 0,
+      })
+    }
+    await playAWithBNext()
+    await waitFor(() => expect(callsFor(be, 'def456')).toBe(1), { timeout: 5000 })
+
+    // The user hits Next while the prefetch is still hanging: start() must
+    // resolve b itself instead of waiting on the background promise.
+    await playback.next()
+    await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe('yt:def456'))
+    await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
+    expect(playback.engine.el.getAttribute('src')).toBe('http://127.0.0.1:52134/stream/token/def456')
+    expect(callsFor(be, 'def456')).toBe(2) // the hanging prefetch + its own resolve
+  }, 15000)
+})
+
+/**
+ * Loading stages (UI feedback contract): a fresh resolve must announce itself
+ * as Resolving (the stage that can take seconds), the element's own waits are
+ * Buffering, a prepared (prefetched) transition must NEVER claim resolving,
+ * and every stage clears once playback actually starts. No blocking
+ * full-screen state exists — these are inline labels only.
+ */
+describe('loading stages', () => {
+  it('a fresh resolve reports resolving — visibly — until the source arrives, then clears', async () => {
+    let release!: (s: PlayableSource) => void
+    getPlayableImpl = () =>
+      new Promise<PlayableSource>((resolve) => {
+        release = (s) => resolve(s)
+      })
+    render(<App />)
+    await userEvent.type(screen.getByRole('textbox', { name: 'Search' }), 'perfect{enter}')
+    await waitFor(() => expect(screen.getByText('Perfect')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Perfect'))
+
+    await waitFor(() => expect(usePlayerStore.getState().status).toBe('loading'))
+    expect(usePlayerStore.getState().loadStage).toBe('resolving')
+    // The mini player says what it is actually doing — no frozen look.
+    expect(screen.getByText('Resolving…')).toBeInTheDocument()
+
+    release({
+      trackId: a.id, url: 'http://127.0.0.1:52134/stream/token/abc123', mimeType: 'audio/mp4',
+      duration: 263, bitrate: 128, expiresAt: 0,
+    })
+    await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
+    expect(usePlayerStore.getState().loadStage).toBeNull()
+  })
+
+  it('a prepared (prefetched) transition goes straight to buffering — it never claims resolving', async () => {
+    const be = stubBackend()
+    await playAWithBNext()
+    await waitFor(() => expect(callsFor(be, 'def456')).toBe(1), { timeout: 5000 })
+
+    // Record every loadStage the store passes through during the transition.
+    // (jsdom's play() fires 'playing' synchronously, so the final state can
+    // already be playing when dispatch returns — the recorded SEQUENCE is the
+    // deterministic proof.)
+    const stages: Array<string | null> = []
+    const unsubscribe = usePlayerStore.subscribe((state) => stages.push(state.loadStage))
+    act(() => {
+      playback.engine.el.dispatchEvent(new Event('ended'))
+    })
+    await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
+    unsubscribe()
+    // A prepared load knows its source: it may pass through buffering (the
+    // element fetching data) but must NEVER claim resolving — that would be a
+    // fake loading state on a transition where no resolver work happens.
+    expect(stages).not.toContain('resolving')
+    expect(stages).toContain('buffering')
+    expect(usePlayerStore.getState().loadStage).toBeNull()
+  }, 15000)
+
+  it('a mid-track rebuffer reports buffering, and clears when playback resumes', async () => {
+    render(<App />)
+    await searchAndClickFirst()
+    expect(usePlayerStore.getState().status).toBe('playing')
+
+    // The element stalls mid-track (network hiccup): the engine re-enters
+    // loading — that is the element's wait, never a resolver round trip.
+    act(() => {
+      playback.engine.el.dispatchEvent(new Event('waiting'))
+    })
+    expect(usePlayerStore.getState().status).toBe('loading')
+    expect(usePlayerStore.getState().loadStage).toBe('buffering')
+
+    act(() => {
+      playback.engine.el.dispatchEvent(new Event('playing'))
+    })
+    expect(usePlayerStore.getState().status).toBe('playing')
+    expect(usePlayerStore.getState().loadStage).toBeNull()
   })
 })

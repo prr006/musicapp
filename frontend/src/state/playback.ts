@@ -205,7 +205,17 @@ export class PlaybackController {
         const { status, duration, buffered, error, volume, muted, rate } = event.snapshot
         positionChannel.setDuration(duration)
         positionChannel.setBuffered(buffered)
-        setPlayerState({ status, error, volume, muted, speed: rate })
+        setPlayerState({
+          status,
+          error,
+          volume,
+          muted,
+          speed: rate,
+          // 'loading' straight from the element (waiting/rebuffer) is
+          // buffering; an in-flight resolving stage stays resolving. Any
+          // other engine state means the load is over.
+          loadStage: status === 'loading' ? (playerState().loadStage ?? 'buffering') : null,
+        })
         if (status === 'playing') {
           this.logLatencyTotal('STATUS_PLAYING') // no-op unless FIRST_PLAYING hasn't already logged
           this.markPlayed()
@@ -493,7 +503,16 @@ export class PlaybackController {
     this.discoveryRefillGen = 0
     positionChannel.reset()
     positionChannel.setDuration(track.duration || 0)
-    setPlayerState({ current: track, status: 'loading', error: null })
+    // Pre-resolution check first: a prefetched source means the load goes
+    // straight to buffering — reporting a resolving stage would be a fake
+    // loading state on a prepared transition.
+    const prefetched = this.takePlayable(track)
+    setPlayerState({
+      current: track,
+      status: 'loading',
+      loadStage: prefetched ? 'buffering' : 'resolving',
+      error: null,
+    })
     lyrics.loadFor(track, () => this.engine.isCurrent(token))
     this.mirrorToDesktop(track.title, track.artist)
 
@@ -501,7 +520,7 @@ export class PlaybackController {
       // Pre-resolution: if the immediate-next prefetch already answered for
       // this exact track, use it and skip the resolver round trip.
       this.latencyResolveStartAt = performance.now()
-      let source: PlayableSource | null = this.takePlayable(track)
+      let source: PlayableSource | null = prefetched
       if (source) {
         this.latencyResolveEndAt = performance.now()
         playLatency('RESOLVE_END', 'elapsed=0ms cache=prefetch')
@@ -515,13 +534,16 @@ export class PlaybackController {
         )
       }
       if (!this.engine.isCurrent(token)) return // a newer track won the race
+      // Source in hand: from here the wait is the audio element's, not the
+      // resolver's.
+      setPlayerState({ loadStage: 'buffering' })
       if (source.duration > 0) positionChannel.setDuration(source.duration)
       await this.engine.load(token, source.url, startAt)
     } catch (err) {
       if (!this.engine.isCurrent(token)) return
       const message = err instanceof Error ? err.message : 'Couldn\u2019t load this song.'
       this.engine.fail(token, message)
-      setPlayerState({ status: 'error', error: message })
+      setPlayerState({ status: 'error', error: message, loadStage: null })
     }
   }
 
@@ -559,7 +581,7 @@ export class PlaybackController {
     this.clearSleepTimer()
     this.clearPrefetch()
     positionChannel.reset()
-    setPlayerState({ current: null, status: 'idle', error: null, index: -1 })
+    setPlayerState({ current: null, status: 'idle', error: null, loadStage: null, index: -1 })
     lyrics.clear()
     this.mirrorToDesktop('', '')
     this.queueSessionSave()
