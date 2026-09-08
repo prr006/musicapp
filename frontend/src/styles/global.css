@@ -1479,9 +1479,14 @@ p {
   flex-wrap: wrap;
 }
 
+/* ---------- expanded-player control scale ----------
+   Sized for the large desktop artwork (everything scoped to .now-playing so
+   the shared MiniPlayer components keep their own compact scale).
+   Groups: PRIMARY = shuffle|prev|play|next|repeat, SECONDARY = speed|sleep|
+   volume, ACTIONS = like|dislike|more — separated by spacing, not boxes. */
 .np-buttons .play-btn {
-  width: 60px;
-  height: 60px;
+  width: 58px;
+  height: 58px;
 }
 
 /* The expanded player's play/pause carries clearly dominant weight: the
@@ -1493,6 +1498,62 @@ p {
 
 .np-buttons .play-btn:not(.loading):hover {
   filter: brightness(1.06);
+}
+
+/* PRIMARY transport: prev/next get comfortable hit areas and slightly
+   larger icons (structural order: shuffle, prev, play, next, repeat). */
+.now-playing .transport {
+  gap: 12px;
+}
+
+.now-playing .transport .icon-btn:nth-child(2),
+.now-playing .transport .icon-btn:nth-child(4) {
+  width: 44px;
+  height: 44px;
+}
+
+.now-playing .transport .icon-btn:nth-child(2) svg,
+.now-playing .transport .icon-btn:nth-child(4) svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Shuffle/repeat frame the transport with slightly smaller targets —
+   clearly secondary to play/prev/next. */
+.now-playing .transport .icon-btn:first-child,
+.now-playing .transport .icon-btn:last-child {
+  width: 42px;
+  height: 42px;
+}
+
+.now-playing .transport .icon-btn:first-child svg,
+.now-playing .transport .icon-btn:last-child svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* ACTIONS (like/dislike/more): modest hit areas, subtle icons — never
+   large filled buttons. The 'more' button shares the row's scale. */
+.now-playing .np-actions .icon-btn,
+.now-playing .np-actions .icon-btn.sm {
+  width: 38px;
+  height: 38px;
+}
+
+.now-playing .np-actions .icon-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* SECONDARY row: the volume slider gets a wider usable track and its mute
+   button a comfortable hit area, without letting it dominate. */
+.now-playing .np-secondary .icon-btn {
+  width: 38px;
+  height: 38px;
+}
+
+.now-playing .volume {
+  width: 170px;
 }
 
 /* Small setting clusters (speed, sleep timer) inside the transport row. */
@@ -2228,6 +2289,42 @@ select.input {
   .np-body.with-lyrics .np-art {
     width: min(100%, max(280px, calc(100vh - 460px)), 620px);
   }
+  .np-buttons .play-btn {
+    width: 62px;
+    height: 62px;
+  }
+  .now-playing .transport {
+    gap: 14px;
+  }
+  .now-playing .transport .icon-btn:nth-child(2),
+  .now-playing .transport .icon-btn:nth-child(4) {
+    width: 46px;
+    height: 46px;
+  }
+  .now-playing .transport .icon-btn:nth-child(2) svg,
+  .now-playing .transport .icon-btn:nth-child(4) svg {
+    width: 21px;
+    height: 21px;
+  }
+  .now-playing .transport .icon-btn:first-child,
+  .now-playing .transport .icon-btn:last-child {
+    width: 44px;
+    height: 44px;
+  }
+  .now-playing .transport .icon-btn:first-child svg,
+  .now-playing .transport .icon-btn:last-child svg {
+    width: 19px;
+    height: 19px;
+  }
+  .now-playing .np-actions .icon-btn,
+  .now-playing .np-actions .icon-btn.sm,
+  .now-playing .np-secondary .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+  .now-playing .volume {
+    width: 190px;
+  }
   .np-title {
     font-size: clamp(30px, 2.1vw, 40px);
   }
@@ -2300,6 +2397,37 @@ select.input {
   .np-buttons .play-btn {
     width: 48px;
     height: 48px;
+  }
+  .now-playing .transport {
+    gap: 8px;
+  }
+  .now-playing .transport .icon-btn:nth-child(2),
+  .now-playing .transport .icon-btn:nth-child(4) {
+    width: 38px;
+    height: 38px;
+  }
+  .now-playing .transport .icon-btn:nth-child(2) svg,
+  .now-playing .transport .icon-btn:nth-child(4) svg {
+    width: 19px;
+    height: 19px;
+  }
+  .now-playing .transport .icon-btn:first-child,
+  .now-playing .transport .icon-btn:last-child {
+    width: 36px;
+    height: 36px;
+  }
+  .now-playing .transport .icon-btn:first-child svg,
+  .now-playing .transport .icon-btn:last-child svg {
+    width: 17px;
+    height: 17px;
+  }
+  .now-playing .np-actions .icon-btn,
+  .now-playing .np-actions .icon-btn.sm {
+    width: 34px;
+    height: 34px;
+  }
+  .now-playing .volume {
+    width: 148px;
   }
   .np-secondary {
     gap: 12px;

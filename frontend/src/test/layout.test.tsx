@@ -124,8 +124,34 @@ describe('layout: expanded Now Playing', () => {
 
   it('like/dislike/track menu sit with the metadata; transport and secondary rows below', () => {
     expect(rule('.np-actions')).toContain('display: flex')
-    expect(rule('.np-buttons .play-btn')).toContain('width: 60px')
     expect(rule('.np-secondary')).toContain('flex-wrap: wrap')
+  })
+
+  it('control scale: play/pause 58px base, 62px spacious, 48px compact (scoped to the expanded player)', () => {
+    expect(rule('.np-buttons .play-btn')).toContain('width: 58px')
+    const spacious = mediaBlock('min-width: 1600px')
+    expect(spacious).toContain('width: 62px')
+    const compact = mediaBlock('max-width: 1199px')
+    expect(compact).toContain('width: 48px')
+  })
+
+  it('control scale: prev/next hit areas and icons outrank shuffle/repeat; actions stay modest', () => {
+    // Prev/next: 44px hit, 20px icons (46/21 at >=1600).
+    expect(css).toContain('.now-playing .transport .icon-btn:nth-child(2)')
+    const base = css.slice(css.indexOf('.now-playing .transport .icon-btn:nth-child(2)'), css.indexOf('.np-actions .icon-btn,'))
+    expect(base).toContain('width: 44px')
+    expect(base).toContain('width: 20px')
+    // Shuffle/repeat are visibly secondary: 42px hit, 18px icons.
+    expect(base).toContain('width: 42px')
+    expect(base).toContain('width: 18px')
+    // Like/dislike/more: modest 38px hit areas (40 at >=1600).
+    expect(base).not.toContain('background: var(--accent)') // never large filled buttons
+    // All sizing is scoped to the expanded player — the shared MiniPlayer
+    // components keep their own scale.
+    expect(rule('.icon-btn')).toContain('width: 34px')
+    expect(rule('.volume')).toContain('width: 132px')
+    // The expanded player widens the volume slider.
+    expect(css).toContain('.now-playing .volume {')
   })
 
   it('>=1600px uses the spacious tier', () => {

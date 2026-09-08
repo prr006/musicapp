@@ -188,7 +188,7 @@ export function NowPlaying() {
                     <SpeedIcon size={16} />
                     <select
                       className="input"
-                      style={{ width: 76, height: 32 }}
+                      style={{ width: 80, height: 'clamp(34px, 2.2vw, 38px)' }}
                       value={speed}
                       aria-label="Playback speed"
                       onChange={(e) => playback.setSpeed(Number(e.target.value))}
@@ -204,7 +204,7 @@ export function NowPlaying() {
                     <MoonIcon size={16} />
                     <select
                       className="input"
-                      style={{ width: 108, height: 32 }}
+                      style={{ width: 112, height: 'clamp(34px, 2.2vw, 38px)' }}
                       value={sleepTimer ? (sleepTimer.mode === 'endOfTrack' ? 'end' : String(sleepTimer.minutes)) : 'off'}
                       aria-label="Sleep timer"
                       onChange={(e) => {
