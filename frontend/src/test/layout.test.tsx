@@ -559,3 +559,196 @@ describe('visual system integration (cinematic MELO direction)', () => {
     expect(rule('.lyric-line.passed')).toContain('opacity: 0.45')
   })
 })
+
+/* ---------------- rendered control sizing (real selector cascade) ----------------
+   Locks the ACTUAL elements to the sizing rules: for every control we assert
+   (a) no inline width/height (the bug class that kept Play/Pause at 40px
+   while CSS claimed 58-62px), (b) the exact stylesheet selector matches the
+   rendered element, and (c) the cascade winner — computed by specificity and
+   order over rules that match the element — is the intended size. This is
+   selector matching against the real DOM, not string presence. */
+
+interface CssRule {
+  selector: string
+  decls: string
+  media: string | null
+  order: number
+}
+
+function parseRules(text: string): CssRule[] {
+  const out: CssRule[] = []
+  const src = text.replace(/\/\*[\s\S]*?\*\//g, '')
+  let order = 0
+  const walk = (body: string, media: string | null) => {
+    let i = 0
+    while (i < body.length) {
+      const open = body.indexOf('{', i)
+      if (open < 0) break
+      const sel = body.slice(i, open).trim()
+      // find the matching close brace for this block
+      let depth = 1, j = open + 1
+      while (j < body.length && depth > 0) {
+        if (body[j] === '{') depth += 1
+        if (body[j] === '}') depth -= 1
+        j += 1
+      }
+      const inner = body.slice(open + 1, j - 1)
+      if (sel.startsWith('@media')) {
+        walk(inner, sel.slice(sel.indexOf('('), sel.lastIndexOf(')') + 1))
+      } else if (!sel.startsWith('@')) {
+        out.push({ selector: sel, decls: inner, media, order: order++ })
+      }
+      i = j
+    }
+  }
+  walk(src, null)
+  return out
+}
+
+const parsedRules = parseRules(css)
+
+/** (ids, classes/pseudo-classes, types) — enough for this stylesheet (no ids). */
+function specificity(sel: string): [number, number, number] {
+  let a = 0, b = 0, c = 0
+  for (const token of sel.split(/\s*[ >+~]\s*/)) {
+    if (!token || token === '*') continue
+    a += (token.match(/#[\w-]+/g) ?? []).length
+    b += (token.match(/[.][\w-]+/g) ?? []).length + (token.match(/:{1,2}[\w-]+/g) ?? []).length
+    const tags = token.replace(/[#.][\w-]+|:{1,2}[\w-]+(\([^)]*\))?/g, '').trim()
+    if (tags) c += 1
+  }
+  return [a, b, c]
+}
+
+/** Winning declaration for `prop` among rules that match `el` (inline style wins all). */
+function winning(el: Element, prop: string, applicable: (media: string | null) => boolean): string {
+  const inline = (el as HTMLElement).style.getPropertyValue(prop)
+  if (inline) return `inline:${inline}`
+  let best: CssRule | null = null
+  let bestSpec: [number, number, number] = [-1, -1, -1]
+  for (const rule of parsedRules) {
+    if (!applicable(rule.media)) continue
+    if (!rule.decls.includes(`${prop}:`)) continue
+    for (const single of rule.selector.split(',')) {
+      const sel = single.trim()
+      if (!sel) continue
+      try {
+        if (!el.matches(sel)) continue
+      } catch {
+        continue
+      }
+      const spec = specificity(sel)
+      if (
+        spec[0] > bestSpec[0] ||
+        (spec[0] === bestSpec[0] && spec[1] > bestSpec[1]) ||
+        (spec[0] === bestSpec[0] && spec[1] === bestSpec[1] && (spec[2] > bestSpec[2] || (spec[2] === bestSpec[2] && rule.order > (best?.order ?? -1))))
+      ) {
+        best = { ...rule, selector: sel }
+        bestSpec = spec
+      }
+    }
+  }
+  if (!best) return 'none'
+  const m = new RegExp(`${prop}:\\s*([^;]+)`).exec(best.decls)
+  return m ? m[1].trim() : 'none'
+}
+
+const BASE = (media: string | null) => media === null
+const SPACIOUS = (media: string | null) => media === null || media === '(min-width: 1600px)'
+const COMPACT = (media: string | null) => media === null || media === '(max-width: 1199px)'
+
+describe('rendered control sizing (real selector cascade)', () => {
+  it('the actual play/pause element receives the intended sizes at every tier', async () => {
+    const { container } = render(<App />)
+    const { playback } = await import('../state/playback')
+    await playback.play(song('a'))
+    useUIStore.setState({ nowPlayingOpen: true })
+    const np = () => container.querySelector('.main > .now-playing')!
+    await waitFor(() => expect(np()).toBeTruthy())
+
+    const play = np().querySelector('.np-buttons .play-btn') as HTMLElement
+    expect(play).toBeTruthy()
+    // The bug class: an inline size would override every stylesheet rule.
+    expect(play.getAttribute('style') ?? '').not.toMatch(/width|height/)
+    // The .now-playing ancestor really wraps it (scoped selectors apply).
+    expect(play.closest('.now-playing')).toBeTruthy()
+    // The exact stylesheet selector matches the rendered element.
+    expect(play.matches('.np-buttons .play-btn')).toBe(true)
+    // Cascade winners by tier.
+    expect(winning(play, 'width', BASE)).toBe('58px')
+    expect(winning(play, 'width', SPACIOUS)).toBe('62px')
+    expect(winning(play, 'width', COMPACT)).toBe('48px')
+    expect(winning(play.querySelector('svg')!, 'width', BASE)).toBe('26px')
+  })
+
+  it('previous/next: 44px hit areas at 1200-1599, 46px at >=1600 — on the real elements', async () => {
+    const { container } = render(<App />)
+    const { playback } = await import('../state/playback')
+    await playback.play(song('a'))
+    useUIStore.setState({ nowPlayingOpen: true })
+    const np = () => container.querySelector('.main > .now-playing')!
+    await waitFor(() => expect(np()).toBeTruthy())
+
+    const prev = np().querySelector('.transport [aria-label="Previous"]') as HTMLElement
+    const next = np().querySelector('.transport [aria-label="Next"]') as HTMLElement
+    expect(prev).toBeTruthy()
+    expect(next).toBeTruthy()
+    // The structural selectors the CSS relies on genuinely match these nodes.
+    expect(prev.matches('.now-playing .transport .icon-btn:nth-child(2)')).toBe(true)
+    expect(next.matches('.now-playing .transport .icon-btn:nth-child(4)')).toBe(true)
+    expect(prev.getAttribute('style') ?? '').not.toMatch(/width|height/)
+    expect(winning(prev, 'width', BASE)).toBe('44px')
+    expect(winning(next, 'width', BASE)).toBe('44px')
+    expect(winning(prev, 'width', SPACIOUS)).toBe('46px')
+    expect(winning(prev.querySelector('svg')!, 'width', BASE)).toBe('20px')
+    expect(winning(prev.querySelector('svg')!, 'width', SPACIOUS)).toBe('21px')
+  })
+
+  it('shuffle/repeat stay secondary (42px base, 44px spacious) on the real elements', async () => {
+    const { container } = render(<App />)
+    const { playback } = await import('../state/playback')
+    await playback.play(song('a'))
+    useUIStore.setState({ nowPlayingOpen: true })
+    const np = () => container.querySelector('.main > .now-playing')!
+    await waitFor(() => expect(np()).toBeTruthy())
+
+    const shuffle = np().querySelector('.transport [aria-label="Shuffle"]') as HTMLElement
+    const repeat = np().querySelector('.transport [aria-label^="Repeat"]') as HTMLElement
+    expect(shuffle).toBeTruthy()
+    expect(repeat).toBeTruthy()
+    expect(shuffle.matches('.now-playing .transport .icon-btn:first-child')).toBe(true)
+    expect(repeat.matches('.now-playing .transport .icon-btn:last-child')).toBe(true)
+    expect(winning(shuffle, 'width', BASE)).toBe('42px')
+    expect(winning(repeat, 'width', BASE)).toBe('42px')
+    expect(winning(shuffle, 'width', SPACIOUS)).toBe('44px')
+  })
+
+  it('like/dislike/more: modest 38px hit areas via the actions selector', async () => {
+    const { container } = render(<App />)
+    const { playback } = await import('../state/playback')
+    await playback.play(song('a'))
+    useUIStore.setState({ nowPlayingOpen: true })
+    const np = () => container.querySelector('.main > .now-playing')!
+    await waitFor(() => expect(np()).toBeTruthy())
+
+    const actions = np().querySelectorAll('.np-actions .icon-btn')
+    expect(actions.length).toBe(3) // like, dislike, more
+    for (const btn of actions) {
+      expect(btn.matches('.now-playing .np-actions .icon-btn')).toBe(true)
+      expect(winning(btn, 'width', BASE)).toBe('38px')
+      expect(winning(btn, 'width', SPACIOUS)).toBe('40px')
+    }
+  })
+
+  it('the MiniPlayer play button is untouched: 40px, and the expanded-player selector does NOT match it', async () => {
+    const { container } = render(<App />)
+    const { playback } = await import('../state/playback')
+    await playback.play(song('a'))
+    const mini = container.querySelector('.player-bar .play-btn') as HTMLElement
+    expect(mini).toBeTruthy()
+    expect(mini.closest('.now-playing')).toBeNull()
+    expect(mini.matches('.np-buttons .play-btn')).toBe(false) // scoped rule cannot leak
+    expect(mini.getAttribute('style') ?? '').not.toMatch(/width|height/) // sized by CSS, not inline
+    expect(winning(mini, 'width', BASE)).toBe('40px')
+  })
+})

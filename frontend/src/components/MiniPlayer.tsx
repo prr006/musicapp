@@ -128,15 +128,24 @@ export function RepeatButton() {
   )
 }
 
-export function PlayButton({ size = 40 }: { size?: number }) {
+/**
+ * Shared play/pause button. WITHOUT an explicit `size`, sizing is left to
+ * CSS on purpose: an inline width/height here would override every stylesheet
+ * rule (the bug that kept the expanded player's play button at 40px while the
+ * CSS claimed 58-62px). The MiniPlayer's `.play-btn` base rule is 40px, so
+ * the default render is visually identical to before; the expanded player
+ * scales it through `.np-buttons .play-btn` and the responsive tiers.
+ */
+export function PlayButton({ size }: { size?: number }) {
   const status = usePlayer((s) => s.status)
   const hasTrack = usePlayer((s) => !!s.current)
   const loading = status === 'loading'
+  const iconSize = size ? Math.round(size * 0.45) : 18
 
   return (
     <button
       className={`play-btn ${loading ? 'loading' : ''}`}
-      style={{ width: size, height: size }}
+      style={size ? { width: size, height: size } : undefined}
       onClick={() => void playback.toggle()}
       disabled={!hasTrack}
       aria-label={status === 'playing' ? 'Pause' : 'Play'}
@@ -146,9 +155,9 @@ export function PlayButton({ size = 40 }: { size?: number }) {
       {loading ? (
         <span className="spinner" />
       ) : status === 'playing' ? (
-        <PauseIcon size={size * 0.45} />
+        <PauseIcon size={iconSize} />
       ) : (
-        <PlayIcon size={size * 0.45} />
+        <PlayIcon size={iconSize} />
       )}
     </button>
   )

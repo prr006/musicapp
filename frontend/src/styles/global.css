@@ -1489,6 +1489,13 @@ p {
   height: 58px;
 }
 
+/* The icon inside the scaled play button grows with it (CSS overrides the
+   SVG's 18px attribute inside the expanded player only). */
+.np-buttons .play-btn svg {
+  width: 26px;
+  height: 26px;
+}
+
 /* The expanded player's play/pause carries clearly dominant weight: the
    accent-filled circle in the metadata column. */
 .np-buttons .play-btn:not(.loading) {
@@ -2293,6 +2300,10 @@ select.input {
     width: 62px;
     height: 62px;
   }
+  .np-buttons .play-btn svg {
+    width: 28px;
+    height: 28px;
+  }
   .now-playing .transport {
     gap: 14px;
   }
@@ -2397,6 +2408,10 @@ select.input {
   .np-buttons .play-btn {
     width: 48px;
     height: 48px;
+  }
+  .np-buttons .play-btn svg {
+    width: 22px;
+    height: 22px;
   }
   .now-playing .transport {
     gap: 8px;
