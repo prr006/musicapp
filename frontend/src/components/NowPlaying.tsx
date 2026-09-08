@@ -55,7 +55,7 @@ export function NowPlaying() {
   const mode = !current ? 'empty' : withLyrics ? 'with-lyrics' : 'solo'
 
   return (
-    <section className={`now-playing ${queueOpen ? 'with-queue' : ''}`} aria-label="Now playing">
+    <section className="now-playing" aria-label="Now playing">
       <div className="np-head">
         <button className="icon-btn" onClick={() => ui.toggleNowPlaying(false)} aria-label="Close now playing" type="button">
           <ChevronDown size={20} />

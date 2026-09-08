@@ -75,7 +75,7 @@ describe('layout: stylesheet contract (desktop viewport usage)', () => {
   })
 
   it('card grids adapt column count AND card size to the viewport', () => {
-    expect(rule('.card-grid')).toContain('minmax(clamp(168px, 12vw, 216px), 1fr)')
+    expect(rule('.card-grid')).toContain('minmax(clamp(160px, 11vw, 208px), 1fr)')
   })
 
   it('detail heroes grow on large screens (artwork + title)', () => {
@@ -101,7 +101,7 @@ describe('layout: expanded Now Playing', () => {
     // column in the other — not one centred stack.
     const body = rule('.np-body.solo')
     expect(body).toContain('grid-template-areas: "art info"')
-    expect(body).toContain('minmax(280px, min(50%, 620px))') // artwork track ~half the width
+    expect(body).toContain('minmax(300px, min(48%, 680px))') // artwork track ~half the width
     expect(body).toContain('minmax(0, 1fr)') // metadata + controls take the rest
     expect(rule('.np-art-col')).toContain('grid-area: art')
     expect(rule('.np-info-col')).toContain('grid-area: info')
@@ -124,23 +124,23 @@ describe('layout: expanded Now Playing', () => {
 
   it('like/dislike/track menu sit with the metadata; transport and secondary rows below', () => {
     expect(rule('.np-actions')).toContain('display: flex')
-    expect(rule('.np-buttons .play-btn')).toContain('width: 56px')
+    expect(rule('.np-buttons .play-btn')).toContain('width: 60px')
     expect(rule('.np-secondary')).toContain('flex-wrap: wrap')
   })
 
   it('>=1600px uses the spacious tier', () => {
     const spacious = mediaBlock('min-width: 1600px')
-    expect(spacious).toContain('minmax(320px, min(52%, 620px))') // larger artwork track
+    expect(spacious).toContain('minmax(320px, min(50%, 720px))') // larger artwork track
     expect(spacious).toContain('clamp(30px, 2.1vw, 40px)') // larger title
     // Pages benefit too: roomier cards and detail heroes.
-    expect(spacious).toContain('clamp(184px, 11vw, 240px)')
+    expect(spacious).toContain('clamp(176px, 10vw, 224px)')
     expect(spacious).toContain('clamp(232px, 13vw, 300px)')
   })
 
   it('>=1920px uses the large-desktop tier (artwork ceiling ~650px, no element inflation)', () => {
     const large = mediaBlock('min-width: 1920px')
-    expect(large).toContain('minmax(340px, min(52%, 650px))') // artwork ceiling
-    expect(large).toContain('max-width: 1960px') // the composition stays bounded
+    expect(large).toContain('minmax(340px, min(50%, 720px))') // artwork ceiling
+    expect(large).toContain('max-width: 2160px') // the composition stays bounded
     expect(large).toContain('minmax(440px, 26fr)') // lyrics region grows too
   })
 
@@ -166,14 +166,17 @@ describe('layout: expanded Now Playing', () => {
     expect(rule('.np-lyrics-col')).toContain('grid-area: lyrics')
   })
 
-  it('the player reflows beside the open queue panel instead of hiding under it', () => {
-    expect(css).toContain('.now-playing.with-queue .np-body {')
-    const idx = css.indexOf('.now-playing.with-queue .np-body {')
-    expect(css.slice(idx, css.indexOf('}', idx))).toContain('clamp(320px, 30vw, 420px)')
+  it('the queue is a docked layout column — pages reflow, nothing is obscured', () => {
+    const main = rule('.main')
+    expect(main).toContain('grid-template-columns: minmax(0, 1fr) auto')
+    const panel = rule('.panel')
+    expect(panel).toContain('grid-column: 2')
+    expect(panel).not.toContain('position: absolute') // a real column, not an overlay
+    expect(rule('.now-playing')).toContain('grid-column: 1') // player spans the content column only
   })
 
   it('lyrics keep a readable line length on ultra-wide columns', () => {
-    expect(rule('.lyrics-pane')).toContain('max-width: 820px')
+    expect(rule('.lyrics-pane')).toContain('max-width: 860px')
   })
 })
 
@@ -184,9 +187,11 @@ describe('layout: queue panel overlay', () => {
     expect(panel).not.toContain('width: 372px')
   })
 
-  it('keeps the stacking contract above Now Playing (z-index regression)', () => {
-    expect(rule('.panel')).toContain('z-index: 80')
-    expect(rule('.now-playing')).toContain('z-index: 70')
+  it('Now Playing overlays only the content column; the queue column stays live beside it', () => {
+    const np = rule('.now-playing')
+    expect(np).toContain('grid-column: 1')
+    expect(np).toContain('grid-row: 1 / -1')
+    expect(np).toContain('z-index: 70') // above the page content within its column
   })
 })
 
@@ -404,12 +409,15 @@ describe('layout: rendered Now Playing composition', () => {
     expect(body.querySelector(':scope > .np-info-col')).toBeTruthy()
   })
 
-  it('queue open: the player body gains the with-queue reflow class', async () => {
-    const { section } = await openNowPlaying({ queue: true })
-    expect(section().classList.contains('with-queue')).toBe(true)
-    // The panel and the player coexist; the stacking contract is separate
-    // (panel z-80 over player z-70) and is asserted in the overlay suite.
+  it('queue open: the panel docks as a sibling column beside the player', async () => {
+    const { container, section } = await openNowPlaying({ queue: true })
+    const main = container.querySelector('.app > .main')!
+    // The panel is a direct child of the workspace grid, after the player.
+    const panel = main.querySelector(':scope > .panel')
+    expect(panel).toBeTruthy()
     expect(section().querySelector('.np-body')).toBeTruthy()
+    // Both live at once: the player does not swallow the panel.
+    expect(panel!.compareDocumentPosition(section()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('the track menu opens from the info column (shared TrackMenu)', async () => {

@@ -200,8 +200,12 @@ p {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
+  /* The desktop workspace: a content column plus an OPTIONAL docked queue
+     column (col 2 exists only while the queue is open — the page content
+     REFLOWS around the panel instead of being obscured by an overlay). */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .player-bar {
@@ -209,10 +213,12 @@ p {
 }
 
 .content {
-  flex: 1;
+  grid-column: 1;
+  grid-row: 3;
   overflow-y: auto;
   overflow-x: hidden;
   scroll-behavior: smooth;
+  min-height: 0;
 }
 
 .page {
@@ -249,7 +255,7 @@ p {
 }
 
 .section {
-  margin-bottom: 40px;
+  margin-bottom: 36px;
 }
 
 .section-head {
@@ -409,6 +415,8 @@ p {
 /* ---------------- topbar ---------------- */
 
 .topbar {
+  grid-column: 1;
+  grid-row: 1;
   height: var(--topbar-h);
   display: flex;
   align-items: center;
@@ -711,8 +719,8 @@ p {
   /* Columns adapt to the available width AND grow a little on large
      displays: the minimum card size scales with the viewport (capped),
      so wide windows get larger covers, not just more of them. */
-  grid-template-columns: repeat(auto-fill, minmax(clamp(168px, 12vw, 216px), 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(clamp(160px, 11vw, 208px), 1fr));
+  gap: 14px;
 }
 
 .card {
@@ -852,8 +860,8 @@ p {
   display: grid;
   grid-template-columns: 28px 44px minmax(0, 3fr) minmax(0, 2fr) auto;
   align-items: center;
-  gap: 14px;
-  padding: 8px 12px;
+  gap: 12px;
+  padding: 7px 10px;
   border-radius: var(--radius);
   cursor: pointer;
   transition: background var(--fast);
@@ -1201,23 +1209,19 @@ p {
 /* ---------------- queue panel ---------------- */
 
 .panel {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  bottom: 8px;
-  /* Scales with the window (a share of the viewport, bounded) instead of
-     a fixed slab, so wide screens get a roomier queue without squeezing
-     the player underneath. Stacking/z-index intentionally untouched. */
+  /* A real right-side panel: a docked grid column of the workspace, full
+     height, that the content reflows around. It is NOT an overlay —
+     nothing underneath is obscured, and no z-index gymnastics are needed
+     (it coexists beside the expanded player, which spans the content
+     column only). */
+  grid-column: 2;
+  grid-row: 1 / -1;
+  min-height: 0;
   width: clamp(320px, 30vw, 420px);
   background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-3);
+  border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  /* Above the Now Playing overlay (70) so the global queue stays reachable
-     from every screen, including Now Playing. */
-  z-index: 80;
   animation: panel-in 240ms var(--ease);
   overflow: hidden;
 }
@@ -1277,8 +1281,11 @@ p {
 /* ---------------- now playing ---------------- */
 
 .now-playing {
-  position: absolute;
-  inset: 0;
+  /* Overlays the content column (top bar + banner + content) while the
+     docked queue column, the sidebar and the mini player all stay live. */
+  grid-column: 1;
+  grid-row: 1 / -1;
+  position: relative;
   background: var(--surface);
   z-index: 70;
   display: flex;
@@ -1330,11 +1337,11 @@ p {
    The artwork track takes ~half the available width (bounded), so the two
    columns visibly fill the player instead of one centred stack. */
 .np-body.solo {
-  grid-template-columns: minmax(280px, min(50%, 620px)) minmax(0, 1fr);
+  grid-template-columns: minmax(300px, min(48%, 680px)) minmax(0, 1fr);
   grid-template-areas: "art info";
   align-items: center;
   width: 100%;
-  max-width: 1880px;
+  max-width: 2080px;
   margin-inline: auto;
 }
 
@@ -1356,13 +1363,6 @@ p {
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-/* The global queue overlays the right side of the app; while it is open the
-   player's right padding grows by exactly the panel's width so the whole
-   composition reflows to stay visible beside it. */
-.now-playing.with-queue .np-body {
-  padding-right: calc(clamp(320px, 30vw, 420px) + 24px);
 }
 
 .np-art-col {
@@ -1480,8 +1480,8 @@ p {
 }
 
 .np-buttons .play-btn {
-  width: 56px;
-  height: 56px;
+  width: 60px;
+  height: 60px;
 }
 
 /* The expanded player's play/pause carries clearly dominant weight: the
@@ -1527,18 +1527,18 @@ p {
   overflow-y: auto;
   /* Readability cap: a lyric line stays scannable even on ultra-wide
      lyric columns; the pane stays left-aligned in its track. */
-  max-width: 820px;
+  max-width: 860px;
   padding-right: 24px;
   mask-image: linear-gradient(to bottom, transparent, #000 8%, #000 88%, transparent);
   scrollbar-width: thin;
 }
 
 .lyric-line {
-  font-size: 21px;
+  font-size: 24px;
   font-weight: 620;
   letter-spacing: -0.015em;
   color: var(--text-3);
-  padding: 9px 0;
+  padding: 10px 0;
   transition: color 180ms var(--ease), transform 180ms var(--ease), opacity 180ms var(--ease);
   transform-origin: left center;
   cursor: pointer;
@@ -1551,8 +1551,11 @@ p {
 
 .lyric-line.active {
   color: var(--accent);
-  font-weight: 680;
-  transform: scale(1.015);
+  font-weight: 700;
+  /* The current line is the dominant element of the mode: substantially
+     larger than the subdued surrounding lines. */
+  font-size: clamp(28px, 2.2vw, 34px);
+  transform: none;
 }
 
 .lyric-line.passed {
@@ -2185,6 +2188,8 @@ select.input {
 }
 
 .banner {
+  grid-column: 1;
+  grid-row: 2;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -2212,7 +2217,7 @@ select.input {
    Sizing only — the visual language is unchanged. */
 @media (min-width: 1600px) {
   .np-body.solo {
-    grid-template-columns: minmax(320px, min(52%, 620px)) minmax(0, 1fr);
+    grid-template-columns: minmax(320px, min(50%, 720px)) minmax(0, 1fr);
     gap: clamp(40px, 4vw, 84px);
     padding: 8px clamp(48px, 4vw, 96px) 52px;
   }
@@ -2230,16 +2235,16 @@ select.input {
     font-size: 16px;
   }
   .lyric-line {
-    font-size: 23px;
+    font-size: 26px;
   }
   .lyrics-pane {
-    max-width: 900px;
+    max-width: 940px;
   }
   .section {
-    margin-bottom: 48px;
+    margin-bottom: 44px;
   }
   .card-grid {
-    grid-template-columns: repeat(auto-fill, minmax(clamp(184px, 11vw, 240px), 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(clamp(176px, 10vw, 224px), 1fr));
   }
   .detail-head .artwork {
     width: clamp(232px, 13vw, 300px);
@@ -2254,8 +2259,8 @@ select.input {
    not to making every element bigger. */
 @media (min-width: 1920px) {
   .np-body.solo {
-    grid-template-columns: minmax(340px, min(52%, 650px)) minmax(0, 1fr);
-    max-width: 1960px;
+    grid-template-columns: minmax(340px, min(50%, 720px)) minmax(0, 1fr);
+    max-width: 2160px;
   }
   .np-body.with-lyrics {
     grid-template-columns: minmax(0, 21fr) minmax(440px, 26fr);
