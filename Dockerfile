@@ -26,6 +26,5 @@ ENV ADDR=:8080 \
     MELO_YTDLP=/usr/local/bin/yt-dlp \
     COOKIE_SECURE=true
 EXPOSE 8080
-VOLUME ["/data"]
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["/usr/local/bin/melo-api"]
