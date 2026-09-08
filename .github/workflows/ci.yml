@@ -77,16 +77,20 @@ jobs:
           cleanup_container() { docker stop melo-api-ci >/dev/null 2>&1 || true; }
           trap report_container_failure ERR
           trap cleanup_container EXIT
-          curl --fail --show-error --silent --retry 20 --retry-all-errors --retry-delay 1 \
-            http://127.0.0.1:18080/health | grep -q '"status":"ok"'
-          curl --fail --show-error --silent http://127.0.0.1:18080/ready | grep -q '"status":"ready"'
+          health=$(curl --fail --show-error --silent --retry 20 --retry-all-errors --retry-delay 1 \
+            http://127.0.0.1:18080/health)
+          [[ "$health" == *'"status":"ok"'* ]] || { echo '::error title=Health smoke check failed::Missing ok status'; false; }
+          ready=$(curl --fail --show-error --silent http://127.0.0.1:18080/ready)
+          [[ "$ready" == *'"status":"ready"'* ]] || { echo '::error title=Readiness smoke check failed::Missing ready status'; false; }
           headers=$(mktemp)
           curl --fail --show-error --silent --dump-header "$headers" --output /dev/null \
             --header 'Origin: https://ci-frontend.invalid' \
             http://127.0.0.1:18080/api/v1/state
-          grep -qi '^Access-Control-Allow-Origin: https://ci-frontend.invalid' "$headers"
-          grep -qi '^X-Request-Id:' "$headers"
-          test -d "$data_dir/accounts"
+          grep -Fqi 'Access-Control-Allow-Origin: https://ci-frontend.invalid' "$headers" || \
+            { echo '::error title=CORS smoke check failed::Approved origin header was missing'; false; }
+          grep -Eqi '^X-Request-Id: .+' "$headers" || \
+            { echo '::error title=Request ID smoke check failed::Request ID header was missing'; false; }
+          test -d "$data_dir/accounts" || { echo '::error title=Volume smoke check failed::Accounts directory disappeared'; false; }
           # /ready is executed by the gosu-dropped MELO process and now performs
           # an actual create/remove write probe. Its 200 is the authoritative
           # unprivileged-volume check; avoid a second docker-exec user model.
