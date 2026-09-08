@@ -68,18 +68,15 @@ jobs:
             --env PLAYBACK_SIGNING_KEY="$playback_secret" \
             melo-api:ci
           report_container_failure() {
-            status=$?
-            if [ "$status" -ne 0 ]; then
-              message=$(docker logs melo-api-ci 2>&1 | tail -c 5000 || true)
-              message=${message//'%'/'%25'}
-              message=${message//$'\n'/'%0A'}
-              message=${message//$'\r'/'%0D'}
-              echo "::error title=Production container smoke failure::$message"
-            fi
-            docker stop melo-api-ci >/dev/null 2>&1 || true
-            exit "$status"
+            message=$(docker logs melo-api-ci 2>&1 | tail -c 5000 || true)
+            message=${message//'%'/'%25'}
+            message=${message//$'\n'/'%0A'}
+            message=${message//$'\r'/'%0D'}
+            echo "::error title=Production container smoke failure::$message"
           }
-          trap report_container_failure EXIT
+          cleanup_container() { docker stop melo-api-ci >/dev/null 2>&1 || true; }
+          trap report_container_failure ERR
+          trap cleanup_container EXIT
           curl --fail --show-error --silent --retry 20 --retry-all-errors --retry-delay 1 \
             http://127.0.0.1:18080/health | grep -q '"status":"ok"'
           curl --fail --show-error --silent http://127.0.0.1:18080/ready | grep -q '"status":"ready"'

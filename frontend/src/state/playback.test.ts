@@ -3,6 +3,7 @@ import { PlaybackEngine } from '../audio/engine'
 import { setBackend, type Backend } from '../bridge/backend'
 import type { PlayableSource, Track } from '../bridge/types'
 import { defaultSettings } from '../lib/defaults'
+import { normalizeTitle } from '../lib/discovery'
 import { PlaybackController } from './playback'
 import { library, useLibraryStore } from './libraryStore'
 import { useLyricsStore } from './lyricsStore'
@@ -339,6 +340,19 @@ describe('queue editing', () => {
     expect(state().autoQueue.map((t) => t.id)).toEqual(autoplayBefore)
   })
 
+  it('reconciles canonical discovery duplicates introduced by the explicit queue', async () => {
+    const h = harness()
+    const current = track('a')
+    const discoveryUpload = track('radio-upload', { title: 'Believer (Official Video)' })
+    const explicitUpload = track('queue-upload', { title: 'Believer' })
+    usePlayerStore.setState({ current, queue: [current], index: 0, autoQueue: [discoveryUpload] })
+
+    h.controller.addToQueue([explicitUpload])
+
+    expect(state().queue.map((candidate) => candidate.id)).toEqual([current.id, explicitUpload.id])
+    expect(state().autoQueue).toHaveLength(0)
+  })
+
   it('remove and reorder keep the current index pointing at the same track', async () => {
     const h = harness()
     const [a, b, c] = [track('a'), track('b'), track('c')]
@@ -469,6 +483,55 @@ describe('discovery (endless queue)', () => {
     expect(state().playingFrom).toBe('queue')
   })
 
+  it('preserves the ready discovery buffer across an explicit queue transition', async () => {
+    const h = harness()
+    const a = track('a')
+    const b = track('b')
+    const pool = Array.from({ length: 8 }, (_, i) => track(`ready${i}`))
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: '', songs: pool, videos: [], albums: [], artists: [], provider: 'test',
+    })
+
+    await h.controller.play(a, { tracks: [a, b], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(8))
+    const ready = state().autoQueue.map((candidate) => candidate.id)
+
+    await h.controller.playQueueIndex(1)
+    expect(state().current?.id).toBe(b.id)
+    expect(state().autoQueue.map((candidate) => candidate.id)).toEqual(ready)
+  })
+
+  it('chains a new-current refill after an older single-flight request', async () => {
+    const h = harness()
+    const a = track('a')
+    const b = track('b')
+    const old = track('old-result')
+    const next = Array.from({ length: 8 }, (_, i) => track(`next${i}`))
+    let releaseA!: () => void
+    const waitForA = new Promise<void>((resolve) => { releaseA = resolve })
+    const radio = vi.fn(async (_kind: string, seedId: string) => {
+      if (seedId === a.sourceId) {
+        await waitForA
+        return { id: 'radio-a', kind: 'song', seedId, tracks: [old], generatedAt: Date.now() }
+      }
+      return { id: `radio-${seedId}`, kind: 'song', seedId, tracks: next, generatedAt: Date.now() }
+    })
+    h.backend.radio = radio as Backend['radio']
+
+    const playA = h.controller.play(a, { tracks: [a], index: 0 })
+    await vi.waitFor(() => expect(radio).toHaveBeenCalledWith('song', a.sourceId, a))
+    // Let playback advance while A's radio request is still unresolved.
+    usePlayerStore.setState({ autoQueue: [b] })
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe(b.id))
+
+    releaseA()
+    await playA
+    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(8))
+    expect(radio).toHaveBeenCalledWith('song', b.sourceId, b)
+    expect(state().autoQueue.map((candidate) => candidate.id)).toContain(old.id)
+  })
+
   it('keeps existing upcoming tracks, warns once and retries on provider failure', async () => {
     useUIStore.setState({ toasts: [] })
     const h = harness()
@@ -525,6 +588,22 @@ describe('discovery (endless queue)', () => {
     expect(state().status).toBe('playing')
   })
 
+  it('a search request does not mutate either prepared queue', async () => {
+    const h = harness()
+    const current = track('current')
+    const discovered = track('discovered')
+    const result = track('result')
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: 'result', songs: [result], videos: [], albums: [], artists: [], provider: 'test',
+    })
+    usePlayerStore.setState({ current, queue: [current], index: 0, autoQueue: [discovered] })
+
+    await h.backend.search('result', 'songs')
+
+    expect(state().queue.map((candidate) => candidate.id)).toEqual([current.id])
+    expect(state().autoQueue.map((candidate) => candidate.id)).toEqual([discovered.id])
+  })
+
   it('play now without a context queues only the chosen track — never its search siblings', async () => {
     const h = harness()
     const chosen = track('chosen')
@@ -570,7 +649,7 @@ describe('discovery (endless queue)', () => {
     // Draining one track triggers a top-up, keeping the pipeline ahead.
     h.media.endNaturally()
     await vi.waitFor(() => expect(state().current?.id).toBe(pool[0].id))
-    expect(state().autoQueue.length).toBeGreaterThanOrEqual(8)
+    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThanOrEqual(8))
     expect(state().autoQueue.length).toBeLessThanOrEqual(20)
   })
 
@@ -598,6 +677,61 @@ describe('discovery (endless queue)', () => {
       expect(seen.has(cur!.id)).toBe(false)
       seen.add(cur!.id)
     }
+  })
+
+  it('keeps a persistent Song Radio buffer through five canonical-deduped refills', async () => {
+    const h = harness()
+    useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: false } })
+    const seed = track('seed', { title: 'Believer', artist: 'Imagine Dragons' })
+    await h.controller.play(seed)
+    useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: true } })
+
+    const initial = Array.from({ length: 9 }, (_, i) => track(`radio${i}`))
+    const radio = vi.fn(async (_kind: string, seedId: string) => {
+      if (seedId === seed.id) {
+        return { id: 'believer-radio', kind: 'song' as const, seedId, tracks: initial, generatedAt: Date.now() }
+      }
+      return {
+        id: 'believer-radio',
+        kind: 'song' as const,
+        seedId,
+        tracks: [
+          track(`duplicate-${seedId}`, { title: `${initial[0].title} (Official Video)` }),
+          track(`continuation-${seedId}`, { title: `Fresh continuation ${seedId}` }),
+        ],
+        generatedAt: Date.now(),
+      }
+    })
+    h.backend.radio = radio as Backend['radio']
+
+    await h.controller.startRadio('song', seed.id, seed)
+    expect(state().autoQueue).toHaveLength(8)
+    for (let i = 1; i <= 5; i += 1) {
+      h.media.endNaturally()
+      await vi.waitFor(() => expect(state().current?.id).toBe(initial[i].id))
+      await vi.waitFor(() => expect(state().autoQueue).toHaveLength(8))
+      const canonical = [state().current!, ...state().autoQueue].map((candidate) => normalizeTitle(candidate.title))
+      expect(new Set(canonical).size).toBe(canonical.length)
+    }
+    expect(radio).toHaveBeenCalledWith('song', seed.id, seed)
+    expect(radio).toHaveBeenCalledWith('song', initial[1].sourceId, initial[1])
+  })
+
+  it('preserves both queues when starting radio fails', async () => {
+    useUIStore.setState({ toasts: [] })
+    const h = harness()
+    const current = track('current')
+    const explicit = track('explicit')
+    const discovered = track('discovered')
+    usePlayerStore.setState({ current, queue: [current, explicit], index: 0, autoQueue: [discovered] })
+    h.backend.radio = vi.fn().mockRejectedValue(new Error('offline')) as Backend['radio']
+
+    await h.controller.startRadio('song', current.id, current)
+
+    expect(state().current?.id).toBe(current.id)
+    expect(state().queue.map((candidate) => candidate.id)).toEqual([current.id, explicit.id])
+    expect(state().autoQueue.map((candidate) => candidate.id)).toEqual([discovered.id])
+    expect(useUIStore.getState().toasts.at(-1)?.message).toMatch(/unchanged/)
   })
 
   it('drops a late discovery response from a superseded track', async () => {

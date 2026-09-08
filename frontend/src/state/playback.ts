@@ -34,10 +34,19 @@ const PREVIOUS_RESTART_THRESHOLD = 3
 
 /** Discovery (autoplay) keeps at least this many upcoming tracks ready. */
 const DISCOVERY_TARGET = 8
+/** Refill while several playable choices remain; never wait for an empty list. */
+const DISCOVERY_LOW_WATER = 5
+/** Failed/empty same-anchor refills back off instead of retrying every position tick. */
+const DISCOVERY_RETRY_DELAY = 15_000
 /** Recent-history window used to avoid replaying songs the user just heard. */
 const DISCOVERY_RECENT_HISTORY = 50
-/** Upper bound for how many candidates one discovery fetch may add. */
-const DISCOVERY_BATCH = 20
+
+interface ActiveRadio {
+  id: string
+  kind: RadioKind
+  seedId: string
+  seed?: Partial<Track>
+}
 
 export class PlaybackController {
   readonly engine: PlaybackEngine
@@ -46,8 +55,10 @@ export class PlaybackController {
   private discoveryGen = 0
   private discoveryPromise: Promise<void> | null = null
   private discoveryWarned = false
-  /** Engine generation that has already kicked off a discovery refill. */
-  private discoveryRefillGen = 0
+  private discoveryRetryAt = 0
+  private lastDiscoveryAnchor = ''
+  private activeRadio: ActiveRadio | null = null
+  private recentTracks: Track[] = []
   private sleepTimer: ReturnType<typeof setTimeout> | null = null
   private readonly mediaSession: BrowserMediaSession
   private prefetchedTrackId = ''
@@ -81,22 +92,26 @@ export class PlaybackController {
         this.mediaSession.updatePosition(status === 'playing')
         if (status === 'playing') {
           this.markPlayed()
-          // Refill discovery once per track (generation), not on every state
-          // emission — otherwise duration/buffered updates would keep
-          // re-searching the same anchor query.
-          if (this.discoveryRefillGen !== this.engine.currentGeneration) {
-            this.discoveryRefillGen = this.engine.currentGeneration
-            void this.refillDiscovery().then(() => this.prefetchNext())
-          }
+          // Start or join a current-track refill as soon as playback is ready.
+          // It only appends reconciled candidates and never clears either queue.
+          void this.refillDiscovery().then(() => this.prefetchNext())
           void this.prefetchNext()
         }
         this.queueSessionSave()
         break
       }
-      case 'position':
+      case 'position': {
         positionChannel.setPosition(event.position)
         this.mediaSession.updatePosition()
+        const state = playerState()
+        const duration = positionChannel.getDuration()
+        const nearingEnd = duration > 0 && duration - event.position <= 45
+        const retryDue = this.discoveryRetryAt > 0 && this.discoveryRetryAt <= Date.now()
+        if (state.autoQueue.length <= DISCOVERY_LOW_WATER && (nearingEnd || retryDue || state.autoQueue.length === 0)) {
+          void this.refillDiscovery()
+        }
         break
+      }
       case 'ended':
         this.handleEnded(event.trackId)
         break
@@ -169,9 +184,13 @@ export class PlaybackController {
    * discovery rebuilds around it — a list of search results is never enqueued.
    */
   async play(track: Track, context: PlayContext = {}): Promise<void> {
-    // Any explicit choice supersedes discovery: stale continuations are dropped
-    // and rebuilt from the new listening context as needed.
-    this.resetDiscovery()
+    const previous = playerState()
+    const freshSession = !previous.current && previous.queue.length === 0 && previous.autoQueue.length === 0
+    // A deliberate selection re-anchors future discovery, but keeps the ready
+    // buffer until replacements arrive. This avoids an empty Up Next on every click.
+    this.reanchorDiscovery()
+    this.activeRadio = null
+    if (freshSession) this.recentTracks = []
     const tracks = context.tracks ? dedupeTracks(context.tracks) : null
     let queue: Track[]
     let index: number
@@ -200,8 +219,11 @@ export class PlaybackController {
    * discovery. Discovery then rebuilds around the newly chosen track.
    */
   async playDiscovered(track: Track): Promise<void> {
-    this.resetDiscovery()
-    setPlayerState({ playingFrom: 'autoplay' })
+    // Clicking an autoplay item stays inside the same discovery/radio session.
+    setPlayerState({
+      autoQueue: playerState().autoQueue.filter((candidate) => candidate.id !== track.id),
+      playingFrom: 'autoplay',
+    })
     await this.start(track)
   }
 
@@ -210,10 +232,11 @@ export class PlaybackController {
     if (!recovering) this.recoveredTrackId = null
     const token = this.engine.beginLoad(track.id)
     this.recordedForToken.clear()
-    this.discoveryRefillGen = 0
     positionChannel.reset()
     positionChannel.setDuration(track.duration || 0)
     setPlayerState({ current: track, status: 'loading', error: null })
+    this.rememberTrack(track)
+    this.pruneDiscoveryQueue()
     this.mediaSession.setTrack(track)
     this.mediaSession.setPlaybackState('loading')
     lyrics.loadFor(track, () => this.engine.isCurrent(token))
@@ -334,10 +357,9 @@ export class PlaybackController {
 
   /** Shifts the next discovery track and starts it; false when none is left. */
   private async startNextDiscovery(): Promise<boolean> {
-    // Only fetch when there is literally nothing to shift. Otherwise the
-    // per-track refill (kicked off when the new track starts playing) keeps
-    // the pipeline topped up, anchored on the new current track.
-    if (playerState().autoQueue.length === 0) await this.refillDiscovery()
+    // Final safety net: wait for one bounded forced request rather than
+    // stranding playback merely because a normal refill finished late.
+    if (playerState().autoQueue.length === 0) await this.refillDiscovery(true)
     const state = playerState()
     if (state.autoQueue.length === 0) return false
     const [next, ...rest] = state.autoQueue
@@ -358,8 +380,7 @@ export class PlaybackController {
     const state = playerState()
     const track = state.queue[index]
     if (!track) return
-    // An explicit choice of a queued track re-anchors discovery around it.
-    this.resetDiscovery()
+    // Explicit priority changes without destroying the prepared radio buffer.
     setPlayerState({ index, playingFrom: 'queue' })
     await this.start(track)
   }
@@ -397,6 +418,7 @@ export class PlaybackController {
 
   setQueue(tracks: Track[], label = ''): void {
     setPlayerState({ queue: dedupeTracks(tracks), index: -1, contextLabel: label })
+    this.pruneDiscoveryQueue()
     this.queueSessionSave()
   }
 
@@ -409,6 +431,7 @@ export class PlaybackController {
       return
     }
     setPlayerState({ queue: [...state.queue, ...additions] })
+    this.pruneDiscoveryQueue()
     ui.toast(additions.length === 1 ? `Added “${additions[0].title}” to the queue` : `Added ${additions.length} songs to the queue`)
     this.queueSessionSave()
   }
@@ -421,6 +444,7 @@ export class PlaybackController {
     const insertAt = Math.max(state.index + 1, 0)
     const next = [...remaining.slice(0, insertAt), ...additions, ...remaining.slice(insertAt)]
     setPlayerState({ queue: next })
+    this.pruneDiscoveryQueue()
     ui.toast(additions.length === 1 ? `“${additions[0].title}” plays next` : `${additions.length} songs play next`)
     this.queueSessionSave()
   }
@@ -502,25 +526,35 @@ export class PlaybackController {
    * Hosted builds ask the radio API; desktop falls back to the existing search
    * provider so the same controls remain useful in Wails. */
   async startRadio(kind: RadioKind, seedId: string, seed?: Partial<Track>): Promise<void> {
-    this.resetDiscovery()
     let tracks: Track[] = []
-    const radio = backend().radio
-    if (radio) {
-      const session = await radio(kind, seedId, seed)
-      tracks = dedupeTracks(session.tracks ?? [])
-    } else {
-      const query = [seed?.artist, seed?.title, seed?.album, seedId].filter(Boolean).join(' ')
-      const result = await backend().search(query, 'songs')
-      tracks = dedupeTracks([...(result.songs ?? []), ...(result.videos ?? [])])
+    let sessionID = `${kind}:${seedId}`
+    try {
+      const radio = backend().radio
+      if (radio) {
+        const session = await radio(kind, seedId, seed)
+        sessionID = session.id || sessionID
+        tracks = dedupeTracks(session.tracks ?? [])
+      } else {
+        const query = [seed?.artist, seed?.title, seed?.album, seedId].filter(Boolean).join(' ')
+        const result = await backend().search(query, 'songs')
+        tracks = dedupeTracks([...(result.songs ?? []), ...(result.videos ?? [])])
+      }
+    } catch {
+      ui.toast("Couldn't start radio — your current queue is unchanged", 'error')
+      return
     }
-    const fresh = pickDiscoveryCandidates(tracks, this.discoveryBlock(), DISCOVERY_BATCH)
+    const fresh = pickDiscoveryCandidates(tracks, this.discoveryBlock(), DISCOVERY_TARGET + 1)
     if (fresh.length === 0) {
       ui.toast('No radio suggestions are available right now', 'error')
       return
     }
+
+    // A successful radio command is the one intentional discovery replacement.
+    this.resetDiscovery()
+    this.activeRadio = { id: sessionID, kind, seedId, seed }
     const [first, ...rest] = fresh
     setPlayerState({
-      autoQueue: rest,
+      autoQueue: rest.slice(0, DISCOVERY_TARGET),
       playingFrom: 'autoplay',
       contextLabel: `${kind[0].toUpperCase()}${kind.slice(1)} Radio`,
     })
@@ -580,92 +614,162 @@ export class PlaybackController {
    * a slow response — or one superseded by an intentional track change — can
    * never pollute the new track's discovery queue.
    */
-  private refillDiscovery(): Promise<void> {
+  private refillDiscovery(force = false): Promise<void> {
     if (!useLibraryStore.getState().settings.autoplay) return Promise.resolve()
     const state = playerState()
-    if (!state.current) return Promise.resolve()
-    if (state.autoQueue.length >= DISCOVERY_TARGET) return Promise.resolve()
-    if (this.discoveryPromise) return this.discoveryPromise
+    if (!state.current || state.autoQueue.length >= DISCOVERY_TARGET) return Promise.resolve()
+
+    const anchorID = state.current.id
+    if (!force && this.lastDiscoveryAnchor === anchorID && this.discoveryRetryAt > Date.now()) {
+      return Promise.resolve()
+    }
+
+    if (this.discoveryPromise) {
+      const pending = this.discoveryPromise
+      return pending.then(() => {
+        const latest = playerState()
+        if (!useLibraryStore.getState().settings.autoplay || !latest.current || latest.autoQueue.length >= DISCOVERY_TARGET) {
+          return
+        }
+        // A request for A may finish after playback advances to B. Append any
+        // useful A results, then always give B its own anchored top-up.
+        if (latest.current.id !== anchorID || this.lastDiscoveryAnchor !== latest.current.id) {
+          return this.refillDiscovery(force)
+        }
+      })
+    }
+
     let promise: Promise<void>
-    promise = this.doDiscoveryFetch().finally(() => {
+    promise = this.doDiscoveryFetch(anchorID).finally(() => {
       if (this.discoveryPromise === promise) this.discoveryPromise = null
     })
     this.discoveryPromise = promise
     return promise
   }
 
-  private discoveryBlock(): DiscoveryBlock {
+  private discoveryBlock(includeAutoplay = true): DiscoveryBlock {
     const state = playerState()
     const ids = new Set<string>()
     const titles = new Set<string>()
-    const addId = (id?: string) => {
-      if (id) ids.add(id)
-    }
-    const addTitle = (title?: string) => {
-      const key = normalizeTitle(title ?? '')
+    const addTrack = (track?: Track | null) => {
+      if (!track) return
+      if (track.id) ids.add(track.id)
+      const key = normalizeTitle(track.title)
       if (key) titles.add(key)
     }
-    addId(state.current?.id)
-    addTitle(state.current?.title)
-    for (const t of state.queue) {
-      addId(t.id)
-      addTitle(t.title)
+    addTrack(state.current)
+    for (const track of state.queue) addTrack(track)
+    if (includeAutoplay) {
+      for (const track of state.autoQueue) addTrack(track)
     }
-    for (const t of state.autoQueue) {
-      addId(t.id)
-      addTitle(t.title)
+    for (const entry of useLibraryStore.getState().history.slice(0, DISCOVERY_RECENT_HISTORY)) {
+      addTrack(entry.track)
     }
-    for (const h of useLibraryStore.getState().history.slice(0, DISCOVERY_RECENT_HISTORY)) {
-      addId(h.track.id)
-    }
+    // History recording is asynchronous; synchronously block just-consumed tracks.
+    for (const track of this.recentTracks) addTrack(track)
     return { ids, titles }
   }
 
-  private async doDiscoveryFetch(): Promise<void> {
-    const gen = ++this.discoveryGen
-    const current = playerState().current
-    if (!current) return
-    const artist = (current.artist || '').split(',')[0].trim()
-    const title = current.title.trim()
+  private rememberTrack(track: Track): void {
+    const key = normalizeTitle(track.title)
+    this.recentTracks = [
+      track,
+      ...this.recentTracks.filter((candidate) => (
+        candidate.id !== track.id && (!key || normalizeTitle(candidate.title) !== key)
+      )),
+    ].slice(0, DISCOVERY_RECENT_HISTORY)
+  }
 
-    // Hosted builds use the typed Song Radio endpoint. Wails and controlled
-    // test backends retain the existing contextual-search implementation.
-    let combined: Track[] = []
+  private pruneDiscoveryQueue(): void {
+    const state = playerState()
+    if (state.autoQueue.length === 0) return
+    const next = pickDiscoveryCandidates(state.autoQueue, this.discoveryBlock(false), DISCOVERY_TARGET)
+    if (next.length !== state.autoQueue.length || next.some((track, index) => track.id !== state.autoQueue[index]?.id)) {
+      setPlayerState({ autoQueue: next })
+    }
+  }
+
+  private async doDiscoveryFetch(anchorID: string): Promise<void> {
+    const gen = this.discoveryGen
+    const state = playerState()
+    const current = state.current
+    if (!current || current.id !== anchorID) return
+
+    this.lastDiscoveryAnchor = anchorID
+    const needed = Math.max(0, DISCOVERY_TARGET - state.autoQueue.length)
+    if (needed === 0) return
+
+    const block = this.discoveryBlock()
+    const candidates: Track[] = []
     let failed = false
-    const radio = backend().radio
-    if (radio) {
-      try {
-        const session = await radio('song', current.sourceId || current.id, current)
-        if (gen !== this.discoveryGen) return
-        combined = dedupeTracks(session.tracks ?? [])
-      } catch {
-        failed = true
+    const collect = (tracks: Track[]): void => {
+      const fresh = pickDiscoveryCandidates(dedupeTracks(tracks), block, needed - candidates.length)
+      for (const track of fresh) {
+        candidates.push(track)
+        block.ids.add(track.id)
+        const title = normalizeTitle(track.title)
+        if (title) block.titles.add(title)
       }
     }
-    if (!radio || combined.length === 0) {
-      for (const query of [artist, title].filter(Boolean)) {
-        if (combined.length >= DISCOVERY_BATCH) break
+
+    const radio = backend().radio
+    if (radio) {
+      const requests: Array<{ kind: RadioKind; seedId: string; seed?: Partial<Track> }> = []
+      if (this.activeRadio) requests.push(this.activeRadio)
+      if (!this.activeRadio || this.activeRadio.seedId !== (current.sourceId || current.id)) {
+        requests.push({ kind: 'song', seedId: current.sourceId || current.id, seed: current })
+      }
+      for (const request of requests) {
+        if (candidates.length >= needed) break
         try {
-          const res = await backend().search(query, 'songs')
-          if (gen !== this.discoveryGen) return // superseded by a newer request
-          combined = dedupeTracks([...combined, ...(res.songs ?? []), ...(res.videos ?? [])])
+          const session = await radio(request.kind, request.seedId, request.seed)
+          collect(session.tracks ?? [])
+          failed = false
         } catch {
           failed = true
         }
       }
     }
-    if (gen !== this.discoveryGen) return
 
-    const fresh = pickDiscoveryCandidates(combined, this.discoveryBlock(), DISCOVERY_BATCH)
-    if (fresh.length > 0) {
-      setPlayerState({ autoQueue: dedupeTracks([...playerState().autoQueue, ...fresh]) })
-      this.discoveryWarned = false
-    } else if (failed) {
-      // Non-destructive: keep what we have and warn once; the next refill retries.
-      if (!this.discoveryWarned) {
-        this.discoveryWarned = true
-        ui.toast("Couldn't load more suggestions — will retry", 'error')
+    // A valid but short radio batch is supplemented only to the bounded target.
+    // Search results themselves never become or replace either queue.
+    if (candidates.length < needed) {
+      const artist = (current.artist || '').split(',')[0].trim()
+      const queries = [...new Set([`${artist} ${current.title}`.trim(), artist].filter(Boolean))]
+      for (const query of queries) {
+        if (candidates.length >= needed) break
+        try {
+          const result = await backend().search(query, 'songs')
+          collect([...(result.songs ?? []), ...(result.videos ?? [])])
+          failed = false
+        } catch {
+          failed = true
+        }
       }
+    }
+
+    // Manual context changes invalidate stale work. Ordinary transitions do not:
+    // a slightly late result remains useful after reconciliation with latest state.
+    if (gen !== this.discoveryGen) return
+    const latest = playerState()
+    if (!useLibraryStore.getState().settings.autoplay || !latest.current) return
+
+    const capacity = Math.max(0, DISCOVERY_TARGET - latest.autoQueue.length)
+    const fresh = pickDiscoveryCandidates(candidates, this.discoveryBlock(), capacity)
+    if (fresh.length > 0) {
+      setPlayerState({ autoQueue: [...latest.autoQueue, ...fresh] })
+      const remaining = latest.autoQueue.length + fresh.length
+      this.discoveryRetryAt = remaining <= DISCOVERY_LOW_WATER ? Date.now() + DISCOVERY_RETRY_DELAY : 0
+      this.discoveryWarned = false
+      return
+    }
+
+    if (latest.autoQueue.length < DISCOVERY_TARGET) {
+      this.discoveryRetryAt = Date.now() + DISCOVERY_RETRY_DELAY
+    }
+    if (failed && !this.discoveryWarned) {
+      this.discoveryWarned = true
+      ui.toast("Couldn't load more suggestions — will retry", 'error')
     }
   }
 
@@ -674,10 +778,17 @@ export class PlaybackController {
     this.resetDiscovery()
   }
 
-  private resetDiscovery(): void {
+  private reanchorDiscovery(): void {
     this.discoveryGen += 1
     this.discoveryWarned = false
+    this.discoveryRetryAt = 0
+    this.lastDiscoveryAnchor = ''
     this.discoveryPromise = null
+  }
+
+  private resetDiscovery(): void {
+    this.reanchorDiscovery()
+    this.activeRadio = null
     setPlayerState({ autoQueue: [] })
   }
 
@@ -737,6 +848,9 @@ export class PlaybackController {
       speed: session.speed || 1,
       current: index >= 0 ? queue[index] ?? null : null,
     })
+    this.recentTracks = []
+    if (index >= 0 && queue[index]) this.rememberTrack(queue[index])
+    this.pruneDiscoveryQueue()
     if (index >= 0 && queue[index]) {
       positionChannel.setDuration(queue[index].duration || 0)
       positionChannel.setPosition(session.position || 0)
