@@ -39,6 +39,12 @@ function Row({
   )
 }
 
+// Platform capabilities, derived from the backend's support strings rather
+// than hard-coded platform names, so a new platform implementation lights the
+// controls up without UI changes.
+const hasCapability = (value: string | undefined | null): boolean =>
+  !!value && value !== 'unsupported'
+
 export function SettingsView() {
   const settings = useLibraryStore((s) => s.settings)
   const resolverError = useUIStore((s) => s.resolverError)
@@ -175,13 +181,13 @@ export function SettingsView() {
         <Row
           name="Tray icon"
           desc={
-            diag?.tray === 'windows-shell-notifyicon'
+            hasCapability(diag?.tray)
               ? 'Keep MELO in the notification area; closing the window hides it there.'
               : 'Not supported on this platform.'
           }
         >
           <Toggle
-            checked={settings.minimizeToTray && diag?.tray === 'windows-shell-notifyicon'}
+            checked={settings.minimizeToTray && hasCapability(diag?.tray)}
             onChange={(v) => update('minimizeToTray', v)}
             label="Tray icon"
           />
@@ -189,20 +195,26 @@ export function SettingsView() {
         <Row
           name="Track notifications"
           desc={
-            diag?.tray === 'windows-shell-notifyicon'
-              ? 'Show the song title when the track changes. Requires the tray icon.'
+            hasCapability(diag?.notifications)
+              ? diag?.notifications === 'windows-balloon'
+                ? 'Show the song title when the track changes. Requires the tray icon.'
+                : 'Show the song title when the track changes.'
               : 'Not supported on this platform.'
           }
         >
           <Toggle
-            checked={settings.notifications && settings.minimizeToTray && diag?.tray === 'windows-shell-notifyicon'}
+            checked={
+              settings.notifications &&
+              hasCapability(diag?.notifications) &&
+              (diag?.notifications !== 'windows-balloon' || settings.minimizeToTray)
+            }
             onChange={(v) => update('notifications', v)}
             label="Track notifications"
           />
         </Row>
-        <Row name="Media keys" desc={diag?.mediaKeys === 'windows-hotkeys' ? 'Play/pause, next, previous and stop keys control MELO.' : 'Not supported on this platform.'}>
+        <Row name="Media keys" desc={hasCapability(diag?.mediaKeys) ? 'Play/pause, next, previous and stop keys control MELO.' : 'Not supported on this platform.'}>
           <Toggle
-            checked={settings.mediaKeys && diag?.mediaKeys === 'windows-hotkeys'}
+            checked={settings.mediaKeys && hasCapability(diag?.mediaKeys)}
             onChange={(v) => update('mediaKeys', v)}
             label="Media keys"
           />
@@ -248,6 +260,8 @@ export function SettingsView() {
               <dd>{diag.mediaKeys}</dd>
               <dt>Tray</dt>
               <dd>{diag.tray}</dd>
+              <dt>Notifications</dt>
+              <dd>{diag.notifications}</dd>
             </dl>
             {resolverError && (
               <div style={{ padding: '0 20px 16px' }}>

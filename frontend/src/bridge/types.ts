@@ -186,4 +186,5 @@ export interface Diagnostics {
   resolverBinary: string
   mediaKeys: string
   tray: string
+  notifications: string
 }

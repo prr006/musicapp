@@ -192,6 +192,7 @@ export function createMockBackend(): Backend {
         resolverBinary: 'fixture',
         mediaKeys: 'unsupported',
         tray: 'unsupported',
+        notifications: 'unsupported',
       }),
     search: (query: string): Promise<SearchResponse> => {
       const q = query.trim().toLowerCase()

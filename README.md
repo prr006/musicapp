@@ -302,18 +302,48 @@ Keyboard: `Ctrl/⌘+K` search · `Space` play/pause · `←/→` seek 5 s ·
 
 ## Requirements
 
-- Windows 10 1809+ or Windows 11 with the **WebView2 runtime** (preinstalled on
+- **Windows** 10 1809+ or 11 with the **WebView2 runtime** (preinstalled on
   Windows 11 and on up-to-date Windows 10).
+- **Linux** (Ubuntu 22.04+/Debian 12 era) with GTK3 and WebKitGTK 4.1 —
+  install the development packages below before building.
 - Internet access for search, streaming and lyrics. The library, playlists and
   settings are entirely local and work offline.
 
 ## Build
+
+The Go core (search, resolver, queue, lyrics, library, persistence) is
+platform-neutral; OS integrations live behind small per-platform files
+(`tray_*`, `mediakeys_*`, `notifier_*`, `provider/hide_*`) selected by build
+tags. `MELO_DATA_DIR` overrides the data directory everywhere; by default it
+is the OS user-config dir (`%AppData%\MELO`, `~/.config/MELO`, …) with the
+same internal layout on every platform.
+
+**Windows** (primary target):
 
 ```bash
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.1
 wails build            # -> build/bin/MELO.exe
 wails dev              # hot-reloading dev build
 ```
+
+**Linux** (Ubuntu/Debian):
+
+```bash
+sudo apt install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.1
+wails build -tags webkit2_41   # -> build/bin/MELO
+```
+
+Tray and media keys are Windows-only for now (the settings show "Not
+supported on this platform"); track notifications use `notify-send` when it is
+on PATH, and everything else — playback, radio, lyrics, library — is identical
+on Linux.
+
+**macOS**: structurally ready (the resolver manifest carries darwin assets,
+there is no Windows-only code outside the tagged files, and tray/media keys/
+notifications degrade to honest no-ops) but **not built or tested** — MELO
+needs the usual Wails macOS prerequisites and a signed/notarised build before
+it can be called supported.
 
 Frontend-only work:
 

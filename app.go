@@ -37,6 +37,7 @@ type App struct {
 
 	mediaKeys *mediaKeyListener
 	tray      *tray
+	notifier  notifier
 
 	depMu      sync.Mutex
 	depErr     error
@@ -53,6 +54,7 @@ type Diagnostics struct {
 	ResolverBinary string      `json:"resolverBinary"`
 	MediaKeys      string      `json:"mediaKeys"`
 	Tray           string      `json:"tray"`
+	Notifications  string      `json:"notifications"`
 }
 
 const appVersion = "3.0.0"
@@ -83,6 +85,10 @@ func NewApp() (*App, error) {
 	}
 	app.proxy = proxy
 	app.proxy.SetQuality(st.State().Settings.AudioQuality)
+	// Platform notifications are decoupled from the tray: on Windows they are
+	// balloon messages riding the tray icon, elsewhere (e.g. Linux
+	// notify-send) they stand alone.
+	app.notifier = newNotifier(func() *tray { return app.tray })
 	return app, nil
 }
 
@@ -176,6 +182,7 @@ func (a *App) GetDiagnostics() Diagnostics {
 		ResolverBinary: bin,
 		MediaKeys:      mediaKeySupport(),
 		Tray:           traySupport(),
+		Notifications:  notificationSupport(),
 	}
 }
 
@@ -292,20 +299,23 @@ func (a *App) LogRadio(line string) {
 }
 
 func (a *App) SetNowPlaying(title, artist string) {
-	if a.tray == nil {
-		return
-	}
 	if title == "" {
-		a.tray.SetTooltip("MELO")
+		if a.tray != nil {
+			a.tray.SetTooltip("MELO")
+		}
 		return
 	}
-	label := title
-	if artist != "" {
-		label = title + " — " + artist
+	if a.tray != nil {
+		label := title
+		if artist != "" {
+			label = title + " — " + artist
+		}
+		a.tray.SetTooltip("MELO · " + label)
 	}
-	a.tray.SetTooltip("MELO · " + label)
+	// Notifications go through the platform notifier: tray balloon on Windows,
+	// the desktop notification daemon on Linux — independent of the tray.
 	if a.store.State().Settings.Notifications {
-		a.tray.Notify(title, artist)
+		a.notifier.Notify(title, artist)
 	}
 }
 
