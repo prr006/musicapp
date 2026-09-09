@@ -81,10 +81,11 @@ audible queue result is claimed. The exact metadata,
 client-set outcomes, version verification, desktop/web code-path
 comparison, and cross-content sample are recorded in
 [`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md). The narrowly bounded
-zero-format retry policy and its first 10/10 healthy-epoch Railway sample are in
-[`RESOLVER_RESILIENCE.md`](RESOLVER_RESILIENCE.md); no retry recovery occurred in
-that sample, so a material improvement is not yet claimed. A fresh live
-eight-transition run remains required.
+zero-format retry policy, its 10/10 healthy-epoch sample, and the following 0/10
+zero-format sample are in
+[`RESOLVER_RESILIENCE.md`](RESOLVER_RESILIENCE.md). All 90 subprocesses in the
+zero-format sample remained empty, so the bounded retries did not materially
+improve that hosted epoch. A fresh live eight-transition run remains required.
 
 Still unverified in production: invalid/expired-ticket recovery, account
 register/logout/relogin and cross-account isolation, library/playlist persistence

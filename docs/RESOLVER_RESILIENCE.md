@@ -121,10 +121,48 @@ The earlier zero → playable → zero Railway epochs remain evidence that the
 external condition is intermittent; this bounded mitigation is not described as
 a provider fix.
 
+## Second live Railway sample: zero-format epoch
+
+The documentation deployment `27532af` started a new Railway process without
+changing resolver execution policy. The same ten unique IDs were then measured
+again. This process landed in the opposite provider epoch:
+
+| ID | Track/control | Final result | Subprocess attempts | Zero-format attempts | Retry recovery |
+| --- | --- | --- | ---: | ---: | :---: |
+| `Kx7B-XvmFtE` | Believer | `media_unavailable` | 9 | 9 | no |
+| `9ssQKlLxBdQ` | Thunder | `media_unavailable` | 9 | 9 | no |
+| `J1aVXLHQRd4` | Demons | `media_unavailable` | 9 | 9 | no |
+| `I203G1sMGDg` | Bad Liar | `media_unavailable` | 9 | 9 | no |
+| `3Yb2-CWjrME` | Radioactive | `media_unavailable` | 9 | 9 | no |
+| `pIWaVJPl0-c` | Faded | `media_unavailable` | 9 | 9 | no |
+| `kJQP7kiw5Fk` | Despacito | `media_unavailable` | 9 | 9 | no |
+| `fJ9rUzIMcZQ` | Bohemian Rhapsody | `media_unavailable` | 9 | 9 | no |
+| `djV11Xbc914` | Take On Me | `media_unavailable` | 9 | 9 | no |
+| `DyDfgMOUjCI` | bad guy | `media_unavailable` | 9 | 9 | no |
+
+Totals for this required 10-attempt sample:
+
+- successes: **0 / 10**
+- final zero-format responses: **10 / 10**
+- retry recoveries: **0**
+- final failures: **10**
+- zero-format subprocess outcomes: **90 / 90**
+- total bounded resolution duration: approximately **12.7–15.9 seconds** per ID
+
+Every subprocess exited successfully with correct identity metadata and zero
+formats. Both retry rounds reproduced the initial result across all three client
+sets. Therefore the bounded retry layer did **not** materially improve resolution
+in this zero-format hosted epoch. Combined with the immediately preceding 10/10
+healthy epoch, the evidence continues to classify this as an external,
+process/time-dependent hosted-provider limitation. No further MELO core
+architecture change is justified by these results.
+
 ## Browser playback status
 
-HTTP resolution succeeded in this sample, so browser playback became eligible for
-a live check. No controllable audio-capable browser was available in the agent
-environment, and HTTP/stream success is not a substitute for audible playback.
-Accordingly, no audible transition or Song Radio pass is claimed here. The
-production browser test remains a separate required manual verification.
+HTTP resolution succeeded during the first sample, making browser playback
+eligible at that time, but no controllable audio-capable browser was available in
+the agent environment. The second and latest measured process failed resolution
+for all ten IDs, so an actual media source was no longer available to test. HTTP
+success is not a substitute for audible playback; accordingly, no audible
+transition or Song Radio pass is claimed. The production browser test remains a
+separate required verification if resolution becomes stable.

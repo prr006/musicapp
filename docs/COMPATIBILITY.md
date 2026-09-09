@@ -25,9 +25,10 @@ path, while the current CI guards its build and shared tests.
 > zero-format provider response class; one same-version process resolved Believer,
 > Thunder, Demons, unrelated music, and non-music controls again, while the next
 > process (`856f56d`) reverted to zero formats. A narrowly bounded zero-format retry
-> layer then produced a 10/10 Railway resolution sample, but every initial attempt
-> succeeded, so no retry-caused improvement is claimed. The eight-audible-transition
-> retest remains unverified, not passed. Detailed evidence is in
+> layer then produced a 10/10 healthy-epoch Railway sample, followed by a 0/10
+> zero-format epoch in which all 90 bounded subprocesses returned zero formats.
+> There were no retry recoveries, so no material improvement is claimed. The
+> eight-audible-transition retest remains blocked and not passed. Detailed evidence is in
 > [`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md) and
 > [`RESOLVER_RESILIENCE.md`](RESOLVER_RESILIENCE.md).
 > Account relogin/isolation,

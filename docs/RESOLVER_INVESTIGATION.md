@@ -269,7 +269,8 @@ affected class, so an eight-audible-transition Believer browser run cannot hones
 be claimed. It must be repeated and recorded if a compliant format-serving epoch
 becomes stable.
 
-The bounded follow-up mitigation and its first 10/10 healthy-epoch Railway sample
-are documented in [`RESOLVER_RESILIENCE.md`](RESOLVER_RESILIENCE.md). That sample
-contained no zero-format attempt and therefore does not establish a retry-caused
-improvement or solve the external provider variability.
+The bounded follow-up mitigation, a 10/10 healthy-epoch sample, and the following
+0/10 zero-format sample are documented in
+[`RESOLVER_RESILIENCE.md`](RESOLVER_RESILIENCE.md). All 90 bounded subprocesses in
+the zero-format sample stayed empty, so no retry-caused improvement or provider
+solution is claimed.

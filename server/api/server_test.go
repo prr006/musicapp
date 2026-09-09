@@ -217,6 +217,9 @@ func TestExhaustedZeroFormatRetriesReturnSanitizedUnavailable(t *testing.T) {
 	if !strings.Contains(res.Body.String(), "temporarily returned no media formats") {
 		t.Fatalf("zero-format exhaustion was not described as transient: %s", res.Body.String())
 	}
+	if !strings.Contains(res.Body.String(), `"protocols":[]`) {
+		t.Fatalf("empty protocol diagnostics must remain a stable array: %s", res.Body.String())
+	}
 	if len(body.Error.Attempts) != 9 || len(body.Error.Diagnostics.Attempts) != 9 {
 		t.Fatalf("expected nine bounded subprocess attempts, got %+v", body.Error)
 	}

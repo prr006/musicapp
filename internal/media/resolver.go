@@ -95,7 +95,9 @@ func (e *resolverAttemptError) Unwrap() error { return e.cause }
 func cloneResolverDiagnostics(d ResolverDiagnostics) ResolverDiagnostics {
 	d.Attempts = append([]ResolverAttempt(nil), d.Attempts...)
 	for i := range d.Attempts {
-		d.Attempts[i].Protocols = append([]string(nil), d.Attempts[i].Protocols...)
+		if d.Attempts[i].Protocols != nil {
+			d.Attempts[i].Protocols = append([]string{}, d.Attempts[i].Protocols...)
+		}
 	}
 	return d
 }
