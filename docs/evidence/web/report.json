@@ -1,0 +1,106 @@
+{
+  "base": "http://localhost:4173",
+  "results": [
+    {
+      "name": "no page errors during boot (YouTube path)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "no console errors during boot (YouTube path)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "search returns Kolaveri (YouTube path)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "YouTube IFrame API stub was loaded (probe succeeded)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "a real YT.Player instance was created",
+      "ok": true,
+      "detail": "1 players"
+    },
+    {
+      "name": "playback started through the YT player",
+      "ok": true,
+      "detail": "playVideo"
+    },
+    {
+      "name": "player iframe lives inside the docked stage",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "stage is visible and >= 200x200 (compliant)",
+      "ok": true,
+      "detail": "{\"w\":228,\"h\":259,\"x\":1192,\"y\":526}"
+    },
+    {
+      "name": "settings volume applied to the YT player (0.9 -> 90)",
+      "ok": true,
+      "detail": "volume=90"
+    },
+    {
+      "name": "position advances via YouTube adapter",
+      "ok": true,
+      "detail": "0:02 → 0:05"
+    },
+    {
+      "name": "stage docked in Now Playing view (moved from default)",
+      "ok": true,
+      "detail": "{\"w\":460,\"h\":460,\"x\":618,\"y\":87}"
+    },
+    {
+      "name": "no requests beyond the app + stubbed iframe API",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "no forbidden playback-path requests",
+      "ok": true,
+      "detail": "20 requests"
+    },
+    {
+      "name": "reload boots cleanly (YouTube path)",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "requests": [
+    "http://localhost:4173/",
+    "http://localhost:4173/assets/index-CAF0ehIc.js",
+    "http://localhost:4173/assets/index-DN7jvAhV.css",
+    "https://www.youtube.com/iframe_api",
+    "http://localhost:4173/assets/mockBackend-BxWRD1rW.js",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(24%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(72%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3EDhanush%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(130%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(178%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3EArijit%20Singh%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(200%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(248%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3EAnirudh%20Ravichander%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(12%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(60%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3EArijit%20Singh%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(320%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(8%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3ESid%20Sriram%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(275%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(323%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3EA.R.%20Rahman%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(150%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(198%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3ESai%20Abhyankar%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(40%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(88%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3EArijit%20Singh%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(30%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(78%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3EA.R.%20Rahman%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(18%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(66%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3EAnirudh%20Ravichander%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(88%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(136%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3ERahul%20Sipligunj%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(335%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(23%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3EDhanush%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(330%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(18%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3ERajalakshmi%20Senthiganesh%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(210%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(258%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3ESid%20Sriram%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(42%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(90%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3EAnirudh%20Ravichander%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E",
+    "http://localhost:4173/",
+    "http://localhost:4173/assets/index-CAF0ehIc.js",
+    "http://localhost:4173/assets/index-DN7jvAhV.css",
+    "https://www.youtube.com/iframe_api",
+    "http://localhost:4173/assets/mockBackend-BxWRD1rW.js",
+    "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22400%22%20height%3D%22400%22%3E%0A%20%20%20%20%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22hsl(24%2C62%25%2C52%25)%22%2F%3E%0A%20%20%20%20%20%20%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22hsl(72%2C55%25%2C28%25)%22%2F%3E%0A%20%20%20%20%3C%2FlinearGradient%3E%3C%2Fdefs%3E%0A%20%20%20%20%3Crect%20width%3D%22400%22%20height%3D%22400%22%20fill%3D%22url(%23g)%22%2F%3E%0A%20%20%20%20%3Ctext%20x%3D%2232%22%20y%3D%22360%22%20font-family%3D%22Inter%2Csystem-ui%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%0A%20%20%20%20%20%20fill%3D%22rgba(255%2C255%2C255%2C.92)%22%3EDhanush%3C%2Ftext%3E%0A%20%20%3C%2Fsvg%3E"
+  ],
+  "pageErrors": [],
+  "consoleErrors": [],
+  "at": "2026-09-09T13:44:54.563Z"
+}
