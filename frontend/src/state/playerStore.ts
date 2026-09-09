@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { RepeatMode, Track } from '../bridge/types'
+import { projectUpcoming } from '../domain/queueEngine'
 
 export type PlayerStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
 
@@ -45,6 +46,5 @@ export const playerState = () => usePlayerStore.getState()
 export const setPlayerState = usePlayerStore.setState
 
 export function upcomingTracks(state: PlayerState): Track[] {
-  if (state.index < 0) return state.queue
-  return state.queue.slice(state.index + 1)
+  return projectUpcoming(state).explicit
 }

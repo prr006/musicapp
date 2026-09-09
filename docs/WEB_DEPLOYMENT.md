@@ -44,6 +44,15 @@ from “Believer” by Imagine Dragons and passed at least five Next transitions
 the Autoplay buffer stayed populated at roughly five to eight items, showed no
 empty/duplicate buffer, and retained explicit-queue priority.
 
+The current parity revision extracts ordering, projection, prefetch order,
+incremental append, canonical reconciliation, and failed-candidate removal into
+`frontend/src/domain/queueEngine.ts`. That domain and `PlaybackController` are
+shared by Wails and web; `WebBackend` remains transport/cache only. Local
+validation passes 131 frontend tests and the production build, including eight
+buffered radio transitions and silent resolver-failure replacement. A fresh live
+eight-transition audible run is required after this revision deploys and remains
+unverified until recorded below.
+
 Still unverified in production: invalid/expired-ticket recovery, account
 register/logout/relogin and cross-account isolation, library/playlist persistence
 across a Railway restart, responsive Chrome/Firefox/Edge coverage, Media Session,
@@ -209,7 +218,7 @@ count as audible-playback verification.
    continuous audio. Repeat across at least three tracks and one track whose
    upstream requires server-side headers. Confirm metadata/duration/artwork and
    play, pause, seek, volume, speed, mute, next, and previous.
-4. Start Song Radio from Believer and advance through at least five tracks.
+4. Start Song Radio from Believer and advance through at least eight tracks.
    Verify explicit queue and discovery queue remain separate, discovery stays at
    roughly five to eight ready items and refills before empty, no immediate
    canonical duplicates appear, a manual queue item outranks discovery, and one

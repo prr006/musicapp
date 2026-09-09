@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { projectUpcoming } from '../domain/queueEngine'
 import { formatCount } from '../lib/format'
 import { library } from '../state/libraryStore'
 import { playback, usePlayer } from '../state/playback'
@@ -18,7 +19,7 @@ export function QueuePanel() {
   const [saving, setSaving] = useState(false)
   const [name, setName] = useState('')
 
-  const upcoming = queue.slice(index + 1)
+  const { explicit: upcoming, discovery } = projectUpcoming({ queue, autoQueue, index })
 
   return (
     <aside className="panel" aria-label="Play queue">
@@ -59,7 +60,7 @@ export function QueuePanel() {
           )}
         </div>
 
-        {upcoming.length === 0 && autoQueue.length === 0 && (
+        {upcoming.length === 0 && discovery.length === 0 && (
           <EmptyState title="Nothing queued" message="Add songs with “Play next” or “Add to queue”." />
         )}
 
@@ -120,7 +121,7 @@ export function QueuePanel() {
           )
         })}
 
-        {autoQueue.length > 0 && (
+        {discovery.length > 0 && (
           <>
             <div className="queue-group-title">
               <span>Autoplay · based on your listening</span>
@@ -128,7 +129,7 @@ export function QueuePanel() {
                 Clear
               </button>
             </div>
-            {autoQueue.slice(0, 10).map((track, i) => (
+            {discovery.slice(0, 10).map((track, i) => (
               <div
                 className="track-row compact"
                 key={`auto-${track.id}`}

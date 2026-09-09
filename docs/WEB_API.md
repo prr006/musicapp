@@ -31,11 +31,16 @@ Tickets authorize only one validated source ID and never outlive the provider so
 resolver/search/radio/lyrics requests are coalesced.
 
 Radio responses are bounded, cached candidate batches rather than continuation
-tokens. The shared playback controller owns the persistent radio session: it keeps
-five to eight ready discovery tracks, preserves that buffer across transitions,
-requests the original radio context and then the advancing current track as
-needed, and supplements short batches with bounded search candidates. It never
-replaces either queue with a raw search response or an empty failed response.
+tokens. The adapter does not own queue semantics. The shared desktop/web queue
+domain and playback controller own the persistent radio session: they keep five
+to eight ready discovery tracks, preserve that buffer across transitions, request
+the original radio context and then the advancing current track as needed, and
+supplement short batches with bounded search candidates. Refills append and
+canonical-deduplicate; they never replace either queue with a raw search response
+or an empty failed response. Hosted playback prefetches up to three candidates in
+explicit-first order. A candidate whose resolution fails is removed alone, the
+buffer is refilled, and the next explicit/discovery alternative starts without a
+player error when one is available.
 
 ## Account and library
 

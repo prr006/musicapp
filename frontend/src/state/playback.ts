@@ -15,7 +15,13 @@ import { PlaybackEngine } from '../audio/engine'
 import { BrowserMediaSession } from '../audio/mediaSession'
 import { backend, type RadioKind } from '../bridge/backend'
 import type { RepeatMode, Track } from '../bridge/types'
-import { normalizeTitle, pickDiscoveryCandidates, type DiscoveryBlock } from '../lib/discovery'
+import {
+  appendDiscovery, buildDiscoveryBlock, DISCOVERY_RECENT_HISTORY,
+  DISCOVERY_REFILL_THRESHOLD, DISCOVERY_TARGET, isUpcomingCandidate,
+  prefetchCandidates, reconcileDiscovery, removeCandidate,
+  selectNextTrack, type QueueSelection,
+} from '../domain/queueEngine'
+import { normalizeTitle } from '../lib/discovery'
 import { dedupeTracks, moveItem, shuffleUpcoming } from '../lib/queue'
 import { library, useLibraryStore } from './libraryStore'
 import { lyrics } from './lyricsStore'
@@ -32,20 +38,17 @@ export interface PlayContext {
 const SESSION_SAVE_DEBOUNCE = 1500
 const PREVIOUS_RESTART_THRESHOLD = 3
 
-/** Discovery (autoplay) keeps at least this many upcoming tracks ready. */
-const DISCOVERY_TARGET = 8
-/** Refill while several playable choices remain; never wait for an empty list. */
-const DISCOVERY_LOW_WATER = 5
 /** Failed/empty same-anchor refills back off instead of retrying every position tick. */
 const DISCOVERY_RETRY_DELAY = 15_000
-/** Recent-history window used to avoid replaying songs the user just heard. */
-const DISCOVERY_RECENT_HISTORY = 50
+const PREFETCH_LIMIT = 3
 
 interface ActiveRadio {
   id: string
   kind: RadioKind
   seedId: string
   seed?: Partial<Track>
+  ids: Set<string>
+  titles: Set<string>
 }
 
 export class PlaybackController {
@@ -59,9 +62,11 @@ export class PlaybackController {
   private lastDiscoveryAnchor = ''
   private activeRadio: ActiveRadio | null = null
   private recentTracks: Track[] = []
+  private rejectedTracks: Track[] = []
   private sleepTimer: ReturnType<typeof setTimeout> | null = null
   private readonly mediaSession: BrowserMediaSession
-  private prefetchedTrackId = ''
+  private prefetchedTracks = new Set<string>()
+  private prefetchingTracks = new Set<string>()
   private recoveredTrackId: string | null = null
 
   constructor(engine = new PlaybackEngine()) {
@@ -107,7 +112,7 @@ export class PlaybackController {
         const duration = positionChannel.getDuration()
         const nearingEnd = duration > 0 && duration - event.position <= 45
         const retryDue = this.discoveryRetryAt > 0 && this.discoveryRetryAt <= Date.now()
-        if (state.autoQueue.length <= DISCOVERY_LOW_WATER && (nearingEnd || retryDue || state.autoQueue.length === 0)) {
+        if (state.autoQueue.length <= DISCOVERY_REFILL_THRESHOLD && (nearingEnd || retryDue || state.autoQueue.length === 0)) {
           void this.refillDiscovery()
         }
         break
@@ -190,6 +195,7 @@ export class PlaybackController {
     // buffer until replacements arrive. This avoids an empty Up Next on every click.
     this.reanchorDiscovery()
     this.activeRadio = null
+    this.rejectedTracks = []
     if (freshSession) this.recentTracks = []
     const tracks = context.tracks ? dedupeTracks(context.tracks) : null
     let queue: Track[]
@@ -249,10 +255,39 @@ export class PlaybackController {
       await this.engine.load(token, source.url, startAt)
     } catch (err) {
       if (!this.engine.isCurrent(token)) return
+      if (await this.skipUnplayableTrack(track)) return
       const message = err instanceof Error ? err.message : 'Couldn\u2019t load this song.'
       this.engine.fail(token, message)
       setPlayerState({ status: 'error', error: message })
     }
+  }
+
+  /**
+   * Rejects only the failed candidate, refills discovery, then continues through
+   * the canonical explicit-first selection order. A resolver error is surfaced
+   * only when no alternative remains.
+   */
+  private async skipUnplayableTrack(track: Track): Promise<boolean> {
+    const state = playerState()
+    const source = state.playingFrom
+    this.rememberRejected(track)
+    this.prefetchedTracks.delete(track.id)
+    this.prefetchingTracks.delete(track.id)
+    backend().invalidatePlayable?.(track.id)
+    void backend().reportPlaybackError?.({
+      trackId: track.id,
+      code: 'unplayable_candidate_skipped',
+      recoverable: true,
+    }).catch(() => {})
+
+    const remaining = removeCandidate(state, track.id, source)
+    setPlayerState(remaining)
+    this.queueSessionSave()
+    await this.refillDiscovery(true)
+    const selection = selectNextTrack(playerState(), useLibraryStore.getState().settings.autoplay)
+    if (!selection) return false
+    await this.playSelection(selection)
+    return true
   }
 
   async toggle(): Promise<void> {
@@ -318,54 +353,41 @@ export class PlaybackController {
 
   /** The single implementation of "move by one track". */
   private async advance(step: number, _opts: { auto: boolean }): Promise<void> {
-    const state = playerState()
-    const { queue, index, repeat } = state
+    if (step < 0) return
+    const autoplay = useLibraryStore.getState().settings.autoplay
+    let selection = selectNextTrack(playerState(), autoplay)
 
-    if (state.playingFrom === 'autoplay') {
-      // Tracks the user queued manually while autoplaying take priority over
-      // discovery, so automatic continuation can never reorder their choices.
-      if (step > 0 && index + 1 < queue.length) {
-        setPlayerState({ index: index + 1, playingFrom: 'queue' })
-        await this.start(queue[index + 1])
-        return
-      }
-      const started = await this.startNextDiscovery()
-      if (started) return
+    // Keep the last visible discovery items in place while a low-water refill
+    // completes; only shift the selected item after append/reconciliation.
+    if (selection?.source === 'autoplay' && playerState().autoQueue.length <= DISCOVERY_REFILL_THRESHOLD) {
+      await this.refillDiscovery()
+      selection = selectNextTrack(playerState(), autoplay)
+    }
+
+    // Normal refills happen before this point. This is the bounded final safety
+    // net when playback catches an in-flight request at the end of the buffer.
+    if (!selection && autoplay) {
+      await this.refillDiscovery(true)
+      selection = selectNextTrack(playerState(), autoplay)
+    }
+    if (!selection) {
       this.finish()
       return
     }
-
-    const nextIndex = index + step
-    if (nextIndex >= 0 && nextIndex < queue.length) {
-      setPlayerState({ index: nextIndex })
-      await this.start(queue[nextIndex])
-      return
-    }
-    if (repeat === 'all' && queue.length > 0) {
-      const wrapped = step > 0 ? 0 : queue.length - 1
-      setPlayerState({ index: wrapped })
-      await this.start(queue[wrapped])
-      return
-    }
-    // Explicit queue exhausted: autoplay continues only if the user enabled it.
-    if (step > 0 && useLibraryStore.getState().settings.autoplay) {
-      const started = await this.startNextDiscovery()
-      if (started) return
-    }
-    this.finish()
+    await this.playSelection(selection)
   }
 
-  /** Shifts the next discovery track and starts it; false when none is left. */
-  private async startNextDiscovery(): Promise<boolean> {
-    // Final safety net: wait for one bounded forced request rather than
-    // stranding playback merely because a normal refill finished late.
-    if (playerState().autoQueue.length === 0) await this.refillDiscovery(true)
-    const state = playerState()
-    if (state.autoQueue.length === 0) return false
-    const [next, ...rest] = state.autoQueue
-    setPlayerState({ autoQueue: rest, playingFrom: 'autoplay' })
-    await this.start(next)
-    return true
+  private async playSelection(selection: QueueSelection): Promise<void> {
+    if (selection.source === 'queue') {
+      setPlayerState({ index: selection.queueIndex ?? playerState().index, playingFrom: 'queue' })
+    } else {
+      const state = playerState()
+      setPlayerState({
+        autoQueue: state.autoQueue[0]?.id === selection.track.id ? state.autoQueue.slice(1) : state.autoQueue,
+        playingFrom: 'autoplay',
+      })
+    }
+    await this.start(selection.track)
   }
 
   /** Reached the end of everything: stop cleanly without clearing the queue. */
@@ -419,6 +441,7 @@ export class PlaybackController {
   setQueue(tracks: Track[], label = ''): void {
     setPlayerState({ queue: dedupeTracks(tracks), index: -1, contextLabel: label })
     this.pruneDiscoveryQueue()
+    void this.refillDiscovery().then(() => this.prefetchNext())
     this.queueSessionSave()
   }
 
@@ -432,6 +455,7 @@ export class PlaybackController {
     }
     setPlayerState({ queue: [...state.queue, ...additions] })
     this.pruneDiscoveryQueue()
+    void this.refillDiscovery().then(() => this.prefetchNext())
     ui.toast(additions.length === 1 ? `Added “${additions[0].title}” to the queue` : `Added ${additions.length} songs to the queue`)
     this.queueSessionSave()
   }
@@ -445,6 +469,7 @@ export class PlaybackController {
     const next = [...remaining.slice(0, insertAt), ...additions, ...remaining.slice(insertAt)]
     setPlayerState({ queue: next })
     this.pruneDiscoveryQueue()
+    void this.refillDiscovery().then(() => this.prefetchNext())
     ui.toast(additions.length === 1 ? `“${additions[0].title}” plays next` : `${additions.length} songs play next`)
     this.queueSessionSave()
   }
@@ -476,6 +501,7 @@ export class PlaybackController {
     const state = playerState()
     if (index < 0 || index >= state.autoQueue.length) return
     setPlayerState({ autoQueue: state.autoQueue.filter((_, i) => i !== index) })
+    void this.refillDiscovery().then(() => this.prefetchNext())
     this.queueSessionSave()
   }
 
@@ -543,7 +569,12 @@ export class PlaybackController {
       ui.toast("Couldn't start radio — your current queue is unchanged", 'error')
       return
     }
-    const fresh = pickDiscoveryCandidates(tracks, this.discoveryBlock(), DISCOVERY_TARGET + 1)
+    const { added: fresh } = appendDiscovery(
+      [],
+      tracks,
+      this.discoveryBlock(false, false),
+      DISCOVERY_TARGET + 1,
+    )
     if (fresh.length === 0) {
       ui.toast('No radio suggestions are available right now', 'error')
       return
@@ -551,7 +582,15 @@ export class PlaybackController {
 
     // A successful radio command is the one intentional discovery replacement.
     this.resetDiscovery()
-    this.activeRadio = { id: sessionID, kind, seedId, seed }
+    this.activeRadio = {
+      id: sessionID,
+      kind,
+      seedId,
+      seed,
+      ids: new Set<string>(),
+      titles: new Set<string>(),
+    }
+    this.markRadioSeen(fresh)
     const [first, ...rest] = fresh
     setPlayerState({
       autoQueue: rest.slice(0, DISCOVERY_TARGET),
@@ -561,21 +600,59 @@ export class PlaybackController {
     await this.start(first)
   }
 
-  /** Resolve the most likely next track while the current one is playing. The
-   * web adapter coalesces this with a later play request and expires tickets at
-   * their real server deadline; desktop simply skips this optional capability. */
+  /**
+   * Resolve several tracks in canonical play order before they are needed. The
+   * web adapter caches/coalesces tickets; desktop may omit this optimization.
+   * A proven-unplayable upcoming candidate is removed without disturbing any
+   * other explicit or discovery ordering, then the buffer is refilled.
+   */
   private async prefetchNext(): Promise<void> {
     const prefetch = backend().prefetchPlayable
     if (!prefetch) return
-    const state = playerState()
-    const next = state.queue[state.index + 1] ?? state.autoQueue[0]
-    if (!next || next.id === this.prefetchedTrackId) return
-    this.prefetchedTrackId = next.id
-    try {
-      await prefetch(next)
-    } catch {
-      // Prefetch is speculative. A normal play retries and surfaces errors.
-      if (this.prefetchedTrackId === next.id) this.prefetchedTrackId = ''
+    const candidates = prefetchCandidates(
+      playerState(),
+      useLibraryStore.getState().settings.autoplay,
+      PREFETCH_LIMIT,
+    )
+    const wanted = new Set(candidates.map((track) => track.id))
+    for (const id of this.prefetchedTracks) {
+      if (!wanted.has(id)) this.prefetchedTracks.delete(id)
+    }
+
+    await Promise.all(candidates.map(async (track) => {
+      if (this.prefetchedTracks.has(track.id) || this.prefetchingTracks.has(track.id)) return
+      this.prefetchingTracks.add(track.id)
+      try {
+        await prefetch(track)
+        this.prefetchedTracks.add(track.id)
+      } catch {
+        const state = playerState()
+        const source = isUpcomingCandidate(state, track.id)
+        if (source) {
+          this.rememberRejected(track)
+          backend().invalidatePlayable?.(track.id)
+          const remaining = removeCandidate(state, track.id, source)
+          setPlayerState(remaining)
+          void backend().reportPlaybackError?.({
+            trackId: track.id,
+            code: 'prefetch_candidate_skipped',
+            recoverable: true,
+          }).catch(() => {})
+          this.queueSessionSave()
+          await this.refillDiscovery(true)
+        }
+      } finally {
+        this.prefetchingTracks.delete(track.id)
+      }
+    }))
+
+    const next = prefetchCandidates(
+      playerState(),
+      useLibraryStore.getState().settings.autoplay,
+      PREFETCH_LIMIT,
+    )
+    if (next.some((track) => !this.prefetchedTracks.has(track.id) && !this.prefetchingTracks.has(track.id))) {
+      await this.prefetchNext()
     }
   }
 
@@ -647,27 +724,14 @@ export class PlaybackController {
     return promise
   }
 
-  private discoveryBlock(includeAutoplay = true): DiscoveryBlock {
-    const state = playerState()
-    const ids = new Set<string>()
-    const titles = new Set<string>()
-    const addTrack = (track?: Track | null) => {
-      if (!track) return
-      if (track.id) ids.add(track.id)
-      const key = normalizeTitle(track.title)
-      if (key) titles.add(key)
-    }
-    addTrack(state.current)
-    for (const track of state.queue) addTrack(track)
-    if (includeAutoplay) {
-      for (const track of state.autoQueue) addTrack(track)
-    }
-    for (const entry of useLibraryStore.getState().history.slice(0, DISCOVERY_RECENT_HISTORY)) {
-      addTrack(entry.track)
-    }
-    // History recording is asynchronous; synchronously block just-consumed tracks.
-    for (const track of this.recentTracks) addTrack(track)
-    return { ids, titles }
+  private discoveryBlock(includeAutoplay = true, includeRadio = true) {
+    return buildDiscoveryBlock({
+      state: playerState(),
+      history: useLibraryStore.getState().history,
+      recent: [...this.recentTracks, ...this.rejectedTracks],
+      radioSeen: includeRadio ? this.activeRadio : null,
+      includeAutoplay,
+    })
   }
 
   private rememberTrack(track: Track): void {
@@ -680,10 +744,29 @@ export class PlaybackController {
     ].slice(0, DISCOVERY_RECENT_HISTORY)
   }
 
+  private rememberRejected(track: Track): void {
+    const key = normalizeTitle(track.title)
+    this.rejectedTracks = [
+      track,
+      ...this.rejectedTracks.filter((candidate) => (
+        candidate.id !== track.id && (!key || normalizeTitle(candidate.title) !== key)
+      )),
+    ].slice(0, DISCOVERY_RECENT_HISTORY)
+  }
+
+  private markRadioSeen(tracks: Track[]): void {
+    if (!this.activeRadio) return
+    for (const track of tracks) {
+      this.activeRadio.ids.add(track.id)
+      const title = normalizeTitle(track.title)
+      if (title) this.activeRadio.titles.add(title)
+    }
+  }
+
   private pruneDiscoveryQueue(): void {
     const state = playerState()
     if (state.autoQueue.length === 0) return
-    const next = pickDiscoveryCandidates(state.autoQueue, this.discoveryBlock(false), DISCOVERY_TARGET)
+    const next = reconcileDiscovery(state.autoQueue, this.discoveryBlock(false, false), DISCOVERY_TARGET)
     if (next.length !== state.autoQueue.length || next.some((track, index) => track.id !== state.autoQueue[index]?.id)) {
       setPlayerState({ autoQueue: next })
     }
@@ -703,8 +786,8 @@ export class PlaybackController {
     const candidates: Track[] = []
     let failed = false
     const collect = (tracks: Track[]): void => {
-      const fresh = pickDiscoveryCandidates(dedupeTracks(tracks), block, needed - candidates.length)
-      for (const track of fresh) {
+      const { added } = appendDiscovery(candidates, dedupeTracks(tracks), block, needed)
+      for (const track of added) {
         candidates.push(track)
         block.ids.add(track.id)
         const title = normalizeTitle(track.title)
@@ -754,12 +837,17 @@ export class PlaybackController {
     const latest = playerState()
     if (!useLibraryStore.getState().settings.autoplay || !latest.current) return
 
-    const capacity = Math.max(0, DISCOVERY_TARGET - latest.autoQueue.length)
-    const fresh = pickDiscoveryCandidates(candidates, this.discoveryBlock(), capacity)
-    if (fresh.length > 0) {
-      setPlayerState({ autoQueue: [...latest.autoQueue, ...fresh] })
-      const remaining = latest.autoQueue.length + fresh.length
-      this.discoveryRetryAt = remaining <= DISCOVERY_LOW_WATER ? Date.now() + DISCOVERY_RETRY_DELAY : 0
+    const { queue, added } = appendDiscovery(
+      latest.autoQueue,
+      candidates,
+      this.discoveryBlock(),
+      DISCOVERY_TARGET,
+    )
+    if (added.length > 0) {
+      setPlayerState({ autoQueue: queue })
+      this.markRadioSeen(added)
+      const remaining = queue.length
+      this.discoveryRetryAt = remaining <= DISCOVERY_REFILL_THRESHOLD ? Date.now() + DISCOVERY_RETRY_DELAY : 0
       this.discoveryWarned = false
       return
     }
@@ -784,6 +872,7 @@ export class PlaybackController {
     this.discoveryRetryAt = 0
     this.lastDiscoveryAnchor = ''
     this.discoveryPromise = null
+    this.prefetchedTracks.clear()
   }
 
   private resetDiscovery(): void {
@@ -839,6 +928,9 @@ export class PlaybackController {
   }, autoResume: boolean): Promise<void> {
     const queue = session.queue ?? []
     const index = Math.min(Math.max(session.index, -1), queue.length - 1)
+    this.reanchorDiscovery()
+    this.activeRadio = null
+    this.rejectedTracks = []
     setPlayerState({
       queue,
       autoQueue: session.autoQueue ?? [],
@@ -847,6 +939,7 @@ export class PlaybackController {
       repeat: session.repeat ?? 'off',
       speed: session.speed || 1,
       current: index >= 0 ? queue[index] ?? null : null,
+      playingFrom: 'queue',
     })
     this.recentTracks = []
     if (index >= 0 && queue[index]) this.rememberTrack(queue[index])

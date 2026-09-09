@@ -13,8 +13,11 @@ path, while the current CI guards its build and shared tests.
 > lyrics, and lyric seek have been manually verified. The repaired five-to-eight
 > item radio buffer passes a five-transition automated regression and is deployed;
 > a fresh audible Believer Song Radio run also passed five production transitions
-> without an empty/duplicate buffer and retained explicit priority. Account
-> relogin/isolation, restart persistence, multi-browser responsive behavior, Media
+> without an empty/duplicate buffer and retained explicit priority. The current
+> shared-domain parity revision passes an eight-transition automated run plus
+> silent failed-candidate replacement; its fresh eight-transition production run
+> remains pending. Account relogin/isolation, restart persistence, multi-browser
+> responsive behavior, Media
 > Session, PWA install, and expired-ticket recovery remain unverified.
 
 | Capability | Wails desktop | Hosted web | Notes |
@@ -24,11 +27,11 @@ path, while the current CI guards its build and shared tests.
 | Repeat off/all/one / shuffle | Yes | Implemented | Shared queue controller |
 | Sleep timer | Yes | Implemented | Now Playing 15/30/45/60 minute control |
 | Media Session / OS metadata | desktop keys | Implemented | play, pause, next, previous, seek and position |
-| Automatic autoplay | Yes | Implemented | Separate 5–8 item discovery buffer; proactive refill and failure-safe retry |
-| Next-track resolution prefetch | resolver cache | Implemented | Web adapter coalesces and expires signed sources |
+| Automatic autoplay | Yes | Implemented | Shared 5–8 item discovery buffer; proactive incremental refill and failure-safe retry |
+| Next-track resolution prefetch | resolver cache | Implemented | Canonical engine orders candidates; web coalesces/caches three upcoming signed sources |
 | Expired URL recovery | Yes | Implemented | Streamer invalidates and resolves once on 403/410 |
 | Explicit user queue | Yes | Implemented | Search single-click never enqueues every result |
-| Discovery queue | Yes | Implemented | current/explicit/discovery/history/session ID and canonical-title reconciliation |
+| Discovery queue | Yes | Implemented | Shared domain reconciles current/explicit/discovery/history/radio-session IDs and canonical titles |
 | Session persistence | local | Implemented | isolated anonymous or authenticated account |
 | Save queue as playlist | Yes | Implemented | shared queue panel/library operations |
 | Song radio | autoplay | Implemented | persistent client session refills from the seed and advancing tracks |

@@ -204,6 +204,39 @@ describe('queue advancement', () => {
     expect(state().index).toBe(2)
   })
 
+  it('silently removes one failed explicit candidate and continues in order', async () => {
+    const h = harness()
+    const current = track('current')
+    const bad = track('bad')
+    const good = track('good')
+    h.resolveErrors.set(bad.id, 'this song has no playable audio stream')
+
+    await h.controller.play(current, { tracks: [current, bad, good], index: 0 })
+    await h.controller.next()
+
+    expect(state().current?.id).toBe(good.id)
+    expect(state().status).toBe('playing')
+    expect(state().queue.map((candidate) => candidate.id)).toEqual([current.id, good.id])
+    expect(state().error).toBeNull()
+  })
+
+  it('plays every explicit queued track before the discovery queue', async () => {
+    const h = harness()
+    const current = track('believer')
+    const thunder = track('thunder')
+    const demons = track('demons')
+    const discovery = track('radio')
+    await h.controller.play(current, { tracks: [current, thunder, demons], index: 0 })
+    usePlayerStore.setState({ autoQueue: [discovery] })
+
+    await h.controller.next()
+    expect(state().current?.id).toBe(thunder.id)
+    await h.controller.next()
+    expect(state().current?.id).toBe(demons.id)
+    await h.controller.next()
+    expect(state().current?.id).toBe(discovery.id)
+  })
+
   it('manual stop does not advance the queue', async () => {
     const h = harness()
     const [a, b] = [track('a'), track('b')]
@@ -430,6 +463,58 @@ describe('autoplay', () => {
 })
 
 describe('discovery (endless queue)', () => {
+  it('keeps existing discovery visible while a delayed refill appends', async () => {
+    const h = harness()
+    const current = track('current')
+    const existing = [track('existing1'), track('existing2'), track('existing3')]
+    const additions = Array.from({ length: 5 }, (_, index) => track(`addition${index}`))
+    let release!: () => void
+    const delayed = new Promise<void>((resolve) => { release = resolve })
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      await delayed
+      return { query: '', songs: additions, videos: [], albums: [], artists: [], provider: 'test' }
+    })
+    usePlayerStore.setState({ autoQueue: existing })
+
+    await h.controller.play(current)
+    await vi.waitFor(() => expect(h.backend.search).toHaveBeenCalled())
+    expect(state().autoQueue.map((candidate) => candidate.id)).toEqual(existing.map((candidate) => candidate.id))
+
+    release()
+    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(8))
+    expect(state().autoQueue.slice(0, existing.length).map((candidate) => candidate.id)).toEqual(
+      existing.map((candidate) => candidate.id),
+    )
+  })
+
+  it('does not shift the last discovery item until its in-flight refill completes', async () => {
+    const h = harness()
+    useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: false } })
+    const current = track('current')
+    const next = track('next')
+    await h.controller.play(current)
+    usePlayerStore.setState({ autoQueue: [next] })
+    useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: true } })
+
+    let release!: () => void
+    const delayed = new Promise<void>((resolve) => { release = resolve })
+    const additions = Array.from({ length: 7 }, (_, index) => track(`buffer${index}`))
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      await delayed
+      return { query: '', songs: additions, videos: [], albums: [], artists: [], provider: 'test' }
+    })
+
+    const moving = h.controller.next()
+    await vi.waitFor(() => expect(h.backend.search).toHaveBeenCalled())
+    expect(state().current?.id).toBe(current.id)
+    expect(state().autoQueue.map((candidate) => candidate.id)).toEqual([next.id])
+
+    release()
+    await moving
+    expect(state().current?.id).toBe(next.id)
+    expect(state().autoQueue.length).toBeGreaterThanOrEqual(5)
+  })
+
   it('fills the background queue and keeps it separate from the explicit queue', async () => {
     const h = harness()
     const a = track('a')
@@ -518,12 +603,12 @@ describe('discovery (endless queue)', () => {
     })
     h.backend.radio = radio as Backend['radio']
 
-    const playA = h.controller.play(a, { tracks: [a], index: 0 })
+    const playA = h.controller.play(a, { tracks: [a, b], index: 0 })
     await vi.waitFor(() => expect(radio).toHaveBeenCalledWith('song', a.sourceId, a))
-    // Let playback advance while A's radio request is still unresolved.
-    usePlayerStore.setState({ autoQueue: [b] })
-    h.media.endNaturally()
-    await vi.waitFor(() => expect(state().current?.id).toBe(b.id))
+    // An explicit transition can occur while A's discovery request is unresolved.
+    // The shared single flight must subsequently run a B-anchored top-up.
+    await h.controller.playQueueIndex(1)
+    expect(state().current?.id).toBe(b.id)
 
     releaseA()
     await playA
@@ -570,6 +655,46 @@ describe('discovery (endless queue)', () => {
     mode = 'recover'
     h.media.endNaturally()
     await vi.waitFor(() => expect(state().current?.id).toBe(three.id))
+    expect(state().status).toBe('playing')
+  })
+
+  it('skips a discovery resolver failure without exposing an error when alternatives exist', async () => {
+    const h = harness()
+    const current = track('current')
+    const pool = Array.from({ length: 10 }, (_, index) => track(index === 0 ? 'bad' : `alternative${index}`))
+    h.resolveErrors.set(pool[0].id, 'this song has no playable audio stream')
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: '', songs: pool, videos: [], albums: [], artists: [], provider: 'test',
+    })
+
+    await h.controller.play(current)
+    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(8))
+    h.media.endNaturally()
+
+    await vi.waitFor(() => expect(state().current?.id).toBe(pool[1].id))
+    expect(state().status).toBe('playing')
+    expect(state().error).toBeNull()
+    expect(state().autoQueue.some((candidate) => candidate.id === pool[0].id)).toBe(false)
+    expect(state().autoQueue.length).toBeGreaterThanOrEqual(5)
+  })
+
+  it('prefetch drops only an unplayable discovery candidate and immediately refills', async () => {
+    const h = harness()
+    const current = track('current')
+    const pool = Array.from({ length: 9 }, (_, index) => track(index === 0 ? 'bad' : `ready${index}`))
+    h.backend.prefetchPlayable = vi.fn(async (candidate: Track) => {
+      if (candidate.id === pool[0].id) throw new Error('no playable source')
+    })
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: '', songs: pool, videos: [], albums: [], artists: [], provider: 'test',
+    })
+
+    await h.controller.play(current)
+
+    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(8))
+    expect(h.backend.prefetchPlayable).toHaveBeenCalled()
+    expect(state().autoQueue.some((candidate) => candidate.id === pool[0].id)).toBe(false)
+    expect(state().autoQueue.map((candidate) => candidate.id)).toEqual(pool.slice(1).map((candidate) => candidate.id))
     expect(state().status).toBe('playing')
   })
 
@@ -679,7 +804,7 @@ describe('discovery (endless queue)', () => {
     }
   })
 
-  it('keeps a persistent Song Radio buffer through five canonical-deduped refills', async () => {
+  it('keeps a persistent Song Radio buffer through eight canonical-deduped transitions', async () => {
     const h = harness()
     useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: false } })
     const seed = track('seed', { title: 'Believer', artist: 'Imagine Dragons' })
@@ -706,7 +831,7 @@ describe('discovery (endless queue)', () => {
 
     await h.controller.startRadio('song', seed.id, seed)
     expect(state().autoQueue).toHaveLength(8)
-    for (let i = 1; i <= 5; i += 1) {
+    for (let i = 1; i <= 8; i += 1) {
       h.media.endNaturally()
       await vi.waitFor(() => expect(state().current?.id).toBe(initial[i].id))
       await vi.waitFor(() => expect(state().autoQueue).toHaveLength(8))

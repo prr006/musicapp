@@ -39,8 +39,9 @@ export interface Backend {
   on(event: string, cb: (...args: unknown[]) => void): () => void
   isNative: boolean
 
-  // Hosted capabilities are optional so the unchanged desktop API remains
-  // compatible. Playback uses the existing search fallback when absent.
+  // Provider capabilities may differ, but queue order/refill/skip semantics live
+  // only in the shared queue domain and PlaybackController, never in an adapter.
+  // Playback uses the existing search fallback when radio is absent on desktop.
   suggest?(query: string): Promise<SearchResponse>
   radio?(kind: RadioKind, seedId: string, seed?: Partial<Track>): Promise<RadioSession>
   recommendations?(): Promise<Recommendations>
