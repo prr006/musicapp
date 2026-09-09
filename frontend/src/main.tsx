@@ -31,7 +31,9 @@ async function boot(): Promise<void> {
   // 1. Choose the playback provider (YouTube IFrame in the packaged app).
   const { adapter, degraded } = await selectAdapter()
   playback.attachAdapter(adapter)
-  if (degraded && import.meta.env.DEV) {
+  if (degraded) {
+    // Only reachable in a browser deployment whose network cannot reach the
+    // YouTube IFrame API; the packaged app always selects the YouTube player.
     ui.toast('YouTube player unreachable — offline demo mode (no audio)', 'info')
   }
 

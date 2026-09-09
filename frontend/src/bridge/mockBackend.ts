@@ -1,10 +1,10 @@
 /**
- * Fixture backend used only for browser-based UI work, offline development
- * and tests (`VITE_MELO_MOCK=1`, dev builds only). It never ships in a Wails
- * build: production selects the native bindings, and without them the app
- * reports that the backend is unavailable instead of quietly faking data.
+ * Fixture backend for every browser deployment — `vite dev`, tests, CI, and
+ * the public static web build. The packaged app never touches it: it selects
+ * the native Wails bindings whenever those exist, so real user data can never
+ * be shadowed by fixtures.
  *
- * The catalogue uses REAL, well-known YouTube video ids so that — in a
+ * The catalogue uses REAL, well-known YouTube video ids so that — in any
  * networked browser — the YouTube IFrame adapter can genuinely play these
  * tracks end to end. The search is a deterministic token matcher over the
  * catalogue, good enough to exercise the full queue / recommendation flow

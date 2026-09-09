@@ -47,14 +47,12 @@ export async function selectAdapter(): Promise<AdapterChoice> {
     return { adapter: new YouTubeIframeAdapter(), degraded: false }
   }
 
-  if (import.meta.env.DEV) {
-    if (await probeYouTube(PROBE_TIMEOUT_MS)) {
-      return { adapter: new YouTubeIframeAdapter(), degraded: false }
-    }
-    return { adapter: new ClockAdapter(), degraded: true }
+  // A browser deployment — the dev server, CI, or the public static site —
+  // plays through the same real YouTube IFrame player as the packaged app.
+  // Offline (no IFrame API), fall back to the silent transport so the UI,
+  // queue, recommender and history flows stay honest and testable.
+  if (await probeYouTube(PROBE_TIMEOUT_MS)) {
+    return { adapter: new YouTubeIframeAdapter(), degraded: false }
   }
-
-  // A production bundle without native bindings has no way to play anything;
-  // the clock keeps the UI honest rather than pretending to stream.
   return { adapter: new ClockAdapter(), degraded: true }
 }

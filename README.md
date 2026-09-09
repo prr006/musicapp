@@ -156,13 +156,35 @@ npm test         # vitest
 npm run build    # type-check + production bundle into frontend/dist
 ```
 
-`frontend/.env.development` sets `VITE_MELO_MOCK=1`, which makes `npm run dev`
-run against an in-browser fixture backend (a catalogue of real YouTube video
-ids + localStorage persistence) so the UI can be worked on without the Go
-shell. In that mode the app prefers the real YouTube IFrame player if the
-browser can reach it, and otherwise falls back to a silent offline transport
-(`?player=clock` forces it) so the full queue/autoplay flow stays testable
-offline. The fixture never applies when Wails bindings exist.
+`npm run dev` runs against an in-browser fixture backend (a catalogue of real
+YouTube video ids + localStorage persistence) so the UI can be worked on
+without the Go shell. In the browser the app prefers the real YouTube IFrame
+player whenever it can be reached, and otherwise falls back to a silent
+offline transport (`?player=clock` forces it in dev) so the full
+queue/autoplay flow stays testable offline. The fixture never applies when
+Wails bindings exist.
+
+## Web deployment
+
+The same frontend ships as a public static site — no Go server, no API. In a
+browser without Wails bindings the app runs on the fixture catalogue and
+plays through the official YouTube IFrame player, exactly like the packaged
+app; if the IFrame API is unreachable it degrades to the silent offline
+transport and says so in a toast.
+
+- **Vercel** — the project builds `frontend/` (`npm run build`) and serves
+  `dist/` at <https://musicapp-rp-1bc2.vercel.app>.
+- **Railway / any Docker host** — the root `Dockerfile` builds the bundle and
+  serves it with nginx on `$PORT`. It is a pure static file server: there is
+  deliberately no `/resolve`, `/stream`, or media proxy anywhere in this
+  architecture.
+- **GitHub Pages** — `cd frontend && npx vite build --base=/musicapp/`, then
+  publish `dist/` (e.g. to the `gh-pages` branch).
+
+The deployed player is the same compliant, integrated one as the desktop
+build: the YouTube IFrame surface is docked into the Now Playing artwork (or
+the mini player bar) — never hidden, 1px, or off-screen — and playback always
+flows UI → PlaybackController → PlaybackAdapter → YouTube IFrame.
 
 ## Data
 

@@ -1,16 +1,16 @@
 /**
- * ClockAdapter — an offline development/test transport, never shipped.
+ * ClockAdapter — an offline browser transport (no audio, no fake video).
  *
- * Browser-only development (VITE_MELO_MOCK=1) and the end-to-end test suite
- * run on machines that cannot reach YouTube. Rather than faking a YouTube
- * player, this adapter simulates the *transport* honestly: no audio, no fake
- * video surface — a clock that advances while "playing" and ends at the
- * track's duration. It exercises exactly the same controller, queue,
- * recommender and history code paths as the real adapters.
+ * Browser deployments sometimes run where YouTube cannot be reached (CI,
+ * sandboxes, offline machines). Rather than faking a YouTube player, this
+ * adapter simulates the *transport* honestly: no audio, no fake video
+ * surface — a clock that advances while "playing" and ends at the track's
+ * duration. It exercises exactly the same controller, queue, recommender and
+ * history code paths as the real adapters.
  *
- * When the YouTube IFrame API is reachable (the packaged app, or a browser
- * with network access), the YouTube adapter is used instead and this one
- * never runs.
+ * When the YouTube IFrame API is reachable (the packaged app, or any
+ * networked browser), the YouTube adapter is used instead and this one never
+ * runs.
  */
 import type { PlaybackAdapter, PlaybackEvent, PlaybackSnapshot, PlaybackStatus } from './adapter'
 import type { Track } from '../bridge/types'

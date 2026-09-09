@@ -2,9 +2,10 @@
  * The single boundary between the React app and the Go backend.
  *
  * In a packaged build Wails injects `window.go.main.App.*` (promise-returning
- * bindings) and `window.runtime` (events). In a plain browser — used for UI
- * work and tests — a fixture backend is used instead, selected explicitly via
- * VITE_MELO_MOCK so production builds can never silently fall back to it.
+ * bindings) and `window.runtime` (events). In a plain browser — UI work,
+ * tests, CI, and the public static web deployment — the fixture backend is
+ * used instead: this architecture has no web API, so browser builds run on
+ * the in-browser catalogue and play through the YouTube IFrame adapter.
  */
 import type {
   AppState, Diagnostics, LyricsQuery, LyricsResult, PlayEvent,
@@ -111,20 +112,23 @@ export function backend(): Backend {
   return unavailableBackend
 }
 
-/** Resolves the backend, loading the fixture backend when explicitly enabled. */
+/**
+ * Resolves the backend. Native bindings → the real backend. Any browser
+ * deployment — `vite dev`, tests, or the public static site — runs on the
+ * fixture backend, because there is no web API to talk to: playback is the
+ * client-side YouTube IFrame adapter and the fixture catalogue is the data
+ * source. The packaged app always has bindings, so real user data can never
+ * be shadowed by the fixture.
+ */
 export async function initBackend(): Promise<Backend> {
   if (override) return override
   if (hasNativeBackend()) return nativeBackend
-  if (import.meta.env.DEV && import.meta.env.VITE_MELO_MOCK === '1') {
-    if (!mockPromise) {
-      mockPromise = import('./mockBackend').then((m) => {
-        override = m.createMockBackend()
-        return override
-      })
-    }
-    return mockPromise
+  if (!mockPromise) {
+    mockPromise = import('./mockBackend').then((m) => m.createMockBackend())
   }
-  return unavailableBackend
+  const be = await mockPromise
+  override = be
+  return be
 }
 
 const backendDown = (what: string) => () =>
