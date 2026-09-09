@@ -57,7 +57,7 @@ lyrics, history, and Media Session state commit only after
 `HTMLAudioElement.play()` succeeds. A rejected candidate is removed alone and the
 canonical explicit-first alternative is attempted while the prior committed
 current remains visible. Duplicate ended events and stale refill/radio responses
-cannot enqueue a second or superseded transition. Local validation passes 135
+cannot enqueue a second or superseded transition. Local validation passes 136
 frontend tests and the production build, including buffering-time resolver/refill
 completion, rejected `play()`, eight radio transitions, and stale-command guards.
 CI run `34315314253` also passed frontend, Go, Windows Wails, and production

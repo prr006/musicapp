@@ -1,3 +1,5 @@
+const API_REQUEST_TIMEOUT_MS = 60_000
+
 export interface APIErrorBody {
   error?: { code?: string; message?: string }
 }
@@ -32,15 +34,31 @@ export class APIClient {
     headers.set('Accept', 'application/json')
     if (init.body != null && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     let response: Response
+    const controller = new AbortController()
+    const abortFromCaller = () => controller.abort()
+    if (init.signal?.aborted) controller.abort()
+    else init.signal?.addEventListener('abort', abortFromCaller, { once: true })
+    let timedOut = false
+    const timeout = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, API_REQUEST_TIMEOUT_MS)
     try {
       response = await fetch(`${this.baseURL}${path}`, {
         ...init,
         headers,
         credentials: 'include',
+        signal: controller.signal,
       })
     } catch (error) {
+      if (timedOut) {
+        throw new APIError(0, 'request_timeout', 'MELO API request timed out. Try again.')
+      }
       const message = error instanceof Error ? error.message : 'Network request failed'
       throw new APIError(0, 'network_error', `Couldn’t reach the MELO API. ${message}`)
+    } finally {
+      clearTimeout(timeout)
+      init.signal?.removeEventListener('abort', abortFromCaller)
     }
     if (response.status === 204) return undefined as T
     const text = await response.text()

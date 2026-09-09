@@ -18,7 +18,10 @@ const track: Track = {
 }
 
 describe('WebBackend', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
 
   it('loads typed state over credentialed HTTP', async () => {
     const state: AppState = {
@@ -51,6 +54,18 @@ describe('WebBackend', () => {
     const error = await createWebBackend('/api/v1').search('song', '').catch((value) => value)
     expect(error).toBeInstanceOf(APIError)
     expect(error).toMatchObject({ status: 429, code: 'rate_limited', message: 'too many requests' })
+  })
+
+  it('bounds a stalled API request instead of buffering indefinitely', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    })))
+
+    const request = createWebBackend('/api/v1').getPlayable(track)
+    const rejected = expect(request).rejects.toMatchObject({ code: 'request_timeout' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    await rejected
   })
 
   it('uses a radio endpoint without leaking provider logic into playback', async () => {

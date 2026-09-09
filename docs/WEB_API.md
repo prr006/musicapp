@@ -80,5 +80,8 @@ another account receives `404` rather than object existence information.
   `recommendations`, `signed_source`, `stream_resolve`, `stream_reresolve`,
   `upstream_stream`, `stream_retry`, and `browser_playback` stages. Provider URLs,
   provider headers, cookie values, and playback signatures are never logged.
+- Browser API requests have a 60-second outer deadline, in addition to the
+  endpoint-specific server deadlines, so a broken network path cannot leave the
+  player in `Buffering…` indefinitely.
 - Provider-facing error details remain in server logs; browser responses use
   stable messages suitable for retry UI rather than exposing resolver output.

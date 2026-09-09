@@ -16,7 +16,7 @@ path, while the current CI guards its build and shared tests.
 > of the shared-domain parity candidate exposed premature visual `CURRENT`
 > advancement before audible playback, so that deployment is not accepted as
 > parity-complete. The transactional repair keeps a candidate upcoming until
-> `HTMLAudioElement.play()` succeeds, passes 135 frontend tests plus full CI, and
+> `HTMLAudioElement.play()` succeeds, passes 136 frontend tests plus full CI, and
 > is deployed. Its first production retest was blocked before transition one by
 > provider `media_unavailable` responses for popular music IDs (a control ID
 > resolved), so no queue parity pass is claimed. A bounded supported-client
