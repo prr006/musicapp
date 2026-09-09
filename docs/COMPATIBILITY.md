@@ -15,13 +15,15 @@ path, while the current CI guards its build and shared tests.
 > empty/duplicate buffer and retained explicit priority. A later production test
 > of the shared-domain parity candidate exposed premature visual `CURRENT`
 > advancement before audible playback, so that deployment is not accepted as
-> parity-complete. The current transactional repair keeps a candidate upcoming
-> until `HTMLAudioElement.play()` succeeds and passes 135 local frontend tests,
-> including eight radio transitions, duplicate-ended suppression, stale-response
-> guards, and failed-candidate fallback; its fresh production deployment and
-> eight-audible-transition run remain pending. Account relogin/isolation, restart
-> persistence, multi-browser responsive behavior, Media Session, PWA install,
-> and expired-ticket recovery remain unverified.
+> parity-complete. The transactional repair keeps a candidate upcoming until
+> `HTMLAudioElement.play()` succeeds, passes 135 frontend tests plus full CI, and
+> is deployed. Its first production retest was blocked before transition one by
+> provider `media_unavailable` responses for popular music IDs (a control ID
+> resolved), so no queue parity pass is claimed. A bounded supported-client
+> resolver fallback is implemented without tokens or credentials; deployment and
+> the eight-audible-transition retest remain pending. Account relogin/isolation,
+> restart persistence, multi-browser responsive behavior, Media Session, PWA
+> install, and expired-ticket recovery remain unverified.
 
 | Capability | Wails desktop | Hosted web | Notes |
 | --- | :---: | :---: | --- |

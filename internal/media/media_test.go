@@ -406,6 +406,34 @@ func TestResolverFallsBackToSecondClientSet(t *testing.T) {
 	}
 }
 
+// TestResolverFallsBackToAndroidVRProgressiveMP4 covers the production failure
+// where popular music IDs expose no stream to visionos but android_vr still
+// offers the token-free progressive format 18.
+func TestResolverFallsBackToAndroidVRProgressiveMP4(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	runner := &clientArgsRunner{outs: map[string][]byte{
+		resolveClients[0]: storyboardOnlyJSON(),
+		resolveClients[1]: infoJSON(t, exp, []map[string]any{
+			{
+				"format_id": "18", "ext": "mp4", "acodec": "mp4a.40.2", "vcodec": "avc1.42001E",
+				"tbr": 430.0, "protocol": "https", "filesize": 8_000_000,
+				"url": fmt.Sprintf("https://cdn.example/18?expire=%d", exp),
+			},
+		}),
+	}}
+	res := NewResolver(runner)
+	got, err := res.Resolve(context.Background(), "music-video", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.URL, "/18") || got.MimeType != "audio/mp4" {
+		t.Fatalf("expected android_vr progressive MP4 fallback, got %+v", got)
+	}
+	if len(runner.calls) != 2 || runner.calls[1] != "android_vr" {
+		t.Fatalf("expected bounded android_vr second attempt, got %v", runner.calls)
+	}
+}
+
 // TestResolverBoundedFallbackExhaustsAllSets verifies the fallback is bounded:
 // every set yields no playable audio, so the resolver returns ErrNoAudio after
 // exactly len(resolveClients) attempts (no uncontrolled retries).

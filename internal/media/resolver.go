@@ -235,16 +235,21 @@ func (r *Resolver) Invalidate(sourceID string) {
 //   - web, web_safari, web_music, web_creator, mweb: HTTPS/DASH require a PO
 //     token; unauthenticated and without a PO-token provider they return only
 //     storyboard (mhtml) formats.
-//   - android, android_vr, ios: HTTPS requires a PO token or a player token.
+//   - android, ios: HTTPS requires a PO token or a player token.
+//   - android_vr: adaptive HTTPS formats may require a token, but the combined
+//     progressive format 18 remains available for many videos.
 //   - visionos, web_embedded, tv, tv_downgraded: no PO-token requirement.
 //
-// MELO is unauthenticated, ships no PO-token provider and no JS runtime, so the
-// only reliable PO-token-free *and* JS-free client is visionos — which is
-// exactly why yt-dlp's own unauthenticated default is "visionos,web". The
-// second entry is the PO-token-free fallback for videos visionos cannot serve
-// (e.g. made-for-kids).
+// MELO is unauthenticated and ships no PO-token provider or account cookies.
+// Start with yt-dlp's JS-free default, then make two bounded supported-client
+// fallbacks. android_vr is intentionally retained as a compatibility fallback:
+// its lower-bitrate combined MP4 is directly playable by HTMLAudioElement and
+// restores music videos for which visionos exposes no progressive audio. The
+// final set covers embeddable and made-for-kids media. No missing-token format
+// is enabled and no access restriction is bypassed.
 var resolveClients = []string{
 	"visionos,web",
+	"android_vr",
 	"web_embedded,tv_downgraded",
 }
 

@@ -60,8 +60,18 @@ current remains visible. Duplicate ended events and stale refill/radio responses
 cannot enqueue a second or superseded transition. Local validation passes 135
 frontend tests and the production build, including buffering-time resolver/refill
 completion, rejected `play()`, eight radio transitions, and stale-command guards.
-A fresh live eight-transition audible run is required after this repair deploys
-and remains unverified until recorded below.
+CI run `34315314253` also passed frontend, Go, Windows Wails, and production
+container jobs, and the transactional revision deployed successfully.
+
+Its first production retest could not begin the transition run: Believer remained
+buffering and never became audible. Direct API checks then reproduced
+`media_unavailable` for Believer, Thunder, Demons, and other popular music IDs
+while a control ID still resolved, isolating a provider-client compatibility
+failure rather than a queue cursor mutation. The resolver now makes one bounded
+`android_vr` fallback for its token-free progressive MP4 before the existing
+embedded/TV fallback; it does not enable missing-token formats, add credentials,
+or bypass access restrictions. A fresh live eight-transition audible run remains
+required after that fallback deploys and is unverified until recorded below.
 
 Still unverified in production: invalid/expired-ticket recovery, account
 register/logout/relogin and cross-account isolation, library/playlist persistence
