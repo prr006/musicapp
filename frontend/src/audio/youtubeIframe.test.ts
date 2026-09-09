@@ -81,7 +81,7 @@ const fakeAPI: YTNamespace = {
 function track(sourceId: string, extra: Partial<Track> = {}): Track {
   return {
     id: `yt:${sourceId}`, sourceId, source: 'youtube', url: '', title: sourceId,
-    artist: 'Artist', album: 'Album', artwork: '', duration: 240, explicit: false,
+    artist: `Artist ${sourceId}`, album: 'Album', artwork: '', duration: 240, explicit: false,
     ...extra,
   }
 }
@@ -157,6 +157,7 @@ describe('YouTubeIframePlaybackAdapter', () => {
     const loaded = adapter.load(token, track('Kx7B-XvmFtE'), 12)
     await flushPromises()
     expect(player.loadVideoById).toHaveBeenCalledWith({ videoId: 'Kx7B-XvmFtE', startSeconds: 12 })
+    expect(player.options.playerVars).toMatchObject({ controls: 0, disablekb: 1, fs: 0 })
     expect(host.querySelector('.youtube-iframe-target')).not.toBeNull()
 
     player.state(states.BUFFERING)

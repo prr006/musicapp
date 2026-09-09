@@ -1,3 +1,4 @@
+import { isYouTubeIframeAdapter } from '../audio/youtubeIframe'
 import { SPEEDS } from '../lib/defaults'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback, usePlayer } from '../state/playback'
@@ -6,6 +7,7 @@ import { Artwork } from './Artwork'
 import { ChevronDown, HeartIcon, LyricsIcon, QueueIcon, SpeedIcon } from './Icons'
 import { LyricsPane } from './LyricsPane'
 import { ProgressRow, TransportButtons, VolumeControl } from './MiniPlayer'
+import { YouTubePlayerSurface } from './YouTubePlayerSurface'
 
 export function NowPlaying() {
   const current = usePlayer((s) => s.current)
@@ -15,14 +17,22 @@ export function NowPlaying() {
   const sleepTimerEndsAt = usePlayer((s) => s.sleepTimerEndsAt)
   const lyricsOpen = useUIStore((s) => s.lyricsOpen)
   const queueOpen = useUIStore((s) => s.queueOpen)
+  const nowPlayingOpen = useUIStore((s) => s.nowPlayingOpen)
   const liked = useLibraryStore((s) => (current ? s.liked.some((t) => t.id === current.id) : false))
   const showLyrics = useLibraryStore((s) => s.settings.showLyrics)
 
-  const withLyrics = lyricsOpen && showLyrics
+  const providerActive = isYouTubeIframeAdapter(playback.adapter)
+  const compactProvider = providerActive && !nowPlayingOpen
+  const withLyrics = nowPlayingOpen && lyricsOpen && showLyrics
+
+  if (!nowPlayingOpen && !providerActive) return null
 
   return (
-    <section className="now-playing" aria-label="Now playing">
-      <div className="np-head">
+    <section
+      className={`now-playing ${providerActive ? 'with-provider' : ''} ${compactProvider ? 'provider-compact' : ''} ${queueOpen ? 'queue-open' : ''}`}
+      aria-label={compactProvider ? 'YouTube playback video' : 'Now playing'}
+    >
+      {nowPlayingOpen && <div className="np-head">
         <button className="icon-btn" onClick={() => ui.toggleNowPlaying(false)} aria-label="Close now playing" type="button">
           <ChevronDown size={20} />
         </button>
@@ -53,10 +63,10 @@ export function NowPlaying() {
             <QueueIcon size={18} />
           </button>
         </div>
-      </div>
+      </div>}
 
-      <div className={`np-body ${withLyrics ? '' : 'solo'}`}>
-        <div className="np-art-col">
+      <div className={`np-body ${withLyrics ? '' : 'solo'} ${providerActive ? 'has-provider' : ''}`}>
+        {nowPlayingOpen && <div className="np-art-col" key="melo-now-playing">
           {current ? (
             <>
               <Artwork
@@ -148,8 +158,9 @@ export function NowPlaying() {
               <p>Search for something and press play.</p>
             </div>
           )}
-        </div>
+        </div>}
 
+        {providerActive && <YouTubePlayerSurface key="youtube-provider" />}
         {withLyrics && <LyricsPane />}
       </div>
     </section>

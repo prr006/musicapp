@@ -15,14 +15,15 @@ There is no independent Go or Wails queue engine. Go persists the shared session
 
 ## Canonical behavior observed side by side
 
-| Behavior | Desktop Wails | Web IFrame spike | Canonical rule |
+| Behavior | Desktop Wails | Web IFrame adapter | Canonical rule |
 |---|---|---|---|
 | Current track/index | Shared `playerStore` | Same store | Candidate stays provisional; commit `current` and explicit `index` only after actual transport start succeeds |
 | Queue ordering | Shared `queueEngine` | Same engine | Explicit upcoming entries (`index + 1…`) precede discovery entries |
 | Next | Shared `selectNextTrack` | Same function | Next explicit; repeat-all wrap for an explicit session; then discovery when autoplay is enabled |
 | Previous | Shared controller | Same controller | Restart after 3 seconds; otherwise previous explicit entry; repeat-all may wrap to final explicit entry |
 | Natural end | Shared controller event path | IFrame maps `ENDED` into that path | Exactly one advance per playback cycle/generation; repeat-one restarts instead |
-| Radio tracks | Shared `autoQueue` and refill | Same | Radio/discovery stays distinct from explicit queue, appends without replacing its existing prefix, and refills toward 8 at/below the threshold of 5 |
+| Radio tracks | Shared `autoQueue` and refill | Same | Radio/discovery stays distinct from explicit queue, appends without replacing its existing prefix, and tops up from the low-water mark of 5 toward 8 |
+| Radio diversity | Shared discovery picker | Same | Current + visible discovery allow at most two entries per normalized primary artist; choose another available artist before a repeat; explicit entries are never counted, filtered, or reordered by this policy |
 | Manual add/play-next/remove/reorder | Shared controller | Same | Mutate explicit queue only; adjust index around removals/reorders; do not consume discovery accidentally |
 | Replay current | Shared repeat-one/restart path | Same path | Seek to zero and replay through the active adapter without rebuilding the queue |
 | Unavailable media/embed | Shared failed-candidate policy | Same policy | Remove only the failed explicit/discovery candidate; preserve all others; select again in canonical order |
@@ -32,9 +33,9 @@ There is no independent Go or Wails queue engine. Go persists the shared session
 | Play a new track | Shared `play` transaction | Same | A deliberate play-now starts a new one-track session; a context play uses that context; loading itself must not reset a prepared context |
 | Competing transitions | Shared generation and intent guards | Same | A later play/next/radio intent supersedes earlier async work; ended is handled once |
 
-## Difference found after the initial IFrame spike
+## Adapter-boundary correction completed after the initial IFrame spike
 
-Queue semantics are shared, but the first adapter seam leaked transport selection back into `PlaybackController`:
+Queue semantics were always shared, but the first adapter seam leaked transport selection back into `PlaybackController`:
 
 ```text
 PlaybackController
@@ -44,7 +45,7 @@ PlaybackController
 
 The controller also knew that only resolved URLs should be prefetched/invalidated. This did not duplicate queue order, but it violated the desired boundary and made future transport changes capable of creating web-only queue branches.
 
-The minimum correction is:
+The implemented correction is:
 
 ```text
 PlaybackController → PlaybackAdapter.load(track) → actual player
@@ -57,6 +58,17 @@ PlaybackController → PlaybackAdapter.load(track) → actual player
 
 This is an adapter-boundary correction, not a second queue rewrite and not backend cleanup.
 
+## Incremental radio policy
+
+Song Radio is a recommendation source, not the queue authority:
+
+- Explicit tracks remain in `queue` in exact user order. They always outrank `autoQueue` and are excluded from discovery artist occupancy.
+- The UI retains a small generated buffer: normally five to eight ready entries, topped up only at the low-water mark. Search/provider responses are never copied wholesale into the visible queue.
+- Current track plus visible discovery allow at most two entries for one normalized primary artist. The picker avoids an adjacent artist repeat whenever a different eligible candidate exists.
+- ID and canonical-title deduplication spans current, explicit queue, discovery queue, session history, rejected tracks, and the active radio session.
+- The hosted radio API returns at most 15 candidates. It supplements the seed response with up to three deterministic related-artist/song-context searches, merges in stable query order, and applies the same two-track artist cap before returning.
+- Incremental collection carries artist occupancy across provider responses. Failed candidates remove only themselves; failed or empty refills do not clear either queue.
+
 ## Realistic parity test flow
 
 The automated parity flow must exercise the same controller with a fake source-ID/IFrame transport:
@@ -65,10 +77,10 @@ The automated parity flow must exercise the same controller with a fake source-I
 2. Add several explicit tracks without changing current.
 3. Select next and commit the correct explicit index.
 4. Emit natural end twice and prove only one advance occurs.
-5. Start Song Radio and complete at least eight source-ID transitions with refill.
+5. Start Song Radio, inspect at least 15 generated tracks, and complete at least eight source-ID transitions with low-water refill.
 6. Remove and add entries while playback is active without changing actual/current track.
 7. Fail one provider candidate and prove only that candidate disappears.
 8. Exercise repeat-one, repeat-all, shuffle, and a rapid competing play.
 9. At each committed `PLAYING`, assert UI `current.id` equals the fake provider player's active track ID.
 
-Existing tests already cover these rules individually. The adapter refactor should add one end-to-end source-ID flow and keep the entire existing desktop/resolved suite passing.
+Tests cover these rules individually and in end-to-end source-ID flows while retaining the desktop/resolved adapter suite.

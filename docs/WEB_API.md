@@ -30,15 +30,20 @@ The resolve response never includes the raw provider URL or provider headers.
 Tickets authorize only one validated source ID and never outlive the provider source (with a two-hour upper bound). Identical
 resolver/search/radio/lyrics requests are coalesced.
 
-Radio responses are bounded, cached candidate batches rather than continuation
-tokens. The adapter does not own queue semantics. The shared desktop/web queue
-domain and playback controller own the persistent radio session: they keep five
-to eight ready discovery tracks, preserve that buffer across transitions, request
-the original radio context and then the advancing current track as needed, and
-supplement short batches with bounded search candidates. Refills append and
-canonical-deduplicate; they never replace either queue with a raw search response
-or an empty failed response. Hosted playback prefetches up to three candidates in
-explicit-first order. Resolution, prefetch, and refill remain non-mutating:
+Radio responses are cached candidate batches of at most 15 tracks rather than
+continuation tokens. The API supplements the seed provider response with up to
+three deterministic related-artist/song-context searches, merges the responses in
+stable query order, canonical-deduplicates them, and interleaves artists with a
+two-track cap. The adapter does not own queue semantics. The shared desktop/web
+queue domain and playback controller own the persistent radio session: they keep
+five to eight ready discovery tracks, preserve that buffer across transitions,
+request the original radio context and then the advancing current track as needed,
+and supplement short batches with bounded search candidates. Refills append in
+small top-ups; they never replace either queue with a raw search response or an
+empty failed response. Explicit entries retain exact order and always outrank
+radio; they are excluded from generated-stream artist occupancy. Hosted resolved
+playback prefetches up to three candidates in explicit-first order. Resolution,
+prefetch, and refill remain non-mutating:
 `CURRENT`, queue cursor, discovery consumption, metadata, lyrics, and history are
 committed only after the single media element confirms `play()` succeeded. A
 candidate whose resolution or media start fails is removed alone, the buffer is

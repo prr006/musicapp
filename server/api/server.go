@@ -788,7 +788,40 @@ func (s *Server) buildRadio(ctx context.Context, r *http.Request, kind, id strin
 	if err != nil {
 		return model.RadioSession{}, err
 	}
-	tracks := canonicalDedupe(append(searchResult.Songs, searchResult.Videos...), 30)
+	base := append(append([]model.Track{}, searchResult.Songs...), searchResult.Videos...)
+	pool := append([]model.Track{}, base...)
+
+	// A single "artist + title" result is commonly a miniature discography.
+	// Walk a few artists surfaced by that relevant result in parallel, then
+	// interleave the combined pool with a strict per-artist cap. This remains a
+	// data-only recommendation operation; playback never enters this path.
+	queries := radioSupplementalQueries(base, r.URL.Query().Get("artist"), r.URL.Query().Get("title"))
+	type radioSearchResult struct {
+		index  int
+		tracks []model.Track
+	}
+	results := make(chan radioSearchResult, len(queries))
+	for index, supplemental := range queries {
+		go func(index int, supplemental string) {
+			result, searchErr := s.cachedSearch(ctx, supplemental, "songs")
+			if searchErr != nil {
+				results <- radioSearchResult{index: index}
+				return
+			}
+			tracks := append(append([]model.Track{}, result.Songs...), result.Videos...)
+			results <- radioSearchResult{index: index, tracks: tracks}
+		}(index, supplemental)
+	}
+	ordered := make([][]model.Track, len(queries))
+	for range queries {
+		result := <-results
+		ordered[result.index] = result.tracks
+	}
+	for _, tracks := range ordered {
+		pool = append(pool, tracks...)
+	}
+
+	tracks := diverseRadioTracks(pool, 15)
 	return model.RadioSession{
 		ID: fmt.Sprintf("radio_%d", time.Now().UnixNano()), Kind: kind, SeedID: id,
 		Tracks: tracks, GeneratedAt: time.Now().UnixMilli(),
@@ -873,6 +906,108 @@ func (s *Server) buildRecommendations(ctx context.Context, state model.AppState)
 		}
 	}
 	return model.Recommendations{Sections: sections, GeneratedAt: time.Now().UnixMilli()}, nil
+}
+
+const radioArtistLimit = 2
+const radioSupplementalLimit = 3
+
+func radioSupplementalQueries(base []model.Track, seedArtist, seedTitle string) []string {
+	seedKey := radioArtistKey(seedArtist, "seed")
+	seen := map[string]bool{}
+	var queries []string
+	add := func(query string) {
+		query = strings.TrimSpace(query)
+		key := strings.ToLower(query)
+		if query == "" || seen[key] || len(queries) >= radioSupplementalLimit {
+			return
+		}
+		seen[key] = true
+		queries = append(queries, query)
+	}
+	for _, track := range base {
+		artist := primaryArtist(track.Artist)
+		if artist == "" || radioArtistKey(artist, track.ID) == seedKey {
+			continue
+		}
+		add(artist)
+	}
+	if len(queries) < radioSupplementalLimit && seedTitle != "" {
+		add(seedTitle + " song radio")
+	}
+	if len(queries) < radioSupplementalLimit && seedArtist != "" {
+		add(seedArtist + " similar music")
+	}
+	if len(queries) < radioSupplementalLimit && seedArtist != "" {
+		add(seedArtist + " related artists")
+	}
+	return queries
+}
+
+func diverseRadioTracks(input []model.Track, limit int) []model.Track {
+	seenID, seenTitle := map[string]bool{}, map[string]bool{}
+	eligible := make([]model.Track, 0, len(input))
+	for _, track := range input {
+		titleKey := canonical(track.Title)
+		if track.ID == "" || seenID[track.ID] || titleKey != "" && seenTitle[titleKey] {
+			continue
+		}
+		seenID[track.ID] = true
+		if titleKey != "" {
+			seenTitle[titleKey] = true
+		}
+		eligible = append(eligible, track)
+	}
+
+	result := make([]model.Track, 0, minInt(limit, len(eligible)))
+	artistCount := map[string]int{}
+	lastArtist := ""
+	for len(eligible) > 0 && len(result) < limit {
+		selected := -1
+		for index, track := range eligible {
+			artist := radioArtistKey(track.Artist, track.ID)
+			if artistCount[artist] < radioArtistLimit && artist != lastArtist {
+				selected = index
+				break
+			}
+		}
+		if selected < 0 {
+			for index, track := range eligible {
+				if artistCount[radioArtistKey(track.Artist, track.ID)] < radioArtistLimit {
+					selected = index
+					break
+				}
+			}
+		}
+		if selected < 0 {
+			break
+		}
+		track := eligible[selected]
+		eligible = append(eligible[:selected], eligible[selected+1:]...)
+		artist := radioArtistKey(track.Artist, track.ID)
+		artistCount[artist]++
+		lastArtist = artist
+		result = append(result, track)
+	}
+	if result == nil {
+		return []model.Track{}
+	}
+	return result
+}
+
+func primaryArtist(artist string) string {
+	for _, separator := range []string{",", " & ", " feat. ", " ft. ", " featuring ", " with "} {
+		if index := strings.Index(strings.ToLower(artist), separator); index >= 0 {
+			artist = artist[:index]
+		}
+	}
+	return strings.TrimSpace(artist)
+}
+
+func radioArtistKey(artist, fallback string) string {
+	if key := canonical(primaryArtist(artist)); key != "" {
+		return key
+	}
+	return "unknown:" + fallback
 }
 
 func canonicalDedupe(input []model.Track, limit int) []model.Track {

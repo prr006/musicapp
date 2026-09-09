@@ -75,6 +75,11 @@ Manual **Stop never advances** the queue. EOF and manual Next each advance
 exactly once. Previous restarts the track if more than 3 s have elapsed.
 Rapid track switching is safe: A is stopped and its state (metadata, artwork,
 lyrics, progress) cleared before B loads, and A's in-flight results are rejected.
+A browser-only official YouTube IFrame adapter can be validated with
+`?player=youtube`: the real video remains visible in a compact Now Playing
+surface while Melo controls it through the same queue/controller adapter seam.
+That path consumes provider IDs directly and never calls the resolver or stream
+routes; the resolved desktop/default web path and all backend code remain intact.
 
 **Search** — real YouTube Music InnerTube search with a yt-dlp `ytsearch`
 fallback, filters for songs / videos / albums / artists, single click to play,
@@ -85,7 +90,9 @@ Search history is persisted and removable.
 **Queue** — real queue with play next, add to end, remove, drag-free reorder,
 clear upcoming, shuffle upcoming (current track never moves), dedupe. Autoplay
 ("keep playing similar music") is a **separate** auto-queue, clearly labelled and
-switchable off in settings.
+switchable off in settings. It refills five-to-eight prepared tracks incrementally,
+limits one normalized primary artist to two visible generated entries, and never
+counts, reorders, replaces, or delays explicit user additions for diversity.
 
 **Library** — Liked Songs, Songs, Albums, Artists, Playlists, Recently Played.
 Albums and artists are *derived from real track metadata only*; nothing is

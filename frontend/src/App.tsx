@@ -4,7 +4,6 @@ import { NowPlaying } from './components/NowPlaying'
 import { QueuePanel } from './components/QueuePanel'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
-import { YouTubePlayerSurface } from './components/YouTubePlayerSurface'
 import { ErrorState } from './components/States'
 import { useKeyboardShortcuts } from './lib/shortcuts'
 import { useLibraryStore } from './state/libraryStore'
@@ -106,7 +105,6 @@ function ResolverBanner() {
 
 export function App() {
   const queueOpen = useUIStore((s) => s.queueOpen)
-  const nowPlayingOpen = useUIStore((s) => s.nowPlayingOpen)
   const loadError = useLibraryStore((s) => s.loadError)
   const [scrolled, setScrolled] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -125,7 +123,6 @@ export function App() {
       <main className="main">
         <TopBar scrolled={scrolled} />
         <ResolverBanner />
-        <YouTubePlayerSurface />
         <div className="content" ref={contentRef} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 8)}>
           {loadError ? (
             <ErrorState
@@ -141,7 +138,7 @@ export function App() {
           )}
         </div>
         {queueOpen && <QueuePanel />}
-        {nowPlayingOpen && <NowPlaying />}
+        <NowPlaying />
       </main>
       <MiniPlayer />
       <Toasts />

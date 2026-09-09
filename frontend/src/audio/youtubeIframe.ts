@@ -192,7 +192,9 @@ export class YouTubeIframePlaybackAdapter implements PlaybackAdapter {
         height: '100%',
         playerVars: {
           playsinline: 1,
-          controls: 1,
+          controls: 0,
+          disablekb: 1,
+          fs: 0,
           origin: window.location.origin,
         },
         events: {

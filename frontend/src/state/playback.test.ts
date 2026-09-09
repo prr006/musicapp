@@ -4,7 +4,7 @@ import { ResolvedUrlPlaybackAdapter } from '../audio/resolvedUrlAdapter'
 import { setBackend, type Backend } from '../bridge/backend'
 import type { PlayableSource, Track } from '../bridge/types'
 import { defaultSettings } from '../lib/defaults'
-import { normalizeTitle } from '../lib/discovery'
+import { normalizeArtist, normalizeTitle } from '../lib/discovery'
 import { PlaybackController } from './playback'
 import { library, useLibraryStore } from './libraryStore'
 import { useLyricsStore } from './lyricsStore'
@@ -20,7 +20,7 @@ function track(id: string, extra: Partial<Track> = {}): Track {
     source: 'youtube',
     url: `https://youtube.com/watch?v=${id}`,
     title: `Song ${id.toUpperCase()}`,
-    artist: 'Artist',
+    artist: `Artist ${id}`,
     album: 'Album',
     artwork: `http://img/${id}.jpg`,
     duration: 100,
@@ -884,11 +884,20 @@ describe('discovery (endless queue)', () => {
     // One fetch is bounded well below the full pool.
     expect(state().autoQueue.length).toBeLessThanOrEqual(20)
 
-    // Draining one track triggers a top-up, keeping the pipeline ahead.
+    // Stay network-quiet while safely above the low-water mark, then top up
+    // only when three tracks have drained from the eight-item buffer.
+    const initialSearchCalls = vi.mocked(h.backend.search).mock.calls.length
     h.media.endNaturally()
     await vi.waitFor(() => expect(state().current?.id).toBe(pool[0].id))
-    await vi.waitFor(() => expect(state().autoQueue.length).toBeGreaterThanOrEqual(8))
-    expect(state().autoQueue.length).toBeLessThanOrEqual(20)
+    expect(state().autoQueue).toHaveLength(7)
+    expect(vi.mocked(h.backend.search).mock.calls.length).toBe(initialSearchCalls)
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe(pool[1].id))
+    expect(state().autoQueue).toHaveLength(6)
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe(pool[2].id))
+    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(8))
+    expect(vi.mocked(h.backend.search).mock.calls.length).toBeGreaterThan(initialSearchCalls)
   })
 
   it('keeps playing indefinitely while autoplay is on, without immediate repeats', async () => {
@@ -955,13 +964,84 @@ describe('discovery (endless queue)', () => {
     for (let i = 1; i <= 8; i += 1) {
       h.media.endNaturally()
       await vi.waitFor(() => expect(state().current?.id).toBe(initial[i].id))
-      await vi.waitFor(() => expect(state().autoQueue).toHaveLength(8))
+      expect(state().autoQueue.length).toBeGreaterThanOrEqual(5)
+      expect(state().autoQueue.length).toBeLessThanOrEqual(8)
       const canonical = [state().current!, ...state().autoQueue].map((candidate) => normalizeTitle(candidate.title))
       expect(new Set(canonical).size).toBe(canonical.length)
     }
     expect(h.backend.getPlayable).not.toHaveBeenCalled()
     expect(radio).toHaveBeenCalledWith('song', seed.sourceId, seed)
-    expect(radio).toHaveBeenCalledWith('song', initial[1].sourceId, initial[1])
+    expect(radio.mock.calls.some(([, requestedSeed]) => requestedSeed !== seed.sourceId)).toBe(true)
+  })
+
+  it('streams at least fifteen artist-diverse radio recommendations incrementally', async () => {
+    const h = harness('youtube-video-id')
+    useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: false } })
+    const seed = track('seed-radio', { title: 'Seed song', artist: 'Seed Artist' })
+    await h.controller.play(seed)
+    useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: true } })
+
+    const candidates = [
+      ...Array.from({ length: 2 }, (_, index) => track(`seed-${index}`, {
+        title: `Seed Artist song ${index}`,
+        artist: 'Seed Artist',
+      })),
+      ...Array.from({ length: 20 }, (_, index) => track(`related-${index}`, {
+        title: `Related song ${index}`,
+        artist: `Related Artist ${Math.floor(index / 2)}`,
+      })),
+    ]
+    const radio = vi.fn(async (_kind: string, seedId: string) => ({
+      id: 'diverse-radio',
+      kind: 'song' as const,
+      seedId,
+      tracks: candidates,
+      generatedAt: Date.now(),
+    }))
+    h.backend.radio = radio as Backend['radio']
+
+    await h.controller.startRadio('song', seed.sourceId, seed)
+    const observed = new Map<string, Track>()
+    for (let transition = 0; transition < 15; transition += 1) {
+      await vi.waitFor(() => expect(state().status).toBe('playing'))
+      const visible = [state().current, ...state().autoQueue].filter((item): item is Track => item !== null)
+      const counts = new Map<string, number>()
+      for (const item of visible) {
+        const artist = normalizeArtist(item.artist)
+        counts.set(artist, (counts.get(artist) ?? 0) + 1)
+      }
+      expect(Math.max(...counts.values())).toBeLessThanOrEqual(2)
+      let artistRun = 1
+      let longestArtistRun = 1
+      for (let index = 1; index < visible.length; index += 1) {
+        artistRun = normalizeArtist(visible[index].artist) === normalizeArtist(visible[index - 1].artist)
+          ? artistRun + 1
+          : 1
+        longestArtistRun = Math.max(longestArtistRun, artistRun)
+      }
+      expect(longestArtistRun).toBeLessThanOrEqual(2)
+      observed.set(state().current!.id, state().current!)
+      if (transition < 14) {
+        const previousID = state().current!.id
+        h.media.endNaturally()
+        await vi.waitFor(() => {
+          expect(state().current?.id).not.toBe(previousID)
+          expect(state().status).toBe('playing')
+        })
+      }
+    }
+
+    expect(observed.size).toBe(15)
+    const artistCounts = [...observed.values()].reduce((counts, item) => {
+      const artist = normalizeArtist(item.artist)
+      counts.set(artist, (counts.get(artist) ?? 0) + 1)
+      return counts
+    }, new Map<string, number>())
+    expect(artistCounts.size).toBeGreaterThanOrEqual(7)
+    expect(Math.max(...artistCounts.values())).toBeLessThanOrEqual(2)
+    expect(radio.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(radio.mock.calls.length).toBeLessThanOrEqual(6)
+    expect(h.backend.getPlayable).not.toHaveBeenCalled()
   })
 
   it('preserves both queues when starting radio fails', async () => {

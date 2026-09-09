@@ -1822,79 +1822,37 @@ select.input {
   background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 
-/* ---------------- visible YouTube IFrame feasibility spike ---------------- */
+/* ---------------- compact visible YouTube provider surface ---------------- */
 
-.youtube-spike {
-  position: relative;
-  z-index: 90;
-  flex: 0 0 auto;
-  padding: 10px 14px 12px;
-  background: var(--surface-2);
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
+.np-body.has-provider {
+  grid-template-columns: minmax(300px, 440px) 202px minmax(0, 1fr);
+  gap: 32px;
 }
 
-.youtube-spike-head {
-  max-width: 980px;
-  margin: 0 auto 8px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.youtube-spike-copy {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.youtube-spike-copy strong {
-  font-size: 13px;
-}
-
-.youtube-spike-copy span,
-.youtube-spike-events,
-.youtube-spike-tests small {
-  color: var(--text-3);
-  font-size: 11px;
-}
-
-.youtube-spike-copy span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.youtube-spike-events {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-.youtube-spike-events .danger {
-  color: var(--danger);
-}
-
-.youtube-spike-body {
-  display: flex;
-  align-items: stretch;
+.np-body.has-provider.solo {
+  grid-template-columns: minmax(300px, 440px) 202px;
   justify-content: center;
-  gap: 12px;
+  justify-items: stretch;
+}
+
+.youtube-provider {
+  width: 202px;
+  align-self: start;
+  overflow: hidden;
+  background: #050505;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
 }
 
 .youtube-iframe-host {
-  width: min(480px, 100%);
-  height: 270px;
+  display: block;
+  width: 200px;
+  height: 200px;
   min-width: 200px;
   min-height: 200px;
-  flex: 0 1 480px;
   overflow: hidden;
   background: #000;
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-1);
 }
 
 .youtube-iframe-host iframe,
@@ -1905,72 +1863,77 @@ select.input {
   border: 0;
 }
 
-.youtube-spike-tests {
-  width: 176px;
+.youtube-provider-meta {
+  height: 30px;
+  padding: 0 9px;
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-3);
+  background: var(--surface-2);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.youtube-spike-tests .btn {
-  height: 32px;
-  justify-content: flex-start;
-  padding-inline: 10px;
+.youtube-provider-meta span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.youtube-spike-label {
-  color: var(--text-2);
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+.youtube-provider-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: var(--text-3);
 }
 
-@media (max-width: 900px) {
-  .youtube-spike-body {
-    flex-direction: column;
-    align-items: center;
-  }
-
-  .youtube-spike-tests {
-    width: min(480px, 100%);
-    flex-direction: row;
-    flex-wrap: wrap;
-  }
-
-  .youtube-spike-tests .btn {
-    flex: 1 1 auto;
-  }
-
-  .youtube-spike-label,
-  .youtube-spike-tests small {
-    flex: 0 0 100%;
-  }
+.youtube-provider-dot.playing {
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 15%, transparent);
 }
 
-@media (max-width: 720px) {
-  .youtube-spike {
-    padding: 6px 8px 8px;
-  }
-
-  .youtube-spike-head {
-    margin-bottom: 6px;
-  }
-
-  .youtube-spike-events span:not(:first-child) {
-    display: none;
-  }
-
-  .youtube-iframe-host {
-    width: min(100%, 480px);
-    height: max(200px, min(270px, 56.25vw));
-  }
+.youtube-provider-dot.loading {
+  background: var(--accent);
 }
 
-@media (max-height: 700px) {
-  .youtube-iframe-host {
-    height: 200px;
+.youtube-provider-dot.error {
+  background: var(--danger);
+}
+
+/* Keep the same YT.Player mounted when expanded Now Playing is closed. The
+   compact dock is the minimum compliant 200x200 viewport, not a hidden audio
+   iframe; MELO's persistent bottom bar remains the only transport control set. */
+.now-playing.provider-compact {
+  inset: auto 16px 16px auto;
+  width: 220px;
+  height: 250px;
+  padding: 8px;
+  display: block;
+  overflow: visible;
+  z-index: 90;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  animation: none;
+}
+
+.now-playing.provider-compact .np-body {
+  display: block;
+  padding: 0;
+  overflow: visible;
+}
+
+.now-playing.provider-compact .youtube-provider {
+  margin: 0;
+}
+
+@media (min-width: 721px) {
+  .now-playing.provider-compact.queue-open {
+    right: 396px;
   }
 }
 
@@ -1979,6 +1942,13 @@ select.input {
     grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
     gap: 32px;
     padding: 12px 32px 32px;
+  }
+  .np-body.has-provider {
+    grid-template-columns: minmax(260px, 360px) 202px minmax(0, 1fr);
+    gap: 24px;
+  }
+  .np-body.has-provider.solo {
+    grid-template-columns: minmax(260px, 360px) 202px;
   }
   .track-row {
     grid-template-columns: 28px 44px minmax(0, 3fr) auto;
@@ -2002,8 +1972,10 @@ select.input {
   .playlist-link {
     justify-content: center;
   }
-  .np-body {
-    grid-template-columns: minmax(0, 1fr);
+  .np-body,
+  .np-body.has-provider,
+  .np-body.has-provider.solo {
+    grid-template-columns: minmax(0, 1fr) 202px;
   }
   .lyrics-pane {
     display: none;
@@ -2226,6 +2198,11 @@ select.input {
     position: fixed;
     inset: 0 0 calc(var(--player-h) + 60px + env(safe-area-inset-bottom));
     z-index: 250;
+  }
+
+  .now-playing.provider-compact {
+    inset: auto 10px calc(var(--player-h) + 60px + env(safe-area-inset-bottom) + 10px) auto;
+    z-index: 90;
   }
 
   .np-head {

@@ -19,7 +19,7 @@ function track(id: string, title = `Song ${id}`): Track {
     source: 'youtube',
     url: `https://youtube.com/watch?v=${id}`,
     title,
-    artist: 'Artist',
+    artist: `Artist ${id}`,
     album: 'Album',
     artwork: '',
     duration: 180,
@@ -111,6 +111,25 @@ describe('canonical desktop/web queue engine', () => {
     ], block)
 
     expect(result.added.map((candidate) => candidate.id)).toEqual(['yt:fresh'])
+  })
+
+  it('applies diversity only to discovery and never edits same-artist explicit entries', () => {
+    const current = track('current', 'Current')
+    const explicit = [
+      { ...track('manual-a', 'Manual A'), artist: current.artist },
+      { ...track('manual-b', 'Manual B'), artist: current.artist },
+      { ...track('manual-c', 'Manual C'), artist: current.artist },
+    ]
+    const queue = [current, ...explicit]
+    const block = buildDiscoveryBlock({ state: { current, queue, autoQueue: [] } })
+    const result = appendDiscovery([], [
+      { ...track('radio-a', 'Radio A'), artist: current.artist },
+      { ...track('radio-b', 'Radio B'), artist: current.artist },
+      track('related', 'Related'),
+    ], block)
+
+    expect(queue).toEqual([current, ...explicit])
+    expect(result.added.map((candidate) => candidate.id)).toEqual(['yt:related', 'yt:radio-a'])
   })
 
   it('uses identical decisions for equivalent desktop and web queue state', () => {

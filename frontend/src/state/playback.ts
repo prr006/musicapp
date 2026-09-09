@@ -23,7 +23,7 @@ import {
   prefetchCandidates, reconcileDiscovery, removeCandidate,
   selectNextTrack, type QueueSelection,
 } from '../domain/queueEngine'
-import { normalizeTitle } from '../lib/discovery'
+import { normalizeArtist, normalizeTitle } from '../lib/discovery'
 import { dedupeTracks, moveItem, shuffleUpcoming } from '../lib/queue'
 import { library, useLibraryStore } from './libraryStore'
 import { lyrics } from './lyricsStore'
@@ -762,8 +762,8 @@ export class PlaybackController {
   /**
    * Keeps several upcoming discovery tracks ahead of the listener. It is the
    * background continuation that makes playback endless: when the discovery
-   * count drops below DISCOVERY_TARGET it fetches more, anchored on the current
-   * track (artist first, then the normalized title) so the radio drifts as
+   * count reaches DISCOVERY_REFILL_THRESHOLD it tops back up to DISCOVERY_TARGET,
+   * anchored on the current track (artist first, then normalized title) so radio drifts as
    * playback moves on — it never reuses the original search-results array.
    *
    * Concurrency and staleness are guarded: only one fetch runs at a time
@@ -774,7 +774,11 @@ export class PlaybackController {
   private refillDiscovery(force = false): Promise<void> {
     if (!useLibraryStore.getState().settings.autoplay) return Promise.resolve()
     const state = playerState()
-    if (!state.current || state.autoQueue.length >= DISCOVERY_TARGET) return Promise.resolve()
+    if (
+      !state.current
+      || state.autoQueue.length >= DISCOVERY_TARGET
+      || (!force && state.autoQueue.length > DISCOVERY_REFILL_THRESHOLD)
+    ) return Promise.resolve()
 
     const anchorID = state.current.id
     if (!force && this.lastDiscoveryAnchor === anchorID && this.discoveryRetryAt > Date.now()) {
@@ -785,9 +789,12 @@ export class PlaybackController {
       const pending = this.discoveryPromise
       return pending.then(() => {
         const latest = playerState()
-        if (!useLibraryStore.getState().settings.autoplay || !latest.current || latest.autoQueue.length >= DISCOVERY_TARGET) {
-          return
-        }
+        if (
+          !useLibraryStore.getState().settings.autoplay
+          || !latest.current
+          || latest.autoQueue.length >= DISCOVERY_TARGET
+          || (!force && latest.autoQueue.length > DISCOVERY_REFILL_THRESHOLD)
+        ) return
         // A request for A may finish after playback advances to B. Append any
         // useful A results, then always give B its own anchored top-up.
         if (latest.current.id !== anchorID || this.lastDiscoveryAnchor !== latest.current.id) {
@@ -872,6 +879,9 @@ export class PlaybackController {
         block.ids.add(track.id)
         const title = normalizeTitle(track.title)
         if (title) block.titles.add(title)
+        const artist = normalizeArtist(track.artist) || `unknown:${track.id}`
+        block.artistCounts?.set(artist, (block.artistCounts.get(artist) ?? 0) + 1)
+        block.lastArtist = artist
       }
     }
 
@@ -898,7 +908,11 @@ export class PlaybackController {
     // Search results themselves never become or replace either queue.
     if (candidates.length < needed) {
       const artist = (current.artist || '').split(',')[0].trim()
-      const queries = [...new Set([`${artist} ${current.title}`.trim(), artist].filter(Boolean))]
+      const queries = [...new Set([
+        `${artist} ${current.title}`.trim(),
+        `${current.title} song radio`.trim(),
+        artist ? `${artist} similar music` : '',
+      ].filter(Boolean))]
       for (const query of queries) {
         if (candidates.length >= needed) break
         try {

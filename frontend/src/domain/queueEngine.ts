@@ -1,5 +1,5 @@
 import type { PlayRecord, RepeatMode, Track } from '../bridge/types'
-import { normalizeTitle, pickDiscoveryCandidates, type DiscoveryBlock } from '../lib/discovery'
+import { normalizeArtist, normalizeTitle, pickDiscoveryCandidates, type DiscoveryBlock } from '../lib/discovery'
 import { dedupeTracks } from '../lib/queue'
 
 /**
@@ -78,6 +78,8 @@ export function prefetchCandidates(state: QueueStateLike, autoplay: boolean, lim
 export function buildDiscoveryBlock(context: DiscoveryContext): DiscoveryBlock {
   const ids = new Set<string>()
   const titles = new Set<string>()
+  const artistCounts = new Map<string, number>()
+  let lastArtist = ''
   const addTrack = (track?: Track | null) => {
     if (!track) return
     if (track.id) ids.add(track.id)
@@ -90,11 +92,20 @@ export function buildDiscoveryBlock(context: DiscoveryContext): DiscoveryBlock {
   if (context.includeAutoplay !== false) {
     for (const track of context.state.autoQueue) addTrack(track)
   }
+
+  // Diversity applies only to provider-generated playback, never to the user's
+  // explicit queue. Current + the prepared discovery prefix define occupancy.
+  for (const track of [context.state.current, ...(context.includeAutoplay === false ? [] : context.state.autoQueue)]) {
+    if (!track) continue
+    const artist = normalizeArtist(track.artist) || `unknown:${track.id}`
+    artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1)
+    lastArtist = artist
+  }
   for (const entry of (context.history ?? []).slice(0, DISCOVERY_RECENT_HISTORY)) addTrack(entry.track)
   for (const track of (context.recent ?? []).slice(0, DISCOVERY_RECENT_HISTORY)) addTrack(track)
   for (const id of context.radioSeen?.ids ?? []) ids.add(id)
   for (const title of context.radioSeen?.titles ?? []) titles.add(title)
-  return { ids, titles }
+  return { ids, titles, artistCounts, lastArtist }
 }
 
 /** Incremental append: the existing prefix is never replaced or reordered. */
