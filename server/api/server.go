@@ -924,21 +924,31 @@ func radioSupplementalQueries(base []model.Track, seedArtist, seedTitle string) 
 		seen[key] = true
 		queries = append(queries, query)
 	}
+	pivotLimit := radioSupplementalLimit
+	if seedArtist != "" {
+		// Reserve two searches for stable seed context. Provider result credits
+		// often include cover uploaders, so blindly walking every apparent artist
+		// can drift far away from the requested song.
+		pivotLimit = 1
+	}
 	for _, track := range base {
 		artist := primaryArtist(track.Artist)
 		if artist == "" || radioArtistKey(artist, track.ID) == seedKey {
 			continue
 		}
 		add(artist)
-	}
-	if len(queries) < radioSupplementalLimit && seedTitle != "" {
-		add(seedTitle + " song radio")
+		if len(queries) >= pivotLimit {
+			break
+		}
 	}
 	if len(queries) < radioSupplementalLimit && seedArtist != "" {
 		add(seedArtist + " similar music")
 	}
 	if len(queries) < radioSupplementalLimit && seedArtist != "" {
 		add(seedArtist + " related artists")
+	}
+	if len(queries) < radioSupplementalLimit && seedTitle != "" {
+		add(seedTitle + " song radio")
 	}
 	return queries
 }
@@ -947,7 +957,7 @@ func diverseRadioTracks(input []model.Track, limit int) []model.Track {
 	seenID, seenTitle := map[string]bool{}, map[string]bool{}
 	eligible := make([]model.Track, 0, len(input))
 	for _, track := range input {
-		titleKey := canonical(track.Title)
+		titleKey := radioTitleKey(track.Title)
 		if track.ID == "" || seenID[track.ID] || titleKey != "" && seenTitle[titleKey] {
 			continue
 		}
@@ -992,6 +1002,16 @@ func diverseRadioTracks(input []model.Track, limit int) []model.Track {
 		return []model.Track{}
 	}
 	return result
+}
+
+func radioTitleKey(title string) string {
+	cut := len(title)
+	for _, marker := range []string{"(", "[", " - ", " – ", " — ", " | "} {
+		if index := strings.Index(title, marker); index >= 0 && index < cut {
+			cut = index
+		}
+	}
+	return canonical(strings.TrimSpace(title[:cut]))
 }
 
 func primaryArtist(artist string) string {

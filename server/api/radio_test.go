@@ -51,7 +51,7 @@ func TestDiverseRadioTracksCapsAndSpacesArtistsAcrossFifteenResults(t *testing.T
 	}
 }
 
-func TestRadioSupplementalQueriesWalkRelatedArtistsBeforeGenericSearches(t *testing.T) {
+func TestRadioSupplementalQueriesReserveSeedContextAfterOneRelatedArtist(t *testing.T) {
 	base := []model.Track{
 		radioTrack("seed0000001", "Believer", "Imagine Dragons"),
 		radioTrack("seed0000002", "Thunder", "Imagine Dragons"),
@@ -62,13 +62,13 @@ func TestRadioSupplementalQueriesWalkRelatedArtistsBeforeGenericSearches(t *test
 	}
 
 	got := radioSupplementalQueries(base, "Imagine Dragons", "Believer")
-	want := []string{"Kaskade", "OneRepublic", "X Ambassadors"}
+	want := []string{"Kaskade", "Imagine Dragons similar music", "Imagine Dragons related artists"}
 	if len(got) != len(want) {
 		t.Fatalf("unexpected query count: got %v want %v", got, want)
 	}
 	for index := range want {
 		if got[index] != want[index] {
-			t.Fatalf("unexpected pivot order: got %v want %v", got, want)
+			t.Fatalf("unexpected related/context order: got %v want %v", got, want)
 		}
 	}
 }
@@ -81,9 +81,9 @@ func TestRadioSupplementalQueriesFillThreeContextSearchesWithoutPivots(t *testin
 
 	got := radioSupplementalQueries(base, "Imagine Dragons", "Believer")
 	want := []string{
-		"Believer song radio",
 		"Imagine Dragons similar music",
 		"Imagine Dragons related artists",
+		"Believer song radio",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("unexpected query count: got %v want %v", got, want)
@@ -99,6 +99,8 @@ func TestDiverseRadioTracksKeepsCanonicalSongAndIDDeduplication(t *testing.T) {
 	input := []model.Track{
 		radioTrack("duplicate01", "Believer", "Imagine Dragons"),
 		radioTrack("duplicate02", "Believer", "Cover Artist"),
+		radioTrack("duplicate03", "Believer (Kaskade Remix)", "Kaskade"),
+		radioTrack("duplicate04", "Believer - Imagine Dragons Cover", "Cover Artist"),
 		radioTrack("duplicate01", "Different metadata", "Other Artist"),
 		radioTrack("fresh000001", "Fresh Song", "Related Artist"),
 	}
