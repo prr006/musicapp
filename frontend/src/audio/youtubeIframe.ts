@@ -1,3 +1,4 @@
+import type { Track } from '../bridge/types'
 import type { PlaybackAdapter } from './adapter'
 import type { EngineEvent, EngineSnapshot, EngineStatus } from './engine'
 
@@ -147,7 +148,6 @@ interface PendingLoad {
  * the existing MELO engine event model.
  */
 export class YouTubeIframePlaybackAdapter implements PlaybackAdapter {
-  readonly sourceMode = 'youtube-video-id' as const
   private listeners = new Set<Listener>()
   private generation = 0
   private mountGeneration = 0
@@ -167,6 +167,7 @@ export class YouTubeIframePlaybackAdapter implements PlaybackAdapter {
   private positionTimer: ReturnType<typeof setInterval> | null = null
   private pending: PendingLoad | null = null
   private endedForCycle = false
+  private playingForCycle = false
 
   constructor(private readonly loadAPI: () => Promise<YTNamespace> = loadYouTubeIframeAPI) {}
 
@@ -301,6 +302,7 @@ export class YouTubeIframePlaybackAdapter implements PlaybackAdapter {
       case states.PLAYING:
         this.error = null
         this.endedForCycle = false
+        this.playingForCycle = true
         this.setStatus('playing')
         this.completePending(true)
         break
@@ -314,8 +316,9 @@ export class YouTubeIframePlaybackAdapter implements PlaybackAdapter {
         }
         break
       case states.ENDED: {
-        if (this.endedForCycle) break
+        if (this.endedForCycle || !this.playingForCycle) break
         this.endedForCycle = true
+        this.playingForCycle = false
         const trackId = this.trackId
         this.setStatus('paused')
         this.emit({ type: 'ended', trackId })
@@ -400,6 +403,7 @@ export class YouTubeIframePlaybackAdapter implements PlaybackAdapter {
     }
     this.trackId = trackId
     this.endedForCycle = false
+    this.playingForCycle = false
     this.position = 0
     this.duration = 0
     this.buffered = 0
@@ -409,8 +413,9 @@ export class YouTubeIframePlaybackAdapter implements PlaybackAdapter {
     return this.generation
   }
 
-  async load(token: number, videoId: string, startAt = 0, autoplay = true): Promise<boolean> {
+  async load(token: number, track: Track, startAt = 0, autoplay = true): Promise<boolean> {
     if (!this.isCurrent(token)) return false
+    const videoId = track.sourceId || track.id
     if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) {
       this.error = 'YouTube rejected this video ID.'
       return false
@@ -477,6 +482,7 @@ export class YouTubeIframePlaybackAdapter implements PlaybackAdapter {
     this.trackId = null
     this.videoId = null
     this.endedForCycle = false
+    this.playingForCycle = false
     try {
       this.player?.stopVideo()
     } catch {
@@ -540,5 +546,5 @@ export function createYouTubeIframeAdapter(): YouTubeIframePlaybackAdapter {
 }
 
 export function isYouTubeIframeAdapter(adapter: PlaybackAdapter): adapter is YouTubeIframePlaybackAdapter {
-  return adapter.sourceMode === 'youtube-video-id'
+  return adapter instanceof YouTubeIframePlaybackAdapter
 }

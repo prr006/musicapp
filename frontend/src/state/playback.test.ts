@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PlaybackEngine } from '../audio/engine'
+import { ResolvedUrlPlaybackAdapter } from '../audio/resolvedUrlAdapter'
 import { setBackend, type Backend } from '../bridge/backend'
 import type { PlayableSource, Track } from '../bridge/types'
 import { defaultSettings } from '../lib/defaults'
@@ -38,12 +39,9 @@ interface Harness {
   lyricsDelays: Map<string, number>
 }
 
-function harness(sourceMode: 'resolved-url' | 'youtube-video-id' = 'resolved-url'): Harness {
+function harness(transport: 'resolved-url' | 'youtube-video-id' = 'resolved-url'): Harness {
   const media = new FakeMedia()
   const engine = new PlaybackEngine(media.asElement())
-  if (sourceMode === 'youtube-video-id') {
-    Object.defineProperty(engine, 'sourceMode', { value: sourceMode })
-  }
   const resolveDelays = new Map<string, number>()
   const resolveErrors = new Map<string, string>()
   const lyricsDelays = new Map<string, number>()
@@ -102,7 +100,13 @@ function harness(sourceMode: 'resolved-url' | 'youtube-video-id' = 'resolved-url
   } as unknown as Backend
 
   setBackend(be)
-  return { media, controller: new PlaybackController(engine), backend: be, resolveDelays, resolveErrors, recorded, lyricsDelays }
+  const adapter = transport === 'youtube-video-id'
+    ? new ResolvedUrlPlaybackAdapter(engine, async (t) => ({
+        trackId: t.id, url: t.sourceId, mimeType: 'video/youtube',
+        duration: t.duration, bitrate: 0, expiresAt: 0,
+      }))
+    : new ResolvedUrlPlaybackAdapter(engine)
+  return { media, controller: new PlaybackController(adapter), backend: be, resolveDelays, resolveErrors, recorded, lyricsDelays }
 }
 
 const state = () => usePlayerStore.getState()

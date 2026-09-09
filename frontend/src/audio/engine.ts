@@ -10,8 +10,6 @@
  * A -> B -> C switch can never resurrect an older track.
  */
 
-import type { PlaybackAdapter } from './adapter'
-
 export type EngineStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
 
 export interface EngineSnapshot {
@@ -56,8 +54,7 @@ function mediaErrorMessage(el: HTMLAudioElement): string {
   }
 }
 
-export class PlaybackEngine implements PlaybackAdapter {
-  readonly sourceMode = 'resolved-url' as const
+export class PlaybackEngine {
   readonly el: HTMLAudioElement
   private listeners = new Set<Listener>()
   private generation = 0

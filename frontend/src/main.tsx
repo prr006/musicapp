@@ -33,9 +33,9 @@ async function boot(): Promise<void> {
     applyTheme()
 
     const settings = state.settings
-    playback.engine.setVolume(settings.volume)
-    playback.engine.setMuted(settings.muted)
-    playback.engine.setRate(settings.defaultSpeed)
+    playback.adapter.setVolume(settings.volume)
+    playback.adapter.setMuted(settings.muted)
+    playback.adapter.setRate(settings.defaultSpeed)
 
     if (settings.restoreSession && state.session) {
       await playback.restoreSession(state.session, settings.resumeOnStartup)

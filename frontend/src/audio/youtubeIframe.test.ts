@@ -1,4 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setBackend, type Backend } from '../bridge/backend'
+import type { Track } from '../bridge/types'
+import { defaultSettings } from '../lib/defaults'
+import { useLibraryStore } from '../state/libraryStore'
+import { useLyricsStore } from '../state/lyricsStore'
+import { PlaybackController } from '../state/playback'
+import { usePlayerStore } from '../state/playerStore'
+import { positionChannel } from '../state/positionChannel'
+import { useUIStore } from '../state/uiStore'
 import type { EngineEvent } from './engine'
 import { YouTubeIframePlaybackAdapter, type YTNamespace } from './youtubeIframe'
 
@@ -69,6 +78,14 @@ const fakeAPI: YTNamespace = {
   PlayerState: states,
 }
 
+function track(sourceId: string, extra: Partial<Track> = {}): Track {
+  return {
+    id: `yt:${sourceId}`, sourceId, source: 'youtube', url: '', title: sourceId,
+    artist: 'Artist', album: 'Album', artwork: '', duration: 240, explicit: false,
+    ...extra,
+  }
+}
+
 async function flushPromises(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
@@ -82,6 +99,43 @@ async function mountedAdapter() {
   await Promise.resolve()
   await Promise.resolve()
   return { adapter, host, player: FakePlayer.latest, unmount }
+}
+
+function queueBackend(radioTracks: Track[]): Backend {
+  return {
+    isNative: false,
+    getState: vi.fn(),
+    getDiagnostics: vi.fn(),
+    search: vi.fn().mockResolvedValue({ query: '', songs: [], videos: [], albums: [], artists: [], provider: 'test' }),
+    radio: vi.fn(async (_kind, seedId) => ({
+      id: 'iframe-radio', kind: 'song', seedId, tracks: radioTracks, generatedAt: Date.now(),
+    })),
+    getPlayable: vi.fn().mockRejectedValue(new Error('resolver must not be called by the IFrame adapter')),
+    getLyrics: vi.fn(async ({ trackId }) => ({
+      trackId, source: 'test', synced: false, lines: [], plain: '', instrumental: false,
+      offset: 0, matchedTitle: '', matchedArtist: '',
+    })),
+    saveSettings: vi.fn(async (settings) => settings),
+    setLiked: vi.fn(async () => []),
+    recordPlay: vi.fn(async () => []),
+    clearHistory: vi.fn(async () => {}),
+    addSearchTerm: vi.fn(async () => []),
+    removeSearchTerm: vi.fn(async () => []),
+    clearSearchHistory: vi.fn(async () => {}),
+    libraryTracks: vi.fn(async () => []),
+    saveSession: vi.fn(async () => {}),
+    clearSession: vi.fn(async () => {}),
+    createPlaylist: vi.fn(),
+    renamePlaylist: vi.fn(),
+    deletePlaylist: vi.fn(),
+    addTracksToPlaylist: vi.fn(),
+    removeTrackFromPlaylist: vi.fn(),
+    reorderPlaylist: vi.fn(),
+    duplicatePlaylist: vi.fn(),
+    installResolver: vi.fn(),
+    setNowPlaying: vi.fn(async () => {}),
+    on: vi.fn(() => () => {}),
+  } as unknown as Backend
 }
 
 describe('YouTubeIframePlaybackAdapter', () => {
@@ -100,7 +154,7 @@ describe('YouTubeIframePlaybackAdapter', () => {
     adapter.subscribe((event) => events.push(event))
 
     const token = adapter.beginLoad('track:believer')
-    const loaded = adapter.load(token, 'Kx7B-XvmFtE', 12)
+    const loaded = adapter.load(token, track('Kx7B-XvmFtE'), 12)
     await flushPromises()
     expect(player.loadVideoById).toHaveBeenCalledWith({ videoId: 'Kx7B-XvmFtE', startSeconds: 12 })
     expect(host.querySelector('.youtube-iframe-target')).not.toBeNull()
@@ -120,7 +174,7 @@ describe('YouTubeIframePlaybackAdapter', () => {
   it('maps play, pause, seek, volume, mute and playback rate to YT.Player', async () => {
     const { adapter, player } = await mountedAdapter()
     const token = adapter.beginLoad('track:thunder')
-    const loaded = adapter.load(token, '9ssQKlLxBdQ')
+    const loaded = adapter.load(token, track('9ssQKlLxBdQ'))
     await flushPromises()
     player.state(states.PLAYING)
     await loaded
@@ -150,7 +204,7 @@ describe('YouTubeIframePlaybackAdapter', () => {
       if (event.type === 'ended') ended(event.trackId)
     })
     const token = adapter.beginLoad('track:demons')
-    const loaded = adapter.load(token, 'J1aVXLHQRd4')
+    const loaded = adapter.load(token, track('J1aVXLHQRd4'))
     await flushPromises()
     player.state(states.PLAYING)
     await loaded
@@ -172,7 +226,7 @@ describe('YouTubeIframePlaybackAdapter', () => {
     adapter.subscribe((event) => events.push(event))
     const token = adapter.beginLoad('track:believer')
     let settled = false
-    const loaded = adapter.load(token, 'Kx7B-XvmFtE').then((value) => {
+    const loaded = adapter.load(token, track('Kx7B-XvmFtE')).then((value) => {
       settled = true
       return value
     })
@@ -202,7 +256,7 @@ describe('YouTubeIframePlaybackAdapter', () => {
       if (event.type === 'error') errors.push(event)
     })
     const token = adapter.beginLoad('track:error')
-    const loaded = adapter.load(token, 'Kx7B-XvmFtE')
+    const loaded = adapter.load(token, track('Kx7B-XvmFtE'))
     await flushPromises()
     player.error(code)
 
@@ -214,11 +268,11 @@ describe('YouTubeIframePlaybackAdapter', () => {
   it('cancels stale loads and ignores late state events from a rapid track switch', async () => {
     const { adapter, player } = await mountedAdapter()
     const firstToken = adapter.beginLoad('track:first')
-    const first = adapter.load(firstToken, 'Kx7B-XvmFtE')
+    const first = adapter.load(firstToken, track('Kx7B-XvmFtE'))
     await flushPromises()
     const secondToken = adapter.beginLoad('track:second')
     await expect(first).resolves.toBe(false)
-    const second = adapter.load(secondToken, '9ssQKlLxBdQ')
+    const second = adapter.load(secondToken, track('9ssQKlLxBdQ'))
     await flushPromises()
 
     player.videoId = 'Kx7B-XvmFtE'
@@ -234,11 +288,135 @@ describe('YouTubeIframePlaybackAdapter', () => {
   it('cues without autoplay and commits only after CUED', async () => {
     const { adapter, player } = await mountedAdapter()
     const token = adapter.beginLoad('track:cued')
-    const loaded = adapter.load(token, 'Kx7B-XvmFtE', 8, false)
+    const loaded = adapter.load(token, track('Kx7B-XvmFtE'), 8, false)
     await flushPromises()
     expect(player.cueVideoById).toHaveBeenCalledWith({ videoId: 'Kx7B-XvmFtE', startSeconds: 8 })
     player.state(states.CUED)
     await expect(loaded).resolves.toBe(true)
     expect(adapter.snapshot().status).toBe('paused')
+  })
+
+  it('keeps the canonical queue and fake YT.Player aligned through a realistic mutable flow', async () => {
+    const { adapter, player } = await mountedAdapter()
+    const seed = track('Kx7B-XvmFtE', { title: 'Believer' })
+    const thunder = track('9ssQKlLxBdQ', { title: 'Thunder' })
+    const demons = track('J1aVXLHQRd4', { title: 'Demons' })
+    const radioactive = track('3Yb2-CWjrME', { title: 'Radioactive' })
+    const later = track('n5lmg1MX_sE', { title: 'Believer Remix' })
+    const radioTracks = [
+      radioactive,
+      track('gOsM-DYAEhY', { title: 'Whatever It Takes' }),
+      track('0I647GU3Jsc', { title: 'Natural' }),
+      track('I-QfPUz1es8', { title: 'Bad Liar' }),
+      track('TO-_3tck2tg', { title: 'Bones' }),
+      track('D9G1VOjN_84', { title: 'Enemy' }),
+      track('7j7twuejxvU', { title: 'Sharks' }),
+      track('w5tWYmIOWGk', { title: 'On Top of the World' }),
+      track('k3zimSRKqNw', { title: 'Follow You' }),
+    ]
+    const be = queueBackend(radioTracks)
+    setBackend(be)
+    usePlayerStore.setState({
+      queue: [], autoQueue: [], index: -1, current: null, status: 'idle', error: null,
+      shuffle: false, repeat: 'off', volume: 0.9, muted: false, speed: 1,
+      playingFrom: 'queue', contextLabel: '', sleepTimerEndsAt: null,
+    })
+    useLibraryStore.setState({
+      ...useLibraryStore.getState(), settings: { ...defaultSettings(), autoplay: false },
+      liked: [], history: [], ready: true, loadError: null,
+    })
+    useLyricsStore.setState({ trackId: null, status: 'idle', result: null, error: null })
+    useUIStore.setState({ toasts: [] })
+    positionChannel.reset()
+    const controller = new PlaybackController(adapter)
+    const state = () => usePlayerStore.getState()
+    const expectPlayerMatchesUI = () => {
+      expect(state().current?.sourceId).toBe(player.videoId)
+    }
+    const confirm = async (action: Promise<void>, expected: Track) => {
+      await vi.waitFor(() => expect(player.videoId).toBe(expected.sourceId))
+      // The queue/current transaction is still provisional until provider PLAYING.
+      player.state(states.PLAYING)
+      await action
+      await vi.waitFor(() => expect(state().current?.id).toBe(expected.id))
+      expectPlayerMatchesUI()
+    }
+
+    try {
+      await confirm(controller.play(seed), seed)
+      controller.addToQueue([thunder, demons, radioactive])
+      expect(state().current?.id).toBe(seed.id)
+      expectPlayerMatchesUI()
+
+      await confirm(controller.next(), thunder)
+      expect(state()).toMatchObject({ index: 1, playingFrom: 'queue' })
+
+      player.state(states.ENDED)
+      player.state(states.ENDED)
+      await vi.waitFor(() => expect(player.videoId).toBe(demons.sourceId))
+      // A duplicate old ENDED cannot skip the newly loading track.
+      expect(state().current?.id).toBe(thunder.id)
+      player.state(states.PLAYING)
+      await vi.waitFor(() => expect(state().current?.id).toBe(demons.id))
+      expect(state().index).toBe(2)
+      expectPlayerMatchesUI()
+
+      controller.removeFromQueue(3)
+      controller.addToQueue([later])
+      expect(state().current?.id).toBe(demons.id)
+      expect(state().queue.map((candidate) => candidate.id)).toEqual([seed.id, thunder.id, demons.id, later.id])
+      expectPlayerMatchesUI()
+      controller.clearUpcoming()
+
+      useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: true } })
+      await confirm(controller.startRadio('song', seed.sourceId, seed), radioTracks[0])
+      expect(state().playingFrom).toBe('autoplay')
+      for (const expected of radioTracks.slice(1, 4)) {
+        player.state(states.ENDED)
+        await confirm(Promise.resolve(), expected)
+      }
+
+      const beforeMutation = state().current
+      controller.removeFromAutoQueue(1)
+      controller.addToQueue([later])
+      expect(state().current).toEqual(beforeMutation)
+      expectPlayerMatchesUI()
+
+      player.state(states.ENDED)
+      await confirm(Promise.resolve(), later)
+      expect(state().playingFrom).toBe('queue')
+
+      const unavailable = track('YI1XZfBTWGc', { title: 'Unavailable embed' })
+      const fallback = track('6I2y_UbVz4U', { title: 'Fallback candidate' })
+      controller.addToQueue([unavailable, fallback])
+      player.state(states.ENDED)
+      await vi.waitFor(() => expect(player.videoId).toBe(unavailable.sourceId))
+      player.error(101)
+      await vi.waitFor(() => expect(player.videoId).toBe(fallback.sourceId))
+      player.state(states.PLAYING)
+      await vi.waitFor(() => expect(state().current?.id).toBe(fallback.id))
+      expect(state().queue.map((candidate) => candidate.id)).not.toContain(unavailable.id)
+      expectPlayerMatchesUI()
+
+      controller.setRepeat('one')
+      player.currentTime = 42
+      player.state(states.ENDED)
+      expect(player.seekTo).toHaveBeenLastCalledWith(0, true)
+      expect(player.playVideo).toHaveBeenCalled()
+      player.state(states.ENDED)
+      expect(state().current?.id).toBe(fallback.id)
+      player.state(states.PLAYING)
+      expectPlayerMatchesUI()
+
+      const rapidA = track('ktvTqknDobU', { title: 'Rapid A' })
+      const rapidB = track('D9G1VOjN_84', { title: 'Rapid B' })
+      const first = controller.play(rapidA)
+      const second = controller.play(rapidB)
+      await expect(first).resolves.toBeUndefined()
+      await confirm(second, rapidB)
+      expect(be.getPlayable).not.toHaveBeenCalled()
+    } finally {
+      adapter.dispose()
+    }
   })
 })

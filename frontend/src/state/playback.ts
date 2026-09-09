@@ -2,19 +2,19 @@
  * The playback controller: the only place that decides what plays next.
  *
  * Responsibilities
- *  - own the engine <-> application-state wiring
+ *  - own the PlaybackAdapter <-> application-state wiring
  *  - guarantee that a track change clears every trace of the previous track
  *  - implement repeat / shuffle / autoplay rules exactly once each
  *
- * Stale-result protection: every play request takes a token from the engine.
+ * Stale-result protection: every play request takes a token from the adapter.
  * A resolver answer, a lyrics answer or a media event is only applied when its
  * token is still current, so "play A then immediately play B" can never end
  * with A's audio, metadata, artwork or lyrics attached to B.
  */
 import type { PlaybackAdapter } from '../audio/adapter'
-import { PlaybackEngine, type EngineEvent } from '../audio/engine'
+import { createPlaybackAdapter } from '../audio/createAdapter'
+import type { EngineEvent } from '../audio/engine'
 import { BrowserMediaSession } from '../audio/mediaSession'
-import { createYouTubeIframeAdapter, youtubeIframeSpikeEnabled } from '../audio/youtubeIframe'
 import { backend, type RadioKind } from '../bridge/backend'
 import type { RepeatMode, Track } from '../bridge/types'
 import {
@@ -54,7 +54,7 @@ interface ActiveRadio {
 }
 
 export class PlaybackController {
-  readonly engine: PlaybackAdapter
+  readonly adapter: PlaybackAdapter
   private sessionTimer: ReturnType<typeof setTimeout> | null = null
   private recordedForToken = new Set<number>()
   private discoveryGen = 0
@@ -74,8 +74,8 @@ export class PlaybackController {
   private transitionIntent = 0
   private recoveredTrackId: string | null = null
 
-  constructor(engine: PlaybackAdapter = new PlaybackEngine()) {
-    this.engine = engine
+  constructor(adapter: PlaybackAdapter = createPlaybackAdapter()) {
+    this.adapter = adapter
     this.mediaSession = new BrowserMediaSession({
       play: () => void this.resume(),
       pause: () => this.pause(),
@@ -84,14 +84,14 @@ export class PlaybackController {
       seek: (position) => this.seek(position),
       position: () => positionChannel.getPosition(),
       duration: () => positionChannel.getDuration(),
-      rate: () => this.engine.snapshot().rate,
+      rate: () => this.adapter.snapshot().rate,
     })
-    this.engine.subscribe((event) => this.onEngineEvent(event))
+    this.adapter.subscribe((event) => this.onAdapterEvent(event))
   }
 
-  // ---------- engine events ----------
+  // ---------- adapter events ----------
 
-  private onEngineEvent(event: EngineEvent): void {
+  private onAdapterEvent(event: EngineEvent): void {
     switch (event.type) {
       case 'state': {
         const { status, duration, buffered, error, volume, muted, rate } = event.snapshot
@@ -118,7 +118,7 @@ export class PlaybackController {
       }
       case 'position': {
         if (this.pendingTrackId && event.trackId === this.pendingTrackId) break
-        if (this.handledEndedGeneration === this.engine.currentGeneration && event.position > 0.25) {
+        if (this.handledEndedGeneration === this.adapter.currentGeneration && event.position > 0.25) {
           // Repeat One reuses the source generation. Actual playback progress
           // starts a new cycle; duplicate ended events before progress stay ignored.
           this.handledEndedGeneration = -1
@@ -148,8 +148,8 @@ export class PlaybackController {
         if (!current || current.id !== event.trackId) return
         if (event.recoverable && this.recoveredTrackId !== current.id) {
           this.recoveredTrackId = current.id
-          backend().invalidatePlayable?.(current.id)
-          void backend().reportPlaybackError?.({
+          this.adapter.invalidate?.(current.id)
+          void this.adapter.reportError?.({
             trackId: current.id,
             code: 'media_interrupted_retrying',
             recoverable: true,
@@ -160,7 +160,7 @@ export class PlaybackController {
           return
         }
         if (current) {
-          void backend().reportPlaybackError?.({
+          void this.adapter.reportError?.({
             trackId: current.id,
             code: event.recoverable ? 'media_recovery_exhausted' : 'media_playback_failed',
             recoverable: false,
@@ -176,13 +176,13 @@ export class PlaybackController {
   private handleEnded(trackId: string): void {
     const state = playerState()
     if (!state.current || state.current.id !== trackId) return
-    const generation = this.engine.currentGeneration
+    const generation = this.adapter.currentGeneration
     if (this.handledEndedGeneration === generation) return
     this.handledEndedGeneration = generation
     const intent = ++this.transitionIntent
     if (state.repeat === 'one') {
       positionChannel.setPosition(0)
-      this.engine.restart()
+      this.adapter.restart()
       return
     }
     void this.advance(1, { auto: true }, intent)
@@ -198,7 +198,7 @@ export class PlaybackController {
   }
 
   private markPlayed(): void {
-    const token = this.engine.currentGeneration
+    const token = this.adapter.currentGeneration
     if (this.recordedForToken.has(token)) return
     const current = playerState().current
     if (!current) return
@@ -275,28 +275,17 @@ export class PlaybackController {
     const intent = this.transitionIntent
     if (!recovering) this.recoveredTrackId = null
     this.pendingTrackId = track.id
-    const token = this.engine.beginLoad(track.id)
+    const token = this.adapter.beginLoad(track.id)
     this.recordedForToken.clear()
     setPlayerState({ status: 'loading', error: null })
 
     try {
-      // The spike changes only transport input. Desktop and default web still
-      // resolve signed media URLs exactly as before; the opt-in IFrame adapter
-      // consumes the catalog's provider video ID and never calls the resolver.
-      let playbackSource: string
-      let sourceDuration = track.duration || 0
-      if (this.engine.sourceMode === 'youtube-video-id') {
-        playbackSource = track.sourceId || track.id
-      } else {
-        const source = await backend().getPlayable(track)
-        playbackSource = source.url
-        sourceDuration = source.duration > 0 ? source.duration : sourceDuration
-      }
-      if (!this.engine.isCurrent(token)) return false
-      const loaded = await this.engine.load(token, playbackSource, startAt)
-      if (!this.engine.isCurrent(token)) return false
+      // Source preparation belongs entirely to the adapter. Queue semantics are
+      // identical whether the adapter resolves desktop audio or drives YT.Player.
+      const loaded = await this.adapter.load(token, track, startAt)
+      if (!this.adapter.isCurrent(token)) return false
       if (!loaded) {
-        throw new Error(this.engine.snapshot().error || 'Playback did not start.')
+        throw new Error(this.adapter.snapshot().error || 'Playback did not start.')
       }
 
       const state = playerState()
@@ -314,18 +303,18 @@ export class PlaybackController {
           : {}
       this.pendingTrackId = null
       positionChannel.reset()
-      positionChannel.setDuration(sourceDuration)
+      positionChannel.setDuration(this.adapter.snapshot().duration || track.duration || 0)
       setPlayerState({
         ...transition,
         current: track,
-        status: this.engine.snapshot().status,
+        status: this.adapter.snapshot().status,
         error: null,
       })
       this.rememberTrack(track)
       this.pruneDiscoveryQueue()
       this.mediaSession.setTrack(track)
-      this.mediaSession.setPlaybackState(this.engine.snapshot().status)
-      lyrics.loadFor(track, () => this.engine.isCurrent(token))
+      this.mediaSession.setPlaybackState(this.adapter.snapshot().status)
+      lyrics.loadFor(track, () => this.adapter.isCurrent(token))
       this.mirrorToDesktop(track.title, track.artist)
       this.markPlayed()
       void this.refillDiscovery().then(() => this.prefetchNext())
@@ -333,11 +322,11 @@ export class PlaybackController {
       this.queueSessionSave()
       return true
     } catch (err) {
-      if (!this.engine.isCurrent(token)) return false
+      if (!this.adapter.isCurrent(token)) return false
       if (this.pendingTrackId === track.id) this.pendingTrackId = null
       if (await this.skipUnplayableTrack(track, selection, intent)) return false
       const message = err instanceof Error ? err.message : 'Couldn\u2019t load this song.'
-      this.engine.fail(token, message)
+      this.adapter.fail(token, message)
       setPlayerState({ status: 'error', error: message })
       if (playerState().current?.id !== track.id) ui.toast(message, 'error')
       return false
@@ -360,8 +349,8 @@ export class PlaybackController {
     this.rememberRejected(track)
     this.prefetchedTracks.delete(track.id)
     this.prefetchingTracks.delete(track.id)
-    backend().invalidatePlayable?.(track.id)
-    void backend().reportPlaybackError?.({
+    this.adapter.invalidate?.(track.id)
+    void this.adapter.reportError?.({
       trackId: track.id,
       code: 'unplayable_candidate_skipped',
       recoverable: true,
@@ -382,29 +371,29 @@ export class PlaybackController {
     const { status, current } = playerState()
     if (!current) return
     if (status === 'playing') {
-      this.engine.pause()
+      this.adapter.pause()
       return
     }
     if (status === 'error') {
       await this.start(current, positionChannel.getPosition())
       return
     }
-    await this.engine.play()
+    await this.adapter.play()
   }
 
   pause(): void {
-    this.engine.pause()
+    this.adapter.pause()
   }
 
   async resume(): Promise<void> {
-    await this.engine.play()
+    await this.adapter.play()
   }
 
   /** Manual stop: clears the transport and never advances the queue. */
   stop(): void {
     this.transitionIntent += 1
     this.pendingTrackId = null
-    this.engine.stop()
+    this.adapter.stop()
     this.recordedForToken.clear()
     positionChannel.reset()
     setPlayerState({ current: null, status: 'idle', error: null, index: -1 })
@@ -478,7 +467,7 @@ export class PlaybackController {
   /** Reached the end of everything: stop cleanly without clearing the queue. */
   private finish(): void {
     this.pendingTrackId = null
-    this.engine.stop()
+    this.adapter.stop()
     setPlayerState({ status: 'idle' })
     positionChannel.setPosition(0)
     this.queueSessionSave()
@@ -495,7 +484,7 @@ export class PlaybackController {
   }
 
   seek(seconds: number): void {
-    this.engine.seek(seconds)
+    this.adapter.seek(seconds)
     positionChannel.setPosition(seconds)
     this.queueSessionSave()
   }
@@ -505,21 +494,21 @@ export class PlaybackController {
   }
 
   setVolume(volume: number): void {
-    this.engine.setVolume(volume)
+    this.adapter.setVolume(volume)
     setPlayerState({ volume, muted: volume === 0 ? playerState().muted : false })
-    if (volume > 0) this.engine.setMuted(false)
-    void library.saveSettings({ volume, muted: this.engine.snapshot().muted })
+    if (volume > 0) this.adapter.setMuted(false)
+    void library.saveSettings({ volume, muted: this.adapter.snapshot().muted })
   }
 
   toggleMute(): void {
     const muted = !playerState().muted
-    this.engine.setMuted(muted)
+    this.adapter.setMuted(muted)
     setPlayerState({ muted })
     void library.saveSettings({ muted })
   }
 
   setSpeed(speed: number): void {
-    this.engine.setRate(speed)
+    this.adapter.setRate(speed)
     setPlayerState({ speed })
   }
 
@@ -692,14 +681,13 @@ export class PlaybackController {
   }
 
   /**
-   * Resolve several tracks in canonical play order before they are needed. The
-   * web adapter caches/coalesces tickets; desktop may omit this optimization.
+   * Ask the active adapter to prepare tracks in canonical play order when it
+   * supports prefetch; the IFrame adapter intentionally omits this capability.
    * A proven-unplayable upcoming candidate is removed without disturbing any
    * other explicit or discovery ordering, then the buffer is refilled.
    */
   private async prefetchNext(): Promise<void> {
-    if (this.engine.sourceMode === 'youtube-video-id') return
-    const prefetch = backend().prefetchPlayable
+    const prefetch = this.adapter.prefetch?.bind(this.adapter)
     if (!prefetch) return
     const candidates = prefetchCandidates(
       playerState(),
@@ -722,10 +710,10 @@ export class PlaybackController {
         const source = isUpcomingCandidate(state, track.id)
         if (source) {
           this.rememberRejected(track)
-          backend().invalidatePlayable?.(track.id)
+          this.adapter.invalidate?.(track.id)
           const remaining = removeCandidate(state, track.id, source)
           setPlayerState(remaining)
-          void backend().reportPlaybackError?.({
+          void this.adapter.reportError?.({
             trackId: track.id,
             code: 'prefetch_candidate_skipped',
             recoverable: true,
@@ -1047,9 +1035,7 @@ export class PlaybackController {
   }
 }
 
-export const playback = new PlaybackController(
-  youtubeIframeSpikeEnabled() ? createYouTubeIframeAdapter() : new PlaybackEngine(),
-)
+export const playback = new PlaybackController()
 
 /** Convenience hook for components that only need a couple of fields. */
 export const usePlayer = usePlayerStore

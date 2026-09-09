@@ -8,7 +8,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
-import { PlaybackEngine } from '../audio/engine'
+import { ResolvedUrlPlaybackAdapter } from '../audio/resolvedUrlAdapter'
 import { setBackend, type Backend } from '../bridge/backend'
 import type { SearchResponse, Track } from '../bridge/types'
 import { defaultSettings } from '../lib/defaults'
@@ -122,8 +122,8 @@ describe('MELO application', () => {
 
     // Natural end of file advances exactly once, into autoplay.
     act(() => {
-      expect(playback.engine).toBeInstanceOf(PlaybackEngine)
-      ;(playback.engine as PlaybackEngine).el.dispatchEvent(new Event('ended'))
+      expect(playback.adapter).toBeInstanceOf(ResolvedUrlPlaybackAdapter)
+      ;(playback.adapter as ResolvedUrlPlaybackAdapter).transport.el.dispatchEvent(new Event('ended'))
     })
     await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe(b.id))
     expect(usePlayerStore.getState().playingFrom).toBe('autoplay')

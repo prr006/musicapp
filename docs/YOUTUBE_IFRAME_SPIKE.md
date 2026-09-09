@@ -18,7 +18,7 @@ Opt in on a hosted or local web build by adding `?player=youtube` to the app URL
 MELO queue/state → PlaybackAdapter (youtube-video-id) → visible official YT.Player
 ```
 
-The query flag is ignored in Wails. In IFrame mode, `PlaybackController` passes `track.sourceId || track.id` directly to the adapter and does not call `backend.getPlayable()` or prefetch playable URLs. Search, queue selection, explicit/discovery ordering, Song Radio refill, history, lyrics, likes, and session code remain shared.
+The query flag is ignored in Wails. `PlaybackController` always passes the same domain `Track` to its `PlaybackAdapter`. The IFrame adapter selects `track.sourceId || track.id` internally and has no `backend.getPlayable()`, playable-prefetch, `/resolve`, `/stream`, or media-URL dependency. Search, queue selection, explicit/discovery ordering, Song Radio refill, history, lyrics, likes, and session code remain shared.
 
 The one persistent official player is mounted in the main shell. Its viewport is 480×270 when space allows and never less than 200×200. It is not hidden, off-screen, covered by MELO UI, or presented as audio-only. Native YouTube controls, video, branding, ads, and provider interaction remain intact.
 
@@ -27,7 +27,7 @@ The one persistent official player is mounted in the main shell. Its viewport is
 The existing provisional-selection transaction is unchanged:
 
 1. The queue controller calls `beginLoad(track.id)` and leaves `current`, explicit cursor, and discovery consumption uncommitted.
-2. Resolved-URL mode awaits `backend.getPlayable(track)`; IFrame mode selects `track.sourceId || track.id` locally.
+2. The controller calls `adapter.load(token, track, startAt)` without inspecting the transport. The resolved adapter may await `backend.getPlayable(track)`; the IFrame adapter selects `track.sourceId || track.id` internally.
 3. The selected adapter starts its media source.
 4. Only a confirmed HTML media `play()` or YouTube `PLAYING` event resolves `load(..., autoplay=true)` successfully.
 5. The controller then commits current track, queue cursor/source, metadata, history, lyrics, and refill work.
@@ -89,6 +89,7 @@ An oEmbed response confirms the IDs and public metadata, not autoplay, IFrame AP
 ### Automated
 
 - Fake `YT.Player` adapter tests cover visible mount creation, source-ID load, buffering/playing/paused mapping, play, pause, seek, volume, mute, provider-confirmed rate, position, natural-ended de-duplication, cueing, autoplay-blocked behavior, all documented embed errors, and rapid-switch stale-event rejection.
+- An integrated fake-`YT.Player`/real-`PlaybackController` flow covers play, manual additions, next, duplicate natural end, automatic advance, active removals/additions, Song Radio transitions, explicit priority over discovery, simulated error 101 candidate skipping, repeat-one, rapid competing plays, and UI-current/provider-ID alignment at every committed `PLAYING`.
 - Playback-controller tests run the existing current-track transaction in source-ID mode and assert that the resolver is never called.
 - The existing Song Radio test now runs eight consecutive transitions in source-ID mode using Believer, Thunder, Demons, and a syntactically valid candidate set. It verifies current-track/cursor commits, an eight-item refill buffer, canonical-title de-duplication, and zero resolver calls.
 - The full pre-existing queue suite continues to cover explicit-before-discovery priority, failed-candidate-only removal, refill, prefetch isolation in resolved-URL mode, repeat, shuffle, ended-once handling, and rapid changes.
@@ -101,15 +102,16 @@ Do not mark a row passed from unit tests, oEmbed, network responses, or the coun
 
 | Check | Actual browser result | Unembeddable IDs |
 |---|---|---|
-| Believer play, pause, seek, volume | Pending direct observation | None established |
-| Thunder direct transition | Pending direct observation | None established |
-| Demons direct transition | Pending direct observation | None established |
-| Autoplay from initial user gesture | Pending direct observation | N/A |
-| Autoplay-blocked path without gesture | Pending direct observation | N/A |
-| Natural end and exactly-one advance | Pending direct observation | None established |
-| At least eight consecutive audible Song Radio transitions | Pending direct observation | None established |
+| Believer direct playback | User reported the YouTube player working and video playing correctly | None reported |
+| Thunder direct transition | User reported the videos playing correctly | None reported |
+| Demons direct transition | User reported the videos playing correctly | None reported |
+| Play, pause, seek, and volume as separate checks | Not separately itemized in the user report; automated mapping passed | N/A |
+| Autoplay from initial user gesture | Not separately reported | N/A |
+| Autoplay-blocked path without gesture | Not separately reported | N/A |
+| Natural end and exactly-one advance | Automated mapping passed; not separately itemized in the browser report | None reported |
+| At least eight consecutive audible Song Radio transitions | **Passed by direct user observation** | None reported |
 
-The agent environment does not currently contain a runnable browser, and Chromium download previously failed with a TLS connection reset. Therefore this document does **not** claim browser audibility or eight real provider transitions. The visible spike surface and event/error counters are included so that the matrix can be completed honestly in a real browser before any production migration decision.
+The agent environment does not contain a runnable browser, and Chromium download previously failed with a TLS connection reset. Browser evidence above is therefore limited to the user's direct report on the deployed visible player. No required or radio-candidate source ID has been reported unembeddable so far.
 
 ## Manual browser procedure
 

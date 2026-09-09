@@ -31,7 +31,7 @@ export function YouTubePlayerSurface() {
   const [lastEvent, setLastEvent] = useState('waiting for player')
   const [playingEvents, setPlayingEvents] = useState(0)
   const [embedErrors, setEmbedErrors] = useState(0)
-  const adapter = isYouTubeIframeAdapter(playback.engine) ? playback.engine : null
+  const adapter = isYouTubeIframeAdapter(playback.adapter) ? playback.adapter : null
 
   useEffect(() => {
     if (!adapter || !hostRef.current) return
