@@ -47,12 +47,21 @@ error when one is available. Duplicate ended events and stale asynchronous radio
 or refill continuations cannot advance the committed cursor.
 
 Resolver failures distinguish a provider-declared `media_unavailable` response
-from `no_supported_audio`, where yt-dlp returned metadata but no format MELO can
-play. Failed responses may include sanitized `resolverAttempts` counts/protocols
-and `resolverMetadata`; these never contain media URLs, request headers, cookies,
-tokens, raw provider payloads, or account data. See
-[`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md) for the production
-comparison that motivated this distinction.
+from `no_supported_audio`, where yt-dlp returned non-empty metadata formats but no
+format MELO can play. A successful yt-dlp response with exactly zero formats gets
+two bounded retry rounds (150 ms, then 350 ms); every retry starts fresh
+subprocesses for the same ordered client sets. Exhaustion returns the existing
+`media_unavailable` response. Process/transport failures and non-empty unsupported
+format lists are not retried by this resilience layer.
+
+Resolve success and failure bodies include sanitized `resolverDiagnostics` with
+subprocess attempt number, client set, outcome, duration, aggregate format counts,
+final outcome, cache/coalescing status, and whether a later retry recovered. Failed
+responses retain `resolverAttempts` for compatibility and may include safe
+`resolverMetadata`. Diagnostics never contain media URLs, request headers,
+signatures, cookies, tokens, command stderr, raw provider payloads, or account
+data. See [`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md) for the
+production comparison that motivated this distinction.
 
 ## Account and library
 

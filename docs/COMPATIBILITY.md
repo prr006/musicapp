@@ -24,9 +24,12 @@ path, while the current CI guards its build and shared tests.
 > tokens or credentials. Richer diagnostics established a transient metadata-only,
 > zero-format provider response class; one same-version process resolved Believer,
 > Thunder, Demons, unrelated music, and non-music controls again, while the next
-> process (`856f56d`) reverted to zero formats. The eight-audible-transition retest
-> remains blocked, not passed. The detailed provider-response and desktop/web comparison is in
-> [`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md).
+> process (`856f56d`) reverted to zero formats. A narrowly bounded zero-format retry
+> layer then produced a 10/10 Railway resolution sample, but every initial attempt
+> succeeded, so no retry-caused improvement is claimed. The eight-audible-transition
+> retest remains unverified, not passed. Detailed evidence is in
+> [`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md) and
+> [`RESOLVER_RESILIENCE.md`](RESOLVER_RESILIENCE.md).
 > Account relogin/isolation,
 > restart persistence, multi-browser responsive behavior, Media Session, PWA
 > install, and expired-ticket recovery remain unverified.

@@ -268,3 +268,8 @@ limitation. The last documented runtime sample (`856f56d`) was blocked for the
 affected class, so an eight-audible-transition Believer browser run cannot honestly
 be claimed. It must be repeated and recorded if a compliant format-serving epoch
 becomes stable.
+
+The bounded follow-up mitigation and its first 10/10 healthy-epoch Railway sample
+are documented in [`RESOLVER_RESILIENCE.md`](RESOLVER_RESILIENCE.md). That sample
+contained no zero-format attempt and therefore does not establish a retry-caused
+improvement or solve the external provider variability.

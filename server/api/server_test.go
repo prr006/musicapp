@@ -214,6 +214,9 @@ func TestExhaustedZeroFormatRetriesReturnSanitizedUnavailable(t *testing.T) {
 	if body.Error.Code != "media_unavailable" || body.Error.Diagnostics.FinalOutcome != "media_unavailable" {
 		t.Fatalf("unexpected exhausted retry response: %+v", body.Error)
 	}
+	if !strings.Contains(res.Body.String(), "temporarily returned no media formats") {
+		t.Fatalf("zero-format exhaustion was not described as transient: %s", res.Body.String())
+	}
 	if len(body.Error.Attempts) != 9 || len(body.Error.Diagnostics.Attempts) != 9 {
 		t.Fatalf("expected nine bounded subprocess attempts, got %+v", body.Error)
 	}

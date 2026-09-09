@@ -1151,10 +1151,23 @@ func writeSearchError(w http.ResponseWriter, err error) {
 
 func writeResolveError(w http.ResponseWriter, err error) {
 	status, code := providerErrorStatus(err)
+	diagnostics := media.ResolverFailureDiagnostics(err)
 	message := "Couldn't resolve this track. Try again."
 	switch code {
 	case "media_unavailable":
 		message = "The playback provider reports this media as unavailable."
+		if diagnostics != nil && len(diagnostics.Attempts) > 0 {
+			allZeroFormats := true
+			for _, attempt := range diagnostics.Attempts {
+				if attempt.Outcome != "zero_formats" {
+					allZeroFormats = false
+					break
+				}
+			}
+			if allZeroFormats {
+				message = "The playback provider temporarily returned no media formats. Try again."
+			}
+		}
 	case "no_supported_audio":
 		message = "The provider returned no supported progressive audio format."
 	case "provider_timeout":
@@ -1163,7 +1176,7 @@ func writeResolveError(w http.ResponseWriter, err error) {
 		message = "Playback provider is temporarily unavailable. Try again shortly."
 	}
 	errorBody := map[string]any{"code": code, "message": message}
-	if diagnostics := media.ResolverFailureDiagnostics(err); diagnostics != nil {
+	if diagnostics != nil {
 		errorBody["resolverAttempts"] = diagnostics.Attempts
 		errorBody["resolverDiagnostics"] = diagnostics
 	}
