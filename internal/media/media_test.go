@@ -38,8 +38,9 @@ func (f *fakeRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 // clientArgsRunner returns a canned JSON payload per requested player-client
 // set, so tests can drive the bounded client-fallback logic deterministically.
 type clientArgsRunner struct {
-	calls []string
-	outs  map[string][]byte
+	calls  []string
+	outs   map[string][]byte
+	errors map[string]error
 }
 
 func (r *clientArgsRunner) Run(_ context.Context, args ...string) ([]byte, error) {
@@ -50,6 +51,9 @@ func (r *clientArgsRunner) Run(_ context.Context, args ...string) ([]byte, error
 		}
 	}
 	r.calls = append(r.calls, clients)
+	if err := r.errors[clients]; err != nil {
+		return nil, err
+	}
 	if out, ok := r.outs[clients]; ok {
 		return out, nil
 	}
@@ -403,6 +407,24 @@ func TestResolverFallsBackToSecondClientSet(t *testing.T) {
 	}
 	if runner.calls[0] != resolveClients[0] || runner.calls[1] != resolveClients[1] {
 		t.Fatalf("client sets tried out of order: %v", runner.calls)
+	}
+}
+
+func TestResolverFallsBackWhenPreferredClientIsUnavailable(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	runner := &clientArgsRunner{
+		errors: map[string]error{resolveClients[0]: errors.New("ERROR: Video unavailable on this app")},
+		outs: map[string][]byte{
+			resolveClients[1]: infoJSON(t, exp, []map[string]any{audioFmt("18", "mp4", 96, exp)}),
+		},
+	}
+	res := NewResolver(runner)
+	got, err := res.Resolve(context.Background(), "music-video", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.URL, "/18") || len(runner.calls) != 2 {
+		t.Fatalf("expected client-specific unavailable response to fall back, got %+v after %v", got, runner.calls)
 	}
 }
 

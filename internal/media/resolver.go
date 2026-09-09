@@ -278,7 +278,11 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 			case ErrProviderNetwork:
 				return Resolved{}, fmt.Errorf("%w: resolver request failed", ErrProviderNetwork)
 			case ErrUnavailable:
-				return Resolved{}, fmt.Errorf("%w: provider rejected this media", ErrUnavailable)
+				// UNPLAYABLE can be client-specific (notably visionos for music
+				// uploads). Try the remaining bounded supported clients; truly
+				// private/removed media will be rejected by every set.
+				lastErr = fmt.Errorf("%w: provider rejected this media for %s", ErrUnavailable, clients)
+				continue
 			default:
 				return Resolved{}, fmt.Errorf("%w: resolver process failed", ErrResolve)
 			}
