@@ -11,8 +11,10 @@
  * token is still current, so "play A then immediately play B" can never end
  * with A's audio, metadata, artwork or lyrics attached to B.
  */
-import { PlaybackEngine } from '../audio/engine'
+import type { PlaybackAdapter } from '../audio/adapter'
+import { PlaybackEngine, type EngineEvent } from '../audio/engine'
 import { BrowserMediaSession } from '../audio/mediaSession'
+import { createYouTubeIframeAdapter, youtubeIframeSpikeEnabled } from '../audio/youtubeIframe'
 import { backend, type RadioKind } from '../bridge/backend'
 import type { RepeatMode, Track } from '../bridge/types'
 import {
@@ -52,7 +54,7 @@ interface ActiveRadio {
 }
 
 export class PlaybackController {
-  readonly engine: PlaybackEngine
+  readonly engine: PlaybackAdapter
   private sessionTimer: ReturnType<typeof setTimeout> | null = null
   private recordedForToken = new Set<number>()
   private discoveryGen = 0
@@ -72,7 +74,7 @@ export class PlaybackController {
   private transitionIntent = 0
   private recoveredTrackId: string | null = null
 
-  constructor(engine = new PlaybackEngine()) {
+  constructor(engine: PlaybackAdapter = new PlaybackEngine()) {
     this.engine = engine
     this.mediaSession = new BrowserMediaSession({
       play: () => void this.resume(),
@@ -89,13 +91,13 @@ export class PlaybackController {
 
   // ---------- engine events ----------
 
-  private onEngineEvent(event: Parameters<Parameters<PlaybackEngine['subscribe']>[0]>[0]): void {
+  private onEngineEvent(event: EngineEvent): void {
     switch (event.type) {
       case 'state': {
         const { status, duration, buffered, error, volume, muted, rate } = event.snapshot
         if (this.pendingTrackId && event.snapshot.trackId === this.pendingTrackId) {
-          // Resolver/media readiness is provisional. Keep the committed CURRENT
-          // and cursor unchanged until HTMLAudioElement.play() has succeeded.
+          // Transport readiness is provisional. Keep the committed CURRENT and
+          // cursor unchanged until the selected adapter confirms playback.
           setPlayerState({ status: 'loading', error: null, volume, muted, speed: rate })
           break
         }
@@ -134,6 +136,11 @@ export class PlaybackController {
       }
       case 'ended':
         this.handleEnded(event.trackId)
+        break
+      case 'autoplay-blocked':
+        if (this.pendingTrackId === event.trackId) {
+          ui.toast('Autoplay was blocked — press play in the visible YouTube player', 'info')
+        }
         break
       case 'error': {
         if (this.pendingTrackId && event.trackId === this.pendingTrackId) return
@@ -255,9 +262,9 @@ export class PlaybackController {
   }
 
   /**
-   * Resolves and starts a candidate transactionally. CURRENT, queue cursor,
-   * metadata and discovery consumption are committed only after the media
-   * element confirms that play() succeeded.
+   * Starts a candidate transactionally. CURRENT, queue cursor, metadata and
+   * discovery consumption are committed only after the selected transport
+   * confirms playback.
    */
   private async start(
     track: Track,
@@ -273,9 +280,20 @@ export class PlaybackController {
     setPlayerState({ status: 'loading', error: null })
 
     try {
-      const source = await backend().getPlayable(track)
+      // The spike changes only transport input. Desktop and default web still
+      // resolve signed media URLs exactly as before; the opt-in IFrame adapter
+      // consumes the catalog's provider video ID and never calls the resolver.
+      let playbackSource: string
+      let sourceDuration = track.duration || 0
+      if (this.engine.sourceMode === 'youtube-video-id') {
+        playbackSource = track.sourceId || track.id
+      } else {
+        const source = await backend().getPlayable(track)
+        playbackSource = source.url
+        sourceDuration = source.duration > 0 ? source.duration : sourceDuration
+      }
       if (!this.engine.isCurrent(token)) return false
-      const loaded = await this.engine.load(token, source.url, startAt)
+      const loaded = await this.engine.load(token, playbackSource, startAt)
       if (!this.engine.isCurrent(token)) return false
       if (!loaded) {
         throw new Error(this.engine.snapshot().error || 'Playback did not start.')
@@ -296,7 +314,7 @@ export class PlaybackController {
           : {}
       this.pendingTrackId = null
       positionChannel.reset()
-      positionChannel.setDuration(source.duration > 0 ? source.duration : track.duration || 0)
+      positionChannel.setDuration(sourceDuration)
       setPlayerState({
         ...transition,
         current: track,
@@ -680,6 +698,7 @@ export class PlaybackController {
    * other explicit or discovery ordering, then the buffer is refilled.
    */
   private async prefetchNext(): Promise<void> {
+    if (this.engine.sourceMode === 'youtube-video-id') return
     const prefetch = backend().prefetchPlayable
     if (!prefetch) return
     const candidates = prefetchCandidates(
@@ -1028,7 +1047,9 @@ export class PlaybackController {
   }
 }
 
-export const playback = new PlaybackController()
+export const playback = new PlaybackController(
+  youtubeIframeSpikeEnabled() ? createYouTubeIframeAdapter() : new PlaybackEngine(),
+)
 
 /** Convenience hook for components that only need a couple of fields. */
 export const usePlayer = usePlayerStore

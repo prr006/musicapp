@@ -38,9 +38,12 @@ interface Harness {
   lyricsDelays: Map<string, number>
 }
 
-function harness(): Harness {
+function harness(sourceMode: 'resolved-url' | 'youtube-video-id' = 'resolved-url'): Harness {
   const media = new FakeMedia()
   const engine = new PlaybackEngine(media.asElement())
+  if (sourceMode === 'youtube-video-id') {
+    Object.defineProperty(engine, 'sourceMode', { value: sourceMode })
+  }
   const resolveDelays = new Map<string, number>()
   const resolveErrors = new Map<string, string>()
   const lyricsDelays = new Map<string, number>()
@@ -123,6 +126,24 @@ describe('track switching', () => {
     expect(state().current?.id).toBe(a.id)
     expect(state().status).toBe('playing')
     expect(h.media.src).toBe('http://local/a')
+  })
+
+  it('feeds sourceId directly to an IFrame-mode adapter without calling the resolver', async () => {
+    const h = harness('youtube-video-id')
+    const believer = track('Kx7B-XvmFtE', { title: 'Believer' })
+    const thunder = track('9ssQKlLxBdQ', { title: 'Thunder' })
+
+    await h.controller.play(believer, { tracks: [believer, thunder], index: 0, label: 'IFrame spike' })
+
+    expect(h.backend.getPlayable).not.toHaveBeenCalled()
+    expect(h.media.src).toBe('Kx7B-XvmFtE')
+    expect(state()).toMatchObject({
+      current: believer,
+      index: 0,
+      playingFrom: 'queue',
+      status: 'playing',
+    })
+    expect(state().queue.map((candidate) => candidate.id)).toEqual([believer.id, thunder.id])
   })
 
   it('stops A immediately and never lets A\'s late resolver result replace B', async () => {
@@ -892,33 +913,41 @@ describe('discovery (endless queue)', () => {
     }
   })
 
-  it('keeps a persistent Song Radio buffer through eight canonical-deduped transitions', async () => {
-    const h = harness()
+  it('keeps a persistent Song Radio buffer through eight source-ID adapter transitions', async () => {
+    const h = harness('youtube-video-id')
     useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: false } })
-    const seed = track('seed', { title: 'Believer', artist: 'Imagine Dragons' })
+    const seed = track('Kx7B-XvmFtE', { title: 'Believer', artist: 'Imagine Dragons' })
     await h.controller.play(seed)
     useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: true } })
 
-    const initial = Array.from({ length: 9 }, (_, i) => track(`radio${i}`))
+    const radioIDs = [
+      '9ssQKlLxBdQ', 'J1aVXLHQRd4', 'ktvTqknDobU', 'gOsM-DYAEhY', '0I647GU3Jsc',
+      'I-QfPUz1es8', 'TO-_3tck2tg', 'D9G1VOjN_84', '7j7twuejxvU',
+    ]
+    const initial = radioIDs.map((id, i) => track(id, { title: `Radio candidate ${i}` }))
+    let refillBatch = 0
     const radio = vi.fn(async (_kind: string, seedId: string) => {
-      if (seedId === seed.id) {
+      if (seedId === seed.sourceId) {
         return { id: 'believer-radio', kind: 'song' as const, seedId, tracks: initial, generatedAt: Date.now() }
       }
+      refillBatch += 1
+      const suffix = String(refillBatch).padStart(8, '0')
       return {
         id: 'believer-radio',
         kind: 'song' as const,
         seedId,
         tracks: [
-          track(`duplicate-${seedId}`, { title: `${initial[0].title} (Official Video)` }),
-          track(`continuation-${seedId}`, { title: `Fresh continuation ${seedId}` }),
+          track(`dup${suffix}`, { title: `${initial[0].title} (Official Video)` }),
+          track(`new${suffix}`, { title: `Fresh continuation ${seedId}` }),
         ],
         generatedAt: Date.now(),
       }
     })
     h.backend.radio = radio as Backend['radio']
 
-    await h.controller.startRadio('song', seed.id, seed)
+    await h.controller.startRadio('song', seed.sourceId, seed)
     expect(state().autoQueue).toHaveLength(8)
+    expect(h.backend.getPlayable).not.toHaveBeenCalled()
     for (let i = 1; i <= 8; i += 1) {
       h.media.endNaturally()
       await vi.waitFor(() => expect(state().current?.id).toBe(initial[i].id))
@@ -926,7 +955,8 @@ describe('discovery (endless queue)', () => {
       const canonical = [state().current!, ...state().autoQueue].map((candidate) => normalizeTitle(candidate.title))
       expect(new Set(canonical).size).toBe(canonical.length)
     }
-    expect(radio).toHaveBeenCalledWith('song', seed.id, seed)
+    expect(h.backend.getPlayable).not.toHaveBeenCalled()
+    expect(radio).toHaveBeenCalledWith('song', seed.sourceId, seed)
     expect(radio).toHaveBeenCalledWith('song', initial[1].sourceId, initial[1])
   })
 

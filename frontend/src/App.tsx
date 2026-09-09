@@ -4,6 +4,7 @@ import { NowPlaying } from './components/NowPlaying'
 import { QueuePanel } from './components/QueuePanel'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
+import { YouTubePlayerSurface } from './components/YouTubePlayerSurface'
 import { ErrorState } from './components/States'
 import { useKeyboardShortcuts } from './lib/shortcuts'
 import { useLibraryStore } from './state/libraryStore'
@@ -124,6 +125,7 @@ export function App() {
       <main className="main">
         <TopBar scrolled={scrolled} />
         <ResolverBanner />
+        <YouTubePlayerSurface />
         <div className="content" ref={contentRef} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 8)}>
           {loadError ? (
             <ErrorState
