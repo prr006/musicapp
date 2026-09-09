@@ -23,8 +23,6 @@ export interface UIState {
   nowPlayingOpen: boolean
   lyricsOpen: boolean
   toasts: Toast[]
-  resolverError: string | null
-  resolverProgress: { done: number; total: number } | null
 }
 
 export const useUIStore = create<UIState>(() => ({
@@ -35,8 +33,6 @@ export const useUIStore = create<UIState>(() => ({
   nowPlayingOpen: false,
   lyricsOpen: false,
   toasts: [],
-  resolverError: null,
-  resolverProgress: null,
 }))
 
 const set = useUIStore.setState
@@ -99,11 +95,5 @@ export const ui = {
   },
   dismissToast(id: number): void {
     set({ toasts: get().toasts.filter((t) => t.id !== id) })
-  },
-  setResolverError(message: string | null): void {
-    set({ resolverError: message })
-  },
-  setResolverProgress(progress: { done: number; total: number } | null): void {
-    set({ resolverProgress: progress })
   },
 }

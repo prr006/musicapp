@@ -29,7 +29,10 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    target: 'es2022',
+    // Broad browser support for the public web deployment (Chrome 85+,
+    // Edge 85+, Firefox 78+, Safari 13.1+) — the desktop WebView2 is newer
+    // than all of them, so this only widens where the web build runs.
+    target: 'es2020',
     chunkSizeWarningLimit: 700,
   },
   test: {

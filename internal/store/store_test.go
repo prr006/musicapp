@@ -34,7 +34,7 @@ func TestDefaultsAndPersistence(t *testing.T) {
 	set.Volume = 0.42
 	s.SaveSettings(set)
 	pl := s.CreatePlaylist("Focus", []model.Track{track("a"), track("b")})
-	s.RecordPlay(track("b"))
+	s.RecordPlayEvent(track("b"), model.PlayEvent{Phase: "start"})
 	s.AddSearchTerm("nujabes")
 	if err := s.Close(); err != nil {
 		t.Fatalf("close: %v", err)
@@ -99,15 +99,36 @@ func TestLikeToggleIsIdempotent(t *testing.T) {
 
 func TestHistoryCollapsesRepeats(t *testing.T) {
 	s, _ := newStore(t)
-	s.RecordPlay(track("a"))
-	s.RecordPlay(track("a"))
+	s.RecordPlayEvent(track("a"), model.PlayEvent{Phase: "start"})
+	s.RecordPlayEvent(track("a"), model.PlayEvent{Phase: "start"})
 	if got := len(s.State().History); got != 1 {
 		t.Fatalf("expected repeated play to collapse, got %d entries", got)
 	}
-	s.RecordPlay(track("b"))
+	s.RecordPlayEvent(track("b"), model.PlayEvent{Phase: "start"})
 	h := s.State().History
 	if len(h) != 2 || h[0].Track.ID != "b" {
 		t.Fatalf("expected newest first, got %+v", h)
+	}
+}
+
+func TestPlayEventEndCompletesEntry(t *testing.T) {
+	s, _ := newStore(t)
+	s.RecordPlayEvent(track("a"), model.PlayEvent{Phase: "start"})
+	// The listen finished naturally.
+	s.RecordPlayEvent(track("a"), model.PlayEvent{Phase: "end", ListenedSec: 213, Completed: true})
+	h := s.State().History
+	if len(h) != 1 {
+		t.Fatalf("end phase must not add an entry: %+v", h)
+	}
+	if !h[0].Completed || h[0].ListenedSec != 213 {
+		t.Fatalf("completion detail missing: %+v", h[0])
+	}
+	// A skipped listen is recorded as such.
+	s.RecordPlayEvent(track("b"), model.PlayEvent{Phase: "start"})
+	s.RecordPlayEvent(track("b"), model.PlayEvent{Phase: "end", ListenedSec: 4, Skipped: true})
+	h = s.State().History
+	if !h[0].Skipped || h[0].Completed {
+		t.Fatalf("skip detail missing: %+v", h[0])
 	}
 }
 
@@ -193,7 +214,7 @@ func TestLibraryTracksUnion(t *testing.T) {
 	s, _ := newStore(t)
 	s.SetLiked(track("b"), true)
 	s.CreatePlaylist("p", []model.Track{track("a")})
-	s.RecordPlay(track("b"))
+	s.RecordPlayEvent(track("b"), model.PlayEvent{Phase: "start"})
 	got := s.LibraryTracks()
 	if len(got) != 2 {
 		t.Fatalf("expected 2 unique tracks, got %v", ids(got))

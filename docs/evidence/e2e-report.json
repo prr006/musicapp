@@ -1,0 +1,253 @@
+{
+  "when": "2026-09-09T12:23:42.974Z",
+  "base": "http://localhost:5173",
+  "results": [
+    {
+      "name": "offline transport available (clock adapter, dev only)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "EOF advances into autoplay automatically",
+      "ok": true,
+      "detail": "→ “Thunder”"
+    },
+    {
+      "name": "rolling recommendation buffer established after one listen",
+      "ok": true,
+      "detail": "19 upcoming tracks (target window 18–30)"
+    },
+    {
+      "name": "autoplay ran through the whole phase without stalling or repeating",
+      "ok": true,
+      "detail": "14 unique tracks (3 completed, 11 skipped)"
+    },
+    {
+      "name": "recommendation buffer refills as it drains (never runs dry)",
+      "ok": true,
+      "detail": "buffer sizes across plays: 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 22, 21, 20, 19"
+    },
+    {
+      "name": "queued song is sitting in Up next",
+      "ok": true,
+      "detail": "queue: Katchi Sera | Bohemian Rhapsody"
+    },
+    {
+      "name": "user-queued song plays before further autoplay",
+      "ok": true,
+      "detail": "→ “Bohemian Rhapsody”"
+    },
+    {
+      "name": "autoplay serves the learned preference over time",
+      "ok": true,
+      "detail": "100% of the last 8 served tracks are from the listened cluster"
+    },
+    {
+      "name": "served recommendations have breadth across the cluster, not one artist",
+      "ok": true,
+      "detail": "8 distinct artists: Anirudh Ravichander, Anirudh Ravichander, Dhanush, Dhanush"
+    },
+    {
+      "name": "queue panel shows Now playing / Up next / Autoplay sections",
+      "ok": true,
+      "detail": "Now playing | Up next | Autoplay · for you · 24 songsClear"
+    },
+    {
+      "name": "recommendation buffer stays stocked (rolling window, never a short batch)",
+      "ok": true,
+      "detail": "24 upcoming recommendations after heavy consumption"
+    },
+    {
+      "name": "no long single-artist runs in the buffer",
+      "ok": true,
+      "detail": "longest consecutive run from one artist: 1"
+    },
+    {
+      "name": "buffer is diverse across artists",
+      "ok": true,
+      "detail": "22 distinct artists in 24 tracks"
+    },
+    {
+      "name": "no duplicate songs in the buffer",
+      "ok": true,
+      "detail": "24 unique titles"
+    },
+    {
+      "name": "no resolver/stream/getPlayable call anywhere on the playback path",
+      "ok": true,
+      "detail": "174 requests total, 0 suspicious"
+    },
+    {
+      "name": "history records completion and skips",
+      "ok": true,
+      "detail": "38 entries · 18 completed · 13 skipped"
+    },
+    {
+      "name": "history records actual listen duration",
+      "ok": true,
+      "detail": "26 entries carry listenedSec"
+    }
+  ],
+  "buffer": {
+    "size": 24,
+    "tamilShare": 0.08333333333333333,
+    "distinctArtists": 22,
+    "worstRun": 1,
+    "rows": [
+      {
+        "title": "Kun Faya Kun",
+        "artist": "A.R. Rahman, Javed Ali, Mohit Chauhan"
+      },
+      {
+        "title": "Africa",
+        "artist": "Toto"
+      },
+      {
+        "title": "Don’t Stop Believin’",
+        "artist": "Journey"
+      },
+      {
+        "title": "Stayin’ Alive",
+        "artist": "Bee Gees"
+      },
+      {
+        "title": "Gangnam Style",
+        "artist": "PSY"
+      },
+      {
+        "title": "Uptown Funk",
+        "artist": "Mark Ronson, Bruno Mars"
+      },
+      {
+        "title": "All of Me",
+        "artist": "John Legend"
+      },
+      {
+        "title": "Blinding Lights",
+        "artist": "The Weeknd"
+      },
+      {
+        "title": "Chandelier",
+        "artist": "Sia"
+      },
+      {
+        "title": "Closer",
+        "artist": "The Chainsmokers, Halsey"
+      },
+      {
+        "title": "Havana",
+        "artist": "Camila Cabello, Young Thug"
+      },
+      {
+        "title": "Just the Way You Are",
+        "artist": "Bruno Mars"
+      },
+      {
+        "title": "Blank Space",
+        "artist": "Taylor Swift"
+      },
+      {
+        "title": "Dark Horse",
+        "artist": "Katy Perry, Juicy J"
+      },
+      {
+        "title": "Samajavaragamana",
+        "artist": "Sid Sriram"
+      },
+      {
+        "title": "Waka Waka (This Time for Africa)",
+        "artist": "Shakira"
+      },
+      {
+        "title": "Hotel California (Live)",
+        "artist": "Eagles"
+      },
+      {
+        "title": "Hello",
+        "artist": "Adele"
+      },
+      {
+        "title": "Never Gonna Give You Up",
+        "artist": "Rick Astley"
+      },
+      {
+        "title": "Party in the U.S.A.",
+        "artist": "Miley Cyrus"
+      },
+      {
+        "title": "Rolling in the Deep",
+        "artist": "Adele"
+      },
+      {
+        "title": "Let Her Go",
+        "artist": "Passenger"
+      },
+      {
+        "title": "Together Forever",
+        "artist": "Rick Astley"
+      },
+      {
+        "title": "Animals",
+        "artist": "Martin Garrix"
+      }
+    ]
+  },
+  "played": [
+    "Saami Saami",
+    "Levitating",
+    "Rockabye",
+    "Naatu Naatu",
+    "Dance Monkey",
+    "Boulevard of Broken Dreams",
+    "Counting Stars",
+    "bad guy",
+    "Billie Jean",
+    "Dynamite",
+    "Con Calma",
+    "Samajavaragamana",
+    "Inkem Inkem Inkem Kaavaale",
+    "Vaathi Coming"
+  ],
+  "served": [
+    {
+      "title": "Naa Ready",
+      "artist": "Anirudh Ravichander, Vijay",
+      "tamil": true
+    },
+    {
+      "title": "Arabic Kuthu (Halamithi Habibo)",
+      "artist": "Anirudh Ravichander",
+      "tamil": true
+    },
+    {
+      "title": "Why This Kolaveri Di",
+      "artist": "Dhanush, Anirudh Ravichander",
+      "tamil": true
+    },
+    {
+      "title": "Rowdy Baby",
+      "artist": "Dhanush, Dhee",
+      "tamil": true
+    },
+    {
+      "title": "Naatu Naatu",
+      "artist": "Rahul Sipligunj, Kaala Bhairava",
+      "tamil": true
+    },
+    {
+      "title": "Apna Bana Le",
+      "artist": "Arijit Singh, Sachin-Jigar",
+      "tamil": true
+    },
+    {
+      "title": "Chaleya",
+      "artist": "Arijit Singh, Shilpa Rao",
+      "tamil": true
+    },
+    {
+      "title": "Kesariya",
+      "artist": "Arijit Singh",
+      "tamil": true
+    }
+  ]
+}

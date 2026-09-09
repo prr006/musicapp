@@ -4,7 +4,6 @@ import type { Diagnostics, Settings } from '../bridge/types'
 import { ACCENTS, SPEEDS } from '../lib/defaults'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback } from '../state/playback'
-import { ui, useUIStore } from '../state/uiStore'
 
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
@@ -41,10 +40,8 @@ function Row({
 
 export function SettingsView() {
   const settings = useLibraryStore((s) => s.settings)
-  const resolverError = useUIStore((s) => s.resolverError)
   const [diag, setDiag] = useState<Diagnostics | null>(null)
   const [diagError, setDiagError] = useState<string | null>(null)
-  const [installing, setInstalling] = useState(false)
 
   const loadDiagnostics = () => {
     backend()
@@ -133,18 +130,6 @@ export function SettingsView() {
             ))}
           </select>
         </Row>
-        <Row name="Audio quality" desc="Chooses which audio-only stream the resolver picks.">
-          <select
-            className="input"
-            value={settings.audioQuality}
-            aria-label="Audio quality"
-            onChange={(e) => update('audioQuality', e.target.value as Settings['audioQuality'])}
-          >
-            <option value="high">High — best available</option>
-            <option value="medium">Medium — balanced</option>
-            <option value="low">Low — save bandwidth</option>
-          </select>
-        </Row>
       </div>
 
       <div className="settings-group">
@@ -230,51 +215,13 @@ export function SettingsView() {
               <dd>{diag.goVersion} · {diag.platform}</dd>
               <dt>Data folder</dt>
               <dd>{diag.dataDir}</dd>
-              <dt>Stream proxy</dt>
-              <dd>{diag.streamProxy}</dd>
-              <dt>Media resolver</dt>
-              <dd>
-                {diag.resolver.installed ? `yt-dlp ${diag.resolver.version}` : `Not installed — ${diag.resolver.message}`}
-              </dd>
-              <dt>Resolver path</dt>
-              <dd>{diag.resolverBinary || '—'}</dd>
+              <dt>Playback</dt>
+              <dd>YouTube embedded player (IFrame API)</dd>
               <dt>Media keys</dt>
               <dd>{diag.mediaKeys}</dd>
               <dt>Tray</dt>
               <dd>{diag.tray}</dd>
             </dl>
-            {resolverError && (
-              <div style={{ padding: '0 20px 16px' }}>
-                <div className="inline-error">{resolverError}</div>
-              </div>
-            )}
-            <div className="setting-row">
-              <div className="setting-info">
-                <div className="name">Media resolver</div>
-                <div className="desc">Downloads the pinned, checksum-verified yt-dlp build into the data folder.</div>
-              </div>
-              <div className="setting-control">
-                <button
-                  className="btn ghost"
-                  disabled={installing}
-                  type="button"
-                  onClick={() => {
-                    setInstalling(true)
-                    backend()
-                      .installResolver()
-                      .then(() => {
-                        ui.toast('Media resolver ready')
-                        ui.setResolverError(null)
-                        loadDiagnostics()
-                      })
-                      .catch((err: Error) => ui.toast(err.message, 'error'))
-                      .finally(() => setInstalling(false))
-                  }}
-                >
-                  {installing ? 'Installing…' : diag.resolver.installed ? 'Reinstall' : 'Install now'}
-                </button>
-              </div>
-            </div>
           </>
         ) : (
           <div style={{ padding: 20 }} className="muted">

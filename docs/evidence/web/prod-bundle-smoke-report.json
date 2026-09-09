@@ -1,0 +1,62 @@
+{
+  "base": "http://localhost:4173",
+  "results": [
+    {
+      "name": "prod bundle boots without backend error",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "offline transport toast shown (YouTube unreachable here)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "search returns Kolaveri from the fixture catalogue",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Now Playing opens with the selected track",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "playback position advances (offline transport)",
+      "ok": true,
+      "detail": "0:02 → 0:06"
+    },
+    {
+      "name": "queue shows Now playing section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "queue shows Up next section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "queue shows Autoplay section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "autoplay buffer is populated (>= 8 recommendations)",
+      "ok": true,
+      "detail": "16 rows"
+    },
+    {
+      "name": "Next skips through autoplay tracks",
+      "ok": true,
+      "detail": "4 next-clicks ok"
+    },
+    {
+      "name": "zero resolver/stream/getPlayable requests",
+      "ok": true,
+      "detail": "42 requests total, bad: none"
+    }
+  ],
+  "requests": 42,
+  "at": "2026-09-09T13:11:53.728Z"
+}

@@ -2,17 +2,13 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"time"
 
-	"melo/internal/deps"
 	"melo/internal/lyrics"
-	"melo/internal/media"
 	"melo/internal/model"
 	"melo/internal/provider"
 	"melo/internal/store"
@@ -21,39 +17,32 @@ import (
 )
 
 // App is the Wails-bound surface. It owns the backend services and keeps them
-// small: search, resolve, stream, lyrics, persist. Playback transport state
-// lives in the renderer's media element; the queue lives in application state.
+// small: search, lyrics, persist. Playback itself is the renderer's job: the
+// YouTube IFrame player adapter plays tracks by their SourceID through the
+// official embedded player — there is no media resolver, stream proxy or
+// extraction step anywhere in this app. The queue lives in application state.
 type App struct {
 	ctx context.Context
 
 	store    *store.Store
-	deps     *deps.Manager
 	provider *provider.Client
-	resolver *media.Resolver
-	proxy    *media.Proxy
 	lyrics   *lyrics.Client
 
 	mediaKeys *mediaKeyListener
 	tray      *tray
-
-	depMu      sync.Mutex
-	depErr     error
-	depChecked bool
 }
 
 type Diagnostics struct {
-	AppVersion     string      `json:"appVersion"`
-	GoVersion      string      `json:"goVersion"`
-	Platform       string      `json:"platform"`
-	DataDir        string      `json:"dataDir"`
-	StreamProxy    string      `json:"streamProxy"`
-	Resolver       deps.Status `json:"resolver"`
-	ResolverBinary string      `json:"resolverBinary"`
-	MediaKeys      string      `json:"mediaKeys"`
-	Tray           string      `json:"tray"`
+	AppVersion string `json:"appVersion"`
+	GoVersion  string `json:"goVersion"`
+	Platform   string `json:"platform"`
+	DataDir    string `json:"dataDir"`
+	Player     string `json:"player"`
+	MediaKeys  string `json:"mediaKeys"`
+	Tray       string `json:"tray"`
 }
 
-const appVersion = "3.0.0"
+const appVersion = "3.1.0"
 
 func NewApp() (*App, error) {
 	dir, err := dataDir()
@@ -64,24 +53,7 @@ func NewApp() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	dm, err := deps.NewManager(filepath.Join(dir, "bin"))
-	if err != nil {
-		return nil, err
-	}
-	app := &App{store: st, deps: dm, lyrics: lyrics.New()}
-
-	runner := provider.Exec{Path: func() (string, error) {
-		return app.resolverBinary()
-	}}
-	app.provider = provider.New(runner)
-	app.resolver = media.NewResolver(runner)
-	proxy, err := media.NewProxy(app.resolver)
-	if err != nil {
-		return nil, err
-	}
-	app.proxy = proxy
-	app.proxy.SetQuality(st.State().Settings.AudioQuality)
-	return app, nil
+	return &App{store: st, provider: provider.New(), lyrics: lyrics.New()}, nil
 }
 
 func dataDir() (string, error) {
@@ -95,33 +67,8 @@ func dataDir() (string, error) {
 	return filepath.Join(base, "MELO"), nil
 }
 
-// resolverBinary returns the managed yt-dlp path, installing it on first use.
-func (a *App) resolverBinary() (string, error) {
-	a.depMu.Lock()
-	defer a.depMu.Unlock()
-	if a.depChecked && a.depErr == nil {
-		p, _ := a.deps.BinaryPath()
-		return p, nil
-	}
-	path, err := a.deps.Ensure(func(done, total int64) {
-		if a.ctx == nil || total <= 0 {
-			return
-		}
-		wruntime.EventsEmit(a.ctx, "melo:resolver-progress", map[string]any{
-			"done": done, "total": total,
-		})
-	})
-	a.depChecked = true
-	a.depErr = err
-	if err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	media.InitDiag()
 	settings := a.store.State().Settings
 	if settings.MediaKeys {
 		a.mediaKeys = startMediaKeys(func(action string) {
@@ -129,14 +76,6 @@ func (a *App) startup(ctx context.Context) {
 		})
 	}
 	a.applyTray(settings.MinimizeToTray)
-	// Install the resolver in the background so first search/play is instant.
-	go func() {
-		if _, err := a.resolverBinary(); err != nil {
-			wruntime.EventsEmit(ctx, "melo:resolver-error", err.Error())
-			return
-		}
-		wruntime.EventsEmit(ctx, "melo:resolver-ready", a.deps.Version())
-	}()
 }
 
 func (a *App) shutdown(context.Context) {
@@ -146,9 +85,6 @@ func (a *App) shutdown(context.Context) {
 	if a.tray != nil {
 		a.tray.Stop()
 		a.tray = nil
-	}
-	if a.proxy != nil {
-		_ = a.proxy.Close()
 	}
 	if err := a.store.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "melo: failed to persist state on shutdown: %v\n", err)
@@ -160,20 +96,14 @@ func (a *App) shutdown(context.Context) {
 func (a *App) GetState() model.AppState { return a.store.State() }
 
 func (a *App) GetDiagnostics() Diagnostics {
-	bin := ""
-	if p, err := a.deps.BinaryPath(); err == nil {
-		bin = p
-	}
 	return Diagnostics{
-		AppVersion:     appVersion,
-		GoVersion:      runtime.Version(),
-		Platform:       runtime.GOOS + "/" + runtime.GOARCH,
-		DataDir:        a.store.Dir(),
-		StreamProxy:    a.proxy.Addr(),
-		Resolver:       a.deps.Status(),
-		ResolverBinary: bin,
-		MediaKeys:      mediaKeySupport(),
-		Tray:           traySupport(),
+		AppVersion: appVersion,
+		GoVersion:  runtime.Version(),
+		Platform:   runtime.GOOS + "/" + runtime.GOARCH,
+		DataDir:    a.store.Dir(),
+		Player:     "YouTube embedded player (IFrame API)",
+		MediaKeys:  mediaKeySupport(),
+		Tray:       traySupport(),
 	}
 }
 
@@ -187,28 +117,6 @@ func (a *App) Search(query, filter string) (model.SearchResponse, error) {
 	return res, nil
 }
 
-// GetPlayable resolves a track to a loopback stream URL. Errors are surfaced
-// verbatim to the UI so it can show a real message.
-func (a *App) GetPlayable(track model.Track) (model.PlayableSource, error) {
-	if track.SourceID == "" {
-		return model.PlayableSource{}, errors.New("couldn't load this song: missing source id")
-	}
-	ctx, cancel := context.WithTimeout(a.baseCtx(), 45*time.Second)
-	defer cancel()
-	res, err := a.resolver.Resolve(ctx, track.SourceID, a.proxy.Quality())
-	if err != nil {
-		return model.PlayableSource{}, err
-	}
-	return model.PlayableSource{
-		TrackID:   track.ID,
-		URL:       a.proxy.URLFor(track.SourceID),
-		MimeType:  res.MimeType,
-		Duration:  res.Duration,
-		Bitrate:   res.Bitrate,
-		ExpiresAt: res.ExpiresAt.UnixMilli(),
-	}, nil
-}
-
 func (a *App) GetLyrics(q lyrics.Query) (lyrics.Result, error) {
 	ctx, cancel := context.WithTimeout(a.baseCtx(), 15*time.Second)
 	defer cancel()
@@ -217,7 +125,6 @@ func (a *App) GetLyrics(q lyrics.Query) (lyrics.Result, error) {
 
 func (a *App) SaveSettings(s model.Settings) model.Settings {
 	out := a.store.SaveSettings(s)
-	a.proxy.SetQuality(out.AudioQuality)
 	a.applyMediaKeys(out.MediaKeys)
 	a.applyTray(out.MinimizeToTray)
 	return out
@@ -284,8 +191,13 @@ func (a *App) SetNowPlaying(title, artist string) {
 }
 
 func (a *App) SetLiked(t model.Track, liked bool) []model.Track { return a.store.SetLiked(t, liked) }
-func (a *App) RecordPlay(t model.Track) []model.PlayRecord      { return a.store.RecordPlay(t) }
-func (a *App) ClearHistory()                                    { a.store.ClearHistory() }
+
+// RecordPlayEvent records one phase of a listen ('start' / 'end'); see
+// store.RecordPlayEvent for the semantics.
+func (a *App) RecordPlayEvent(t model.Track, e model.PlayEvent) []model.PlayRecord {
+	return a.store.RecordPlayEvent(t, e)
+}
+func (a *App) ClearHistory() { a.store.ClearHistory() }
 func (a *App) AddSearchTerm(q string) []string                  { return a.store.AddSearchTerm(q) }
 func (a *App) RemoveSearchTerm(q string) []string               { return a.store.RemoveSearchTerm(q) }
 func (a *App) ClearSearchHistory()                              { a.store.ClearSearchHistory() }
@@ -311,18 +223,6 @@ func (a *App) ReorderPlaylist(id string, from, to int) (model.Playlist, error) {
 }
 func (a *App) DuplicatePlaylist(id string) (model.Playlist, error) {
 	return a.store.DuplicatePlaylist(id)
-}
-
-// InstallResolver lets the UI retry a failed dependency install explicitly.
-func (a *App) InstallResolver() (deps.Status, error) {
-	a.depMu.Lock()
-	a.depChecked = false
-	a.depErr = nil
-	a.depMu.Unlock()
-	if _, err := a.resolverBinary(); err != nil {
-		return a.deps.Status(), err
-	}
-	return a.deps.Status(), nil
 }
 
 func (a *App) baseCtx() context.Context {

@@ -2,24 +2,24 @@
  * The single boundary between the React app and the Go backend.
  *
  * In a packaged build Wails injects `window.go.main.App.*` (promise-returning
- * bindings) and `window.runtime` (events). In a plain browser — used for UI
- * work and tests — a fixture backend is used instead, selected explicitly via
- * VITE_MELO_MOCK so production builds can never silently fall back to it.
+ * bindings) and `window.runtime` (events). In a plain browser — UI work,
+ * tests, CI, and the public static web deployment — the fixture backend is
+ * used instead: this architecture has no web API, so browser builds run on
+ * the in-browser catalogue and play through the YouTube IFrame adapter.
  */
 import type {
-  AppState, Diagnostics, LyricsQuery, LyricsResult, PlayableSource,
-  Playlist, PlayRecord, ResolverStatus, SearchResponse, Session, Settings, Track,
+  AppState, Diagnostics, LyricsQuery, LyricsResult, PlayEvent,
+  Playlist, PlayRecord, SearchResponse, Session, Settings, Track,
 } from './types'
 
 export interface Backend {
   getState(): Promise<AppState>
   getDiagnostics(): Promise<Diagnostics>
   search(query: string, filter: string): Promise<SearchResponse>
-  getPlayable(track: Track): Promise<PlayableSource>
   getLyrics(query: LyricsQuery): Promise<LyricsResult>
   saveSettings(settings: Settings): Promise<Settings>
   setLiked(track: Track, liked: boolean): Promise<Track[]>
-  recordPlay(track: Track): Promise<PlayRecord[]>
+  recordPlayEvent(track: Track, event: PlayEvent): Promise<PlayRecord[]>
   clearHistory(): Promise<void>
   addSearchTerm(term: string): Promise<string[]>
   removeSearchTerm(term: string): Promise<string[]>
@@ -34,7 +34,6 @@ export interface Backend {
   removeTrackFromPlaylist(id: string, index: number): Promise<Playlist>
   reorderPlaylist(id: string, from: number, to: number): Promise<Playlist>
   duplicatePlaylist(id: string): Promise<Playlist>
-  installResolver(): Promise<ResolverStatus>
   /** Mirrors the current track to the desktop (tray tooltip + notification). */
   setNowPlaying(title: string, artist: string): Promise<void>
   on(event: string, cb: (...args: unknown[]) => void): () => void
@@ -72,11 +71,10 @@ const nativeBackend: Backend = {
   getState: () => call('GetState'),
   getDiagnostics: () => call('GetDiagnostics'),
   search: (query, filter) => call('Search', query, filter),
-  getPlayable: (track) => call('GetPlayable', track),
   getLyrics: (query) => call('GetLyrics', query),
   saveSettings: (settings) => call('SaveSettings', settings),
   setLiked: (track, liked) => call('SetLiked', track, liked),
-  recordPlay: (track) => call('RecordPlay', track),
+  recordPlayEvent: (track, event) => call('RecordPlayEvent', track, event),
   clearHistory: () => call('ClearHistory'),
   addSearchTerm: (term) => call('AddSearchTerm', term),
   removeSearchTerm: (term) => call('RemoveSearchTerm', term),
@@ -91,7 +89,6 @@ const nativeBackend: Backend = {
   removeTrackFromPlaylist: (id, index) => call('RemoveTrackFromPlaylist', id, index),
   reorderPlaylist: (id, from, to) => call('ReorderPlaylist', id, from, to),
   duplicatePlaylist: (id) => call('DuplicatePlaylist', id),
-  installResolver: () => call('InstallResolver'),
   setNowPlaying: (title, artist) => call('SetNowPlaying', title, artist),
   on(event, cb) {
     const rt = (window as unknown as WailsWindow).runtime
@@ -115,20 +112,23 @@ export function backend(): Backend {
   return unavailableBackend
 }
 
-/** Resolves the backend, loading the fixture backend when explicitly enabled. */
+/**
+ * Resolves the backend. Native bindings → the real backend. Any browser
+ * deployment — `vite dev`, tests, or the public static site — runs on the
+ * fixture backend, because there is no web API to talk to: playback is the
+ * client-side YouTube IFrame adapter and the fixture catalogue is the data
+ * source. The packaged app always has bindings, so real user data can never
+ * be shadowed by the fixture.
+ */
 export async function initBackend(): Promise<Backend> {
   if (override) return override
   if (hasNativeBackend()) return nativeBackend
-  if (import.meta.env.DEV && import.meta.env.VITE_MELO_MOCK === '1') {
-    if (!mockPromise) {
-      mockPromise = import('./mockBackend').then((m) => {
-        override = m.createMockBackend()
-        return override
-      })
-    }
-    return mockPromise
+  if (!mockPromise) {
+    mockPromise = import('./mockBackend').then((m) => m.createMockBackend())
   }
-  return unavailableBackend
+  const be = await mockPromise
+  override = be
+  return be
 }
 
 const backendDown = (what: string) => () =>
@@ -139,11 +139,10 @@ const unavailableBackend: Backend = {
   getState: backendDown('Couldn\u2019t load your library'),
   getDiagnostics: backendDown('Diagnostics unavailable'),
   search: backendDown('Search is unavailable'),
-  getPlayable: backendDown('Playback engine unavailable'),
   getLyrics: backendDown('Lyrics unavailable'),
   saveSettings: backendDown('Couldn\u2019t save settings'),
   setLiked: backendDown('Couldn\u2019t update your library'),
-  recordPlay: backendDown('Couldn\u2019t record playback'),
+  recordPlayEvent: backendDown('Couldn\u2019t record playback'),
   clearHistory: backendDown('Couldn\u2019t clear history'),
   addSearchTerm: backendDown('Couldn\u2019t save search history'),
   removeSearchTerm: backendDown('Couldn\u2019t update search history'),
@@ -158,7 +157,6 @@ const unavailableBackend: Backend = {
   removeTrackFromPlaylist: backendDown('Couldn\u2019t update the playlist'),
   reorderPlaylist: backendDown('Couldn\u2019t reorder the playlist'),
   duplicatePlaylist: backendDown('Couldn\u2019t duplicate the playlist'),
-  installResolver: backendDown('Couldn\u2019t install the media resolver'),
   // Desktop mirroring is best-effort: without a backend there is nothing to tell.
   setNowPlaying: async () => {},
   on: () => () => {},

@@ -4,8 +4,9 @@
 package model
 
 // Track is the canonical representation of a playable item. It is produced by
-// the search provider and stored in the library; the resolver turns it into a
-// PlayableSource. The player itself never knows where a track came from.
+// the search provider and stored in the library; the YouTube IFrame player in
+// the frontend plays it by its SourceID. The player itself never knows where
+// a track came from.
 type Track struct {
 	ID       string  `json:"id"`       // provider-scoped id, e.g. "yt:dQw4w9WgXcQ"
 	SourceID string  `json:"sourceId"` // raw provider id, e.g. "dQw4w9WgXcQ"
@@ -17,7 +18,10 @@ type Track struct {
 	Artwork  string  `json:"artwork"`  // real provider artwork URL, may be empty
 	Duration float64 `json:"duration"` // seconds; 0 when unknown
 	Explicit bool    `json:"explicit"`
-	AddedAt  int64   `json:"addedAt,omitempty"`
+	// Tags are optional style/genre hints from the provider, used by the
+	// recommendation profile where available.
+	Tags    []string `json:"tags,omitempty"`
+	AddedAt int64    `json:"addedAt,omitempty"`
 }
 
 // SearchResult groups provider results by kind so the UI can render sections.
@@ -27,7 +31,7 @@ type SearchResponse struct {
 	Videos   []Track  `json:"videos"`
 	Albums   []Album  `json:"albums"`
 	Artists  []Artist `json:"artists"`
-	Provider string   `json:"provider"` // "ytmusic" | "yt-dlp"
+	Provider string   `json:"provider"` // "ytmusic"
 }
 
 type Album struct {
@@ -47,18 +51,6 @@ type Artist struct {
 	Albums  []Album `json:"albums,omitempty"`
 }
 
-// PlayableSource is what the resolver hands to the player. The URL is always a
-// local streaming-proxy URL so the webview media element can range-request it
-// without provider auth/CORS concerns.
-type PlayableSource struct {
-	TrackID   string  `json:"trackId"`
-	URL       string  `json:"url"`
-	MimeType  string  `json:"mimeType"`
-	Duration  float64 `json:"duration"`
-	Bitrate   int     `json:"bitrate"`
-	ExpiresAt int64   `json:"expiresAt"`
-}
-
 // Playlist is a user-owned, locally persisted collection.
 type Playlist struct {
 	ID          string  `json:"id"`
@@ -69,10 +61,25 @@ type Playlist struct {
 	UpdatedAt   int64   `json:"updatedAt"`
 }
 
-// PlayRecord is one real playback event (recorded once playback actually starts).
+// PlayRecord is one real playback event. The frontend reports two phases per
+// listen: 'start' (playback actually began) and 'end' (how the listen went).
+// ListenedSec/Completed/Skipped are what the recommendation profile learns
+// from — a fully played track counts far more than one that was skipped.
 type PlayRecord struct {
-	Track    Track `json:"track"`
-	PlayedAt int64 `json:"playedAt"`
+	Track         Track  `json:"track"`
+	PlayedAt      int64  `json:"playedAt"`
+	ListenedSec   int64  `json:"listenedSec"`
+	TrackDuration int64  `json:"trackDuration"`
+	Completed     bool   `json:"completed"`
+	Skipped       bool   `json:"skipped"`
+}
+
+// PlayEvent is the per-listen detail the player reports.
+type PlayEvent struct {
+	Phase       string `json:"phase"` // "start" | "end"
+	ListenedSec int64  `json:"listenedSec,omitempty"`
+	Completed   bool   `json:"completed,omitempty"`
+	Skipped     bool   `json:"skipped,omitempty"`
 }
 
 type Settings struct {
@@ -80,7 +87,6 @@ type Settings struct {
 	Accent          string            `json:"accent"`          // accent key
 	Autoplay        bool              `json:"autoplay"`        // continue after explicit queue ends
 	DefaultSpeed    float64           `json:"defaultSpeed"`    // 0.5 - 2.0
-	AudioQuality    string            `json:"audioQuality"`    // "high" | "medium" | "low"
 	RestoreSession  bool              `json:"restoreSession"`  // restore last track/queue on launch
 	ResumeOnStartup bool              `json:"resumeOnStartup"` // auto-resume playback on launch
 	MediaKeys       bool              `json:"mediaKeys"`       // OS media key control
@@ -97,11 +103,15 @@ type Session struct {
 	Queue     []Track `json:"queue"`
 	AutoQueue []Track `json:"autoQueue"`
 	Index     int     `json:"index"`
-	Position  float64 `json:"position"`
-	Shuffle   bool    `json:"shuffle"`
-	Repeat    string  `json:"repeat"` // "off" | "one" | "all"
-	Speed     float64 `json:"speed"`
-	SavedAt   int64   `json:"savedAt"`
+	// Current is the track that was playing (it may be an autoplay track
+	// that is not part of the explicit queue). Nil when nothing was playing.
+	Current     *Track   `json:"current"`
+	PlayingFrom string   `json:"playingFrom"` // "queue" | "autoplay"
+	Position    float64 `json:"position"`
+	Shuffle     bool     `json:"shuffle"`
+	Repeat      string   `json:"repeat"` // "off" | "one" | "all"
+	Speed       float64 `json:"speed"`
+	SavedAt     int64    `json:"savedAt"`
 }
 
 // AppState is the full persisted state handed to the frontend on boot.
@@ -121,7 +131,6 @@ func DefaultSettings() Settings {
 		Accent:          "ember",
 		Autoplay:        true,
 		DefaultSpeed:    1,
-		AudioQuality:    "high",
 		RestoreSession:  true,
 		ResumeOnStartup: false,
 		MediaKeys:       true,

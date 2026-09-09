@@ -76,9 +76,6 @@ func migrate(st model.AppState) model.AppState {
 	if st.Settings.DefaultSpeed <= 0 {
 		st.Settings.DefaultSpeed = def.DefaultSpeed
 	}
-	if st.Settings.AudioQuality == "" {
-		st.Settings.AudioQuality = def.AudioQuality
-	}
 	if st.Settings.Volume <= 0 {
 		st.Settings.Volume = def.Volume
 	}
@@ -218,19 +215,47 @@ func (s *Store) IsLiked(id string) bool {
 
 // ---------- history ----------
 
-// RecordPlay appends a real playback event. Consecutive duplicates within
-// 30 seconds are collapsed so a seek-heavy session does not spam history.
-func (s *Store) RecordPlay(t model.Track) []model.PlayRecord {
+// RecordPlayEvent records one phase of a listen.
+//
+//	phase "start": a new entry is prepended (a repeated start of the same
+//	               track within 30s refreshes the existing entry instead, so
+//	               seeks and restarts do not spam history)
+//	phase "end":   the most recent matching entry (within 3h) is completed
+//	               with how long the track was actually heard, whether it
+//	               finished naturally and whether it was skipped.
+//
+// The completion detail is what the recommendation profile learns from.
+func (s *Store) RecordPlayEvent(t model.Track, e model.PlayEvent) []model.PlayRecord {
 	now := time.Now().UnixMilli()
 	s.mutate(func(st *model.AppState) {
+		if e.Phase == "end" {
+			for i := range st.History {
+				h := &st.History[i]
+				if h.Track.ID == t.ID && now-h.PlayedAt < 3*3600_000 {
+					if e.ListenedSec > 0 {
+						h.ListenedSec = e.ListenedSec
+					}
+					h.Completed = e.Completed
+					h.Skipped = e.Skipped
+					return
+				}
+			}
+			return
+		}
 		if len(st.History) > 0 {
-			last := st.History[0]
+			last := &st.History[0]
 			if last.Track.ID == t.ID && now-last.PlayedAt < 30_000 {
-				st.History[0].PlayedAt = now
+				last.PlayedAt = now
 				return
 			}
 		}
-		st.History = append([]model.PlayRecord{{Track: t, PlayedAt: now}}, st.History...)
+		entry := model.PlayRecord{
+			Track:         t,
+			PlayedAt:      now,
+			ListenedSec:   0,
+			TrackDuration: int64(t.Duration),
+		}
+		st.History = append([]model.PlayRecord{entry}, st.History...)
 		if len(st.History) > maxHistory {
 			st.History = st.History[:maxHistory]
 		}

@@ -2,63 +2,73 @@
 
 A lightweight desktop music player for Windows. Native shell in Go
 ([Wails v2](https://wails.io) / WebView2), UI in React + TypeScript. No Electron,
-no bundled Chromium, no Rust, no libmpv — the shipped app is a single ~7.6 MB
+no bundled Chromium, no Rust, no libmpv — the shipped app is a single ~5 MB
 executable that renders in the WebView2 runtime already present on Windows 10/11.
 
-MELO searches YouTube Music, resolves an audio-only stream, plays it, and keeps a
-local library (likes, playlists, history) in a single JSON file you own.
+MELO searches YouTube Music and plays tracks through the **official YouTube
+embedded player (IFrame API)**, wrapped in its own player UI, and keeps a local
+library (likes, playlists, listening history) in a single JSON file you own.
 
 ---
 
 ## Architecture
 
 ```
-React UI (TypeScript)                 Go (native shell)
-────────────────────────              ─────────────────────────────
-views/  components/                   app.go          Wails bindings
-   │                                  internal/provider   YT Music InnerTube + yt-dlp search
-state/playback.ts  ◀── one controller  internal/media/resolver.go   yt-dlp format pick + cache
-state/*Store.ts    ◀── zustand         internal/media/proxy.go      loopback Range proxy
-audio/engine.ts    ─── <audio>         internal/lyrics    LRCLIB client + LRC parser
-bridge/backend.ts  ─── typed adapter   internal/store     atomic JSON persistence
-                        │              internal/deps      pinned yt-dlp installer
-                        └──────────────► window.go.main.App (Wails)
+React UI (TypeScript)                          Go (native shell)
+──────────────────────────                     ─────────────────────────────
+views/  components/                            app.go             Wails bindings
+   │                                          internal/provider   YT Music InnerTube search
+state/playback.ts   ◀── one controller        internal/lyrics     LRCLIB client + LRC parser
+state/recommender.ts ◀─ autoplay buffer       internal/store      atomic JSON persistence
+audio/youtubeAdapter.ts ── YouTube IFrame     mediakeys / tray    Win32 integrations
+bridge/backend.ts   ── typed adapter
+```
+
+Canonical playback path — one direction, one authority per layer:
+
+```
+UI
+  ↓
+Queue / Playback Controller (state/playback.ts)
+  ↓
+PlaybackAdapter (audio/adapter.ts contract)
+  ↓
+YouTube IFrame Player (audio/youtubeAdapter.ts)
 ```
 
 Rules the codebase holds to:
 
 - **One authority per concern.** One playback controller, one queue, one current
-  track, one library store. Position and duration exist only inside the audio
-  engine's `positionChannel` — there is no second playback clock and no
-  independent lyric timer; the lyric highlight is derived from the element's real
-  `timeupdate`.
-- **Player-authoritative time.** The `HTMLAudioElement` in WebView2 is the clock.
-  Go never guesses where playback is.
-- **Resolver is independent of the player.** `search provider → Track →
-  resolver → PlayableSource → player`. Swapping the resolver does not touch
-  playback code.
+  track, one library store. Position and duration exist only in the position
+  channel fed by the adapter — there is no second playback clock.
+- **The provider is behind an adapter.** `PlaybackAdapter` is a small contract
+  (`beginLoad` / `load` / `play` / `pause` / `seek` / volume / rate / events).
+  The YouTube adapter is the only code that knows the IFrame API exists; the
+  controller hands it a `Track` and nothing else. Swapping providers cannot
+  touch queue or recommendation logic, and vice versa.
+- **No media extraction.** There is no resolver, no stream proxy, no yt-dlp and
+  no `/resolve`/`/stream` endpoint anywhere. Playback is the official embedded
+  YouTube player, driven by `loadVideoById` with the track's YouTube id.
 - **Generation tokens on every async step.** Each track switch takes a new token;
-  a late resolver, lyric fetch or artwork load whose token is stale is dropped
+  a late load, lyric fetch or artwork load whose token is stale is dropped
   instead of overwriting the newer track.
 - **Position updates do not rerender the app.** They go through a subscription
   channel that only the scrubber, time labels and lyric pane read.
+- **Recommendation logic is separate from playback.** `lib/profile.ts` (what the
+  listener enjoys) and `lib/recommend.ts` (deterministic scoring + diversity)
+  are pure modules; `state/recommender.ts` orchestrates fetching and owns the
+  autoplay buffer; the playback controller only consumes from it.
 
-### Why this playback backend
+### Playback presentation
 
-| Option | Verdict |
-| --- | --- |
-| libmpv / mpv sidecar | Rejected. ~40 MB of native DLLs, a process supervisor, IPC state machine, and the exact architecture that made previous MELO builds fragile. |
-| Go audio libraries (beep, oto, malgo) | Rejected. They need decoded PCM: MELO would have to demux/decode AAC/Opus itself, plus cgo, plus a device-loss story. |
-| **WebView2 `HTMLAudioElement` fed by a Go loopback proxy** | **Chosen.** |
-
-WebView2 (a Chromium media pipeline that is already installed on Windows) plays
-YouTube's `m4a`/`opus` streams natively, gives accurate `timeupdate`/`ended`
-events, and supports seeking and playback rate with zero extra binaries. The Go
-side resolves a stream URL with yt-dlp and serves it to the webview through a
-loopback HTTP proxy bound to `127.0.0.1` on a random port with a per-track
-capability token. The proxy forwards `Range` requests (so seeking works), and if
-YouTube expires a URL mid-playback (403/410) it re-resolves once, transparently.
-Total native surface: one HTTP handler and one yt-dlp invocation.
+The embedded player must be (and is) always visible while it plays — MELO never
+hides, shrinks, crops or moves it off-screen. Instead of competing with the
+app's UI, the video **is** the Now Playing artwork while the Now Playing view is
+open, and docks into a compact mini-player attached to the player bar when the
+view is closed (the YouTube Music pattern). `stop()` destroys the player
+entirely, so no hidden idle player ever exists. The stage is a single,
+persistent DOM node that is only ever repositioned — never re-created — so
+navigating the app never reloads the video.
 
 ---
 
@@ -67,43 +77,51 @@ Total native surface: one HTTP handler and one yt-dlp invocation.
 **Playback** — play / pause / resume / stop / next / previous / seek / volume /
 mute / speed (0.5×–2×), shuffle, repeat off-one-all, natural EOF auto-advance.
 Manual **Stop never advances** the queue. EOF and manual Next each advance
-exactly once. Previous restarts the track if more than 3 s have elapsed.
-Rapid track switching is safe: A is stopped and its state (metadata, artwork,
-lyrics, progress) cleared before B loads, and A's in-flight results are rejected.
+exactly once. Previous restarts the track if more than 3 s have elapsed, and
+during autoplay it walks back through what actually played this session.
 
-**Search** — real YouTube Music InnerTube search with a yt-dlp `ytsearch`
-fallback, filters for songs / videos / albums / artists, single click to play,
+**Queue — Up Next + Autoplay, like Spotify / YouTube Music.** The queue panel
+has three sections: **Now playing**, **Up next** (the user's explicit queue) and
+**Autoplay · for you** (a rolling recommendation buffer). Explicitly queued
+tracks *always* play before autoplay, no matter when they were added. The
+autoplay buffer holds a rolling window (refills below 18, capped at 30): as
+tracks are consumed it is topped up incrementally — never emptied and
+regenerated, never bulk-generated — so listening continues indefinitely without
+starting a new radio session.
+
+**Recommendations that learn from real listening.** Every listen is recorded
+with what actually happened: how long it played, whether it completed, whether
+it was skipped. From that history plus likes, a deterministic profile is built
+(artist affinities with recency decay, style/genre tags, recent streak, skips).
+Recommendations combine:
+
+```
+score =  current-track relevance      (artist / title / album)
+      + recent-history relevance     (the current listening streak)
+      + artist affinity              (what you keep coming back to)
+      + style/genre affinity
+      + liked-artist bonus
+      + provider rank                (the search engine's own relevance)
+      - ever-played penalty
+      - repeated-artist penalty      (what's already in the buffer)
+      - current-artist flood penalty
+```
+
+Candidates come from bounded searches anchored on several signals at once — the
+current track, top affinities, liked artists, recent streak — rotating between
+fetches. Diversity is structural, never random: no more than two consecutive
+tracks from one artist, a per-artist share cap on the buffer, no repeat uploads
+of the same song (normalized-title matching), recently played and recently
+skipped tracks excluded outright. Same inputs always produce the same queue.
+
+**Search** — YouTube Music InnerTube search with filters for songs / videos /
+albums / artists, single click to play (only the chosen track is ever enqueued),
 independent secondary buttons (like, add to queue, play next, add to playlist,
-more) that never trigger playback. Loading, results, empty, error + retry states.
-Search history is persisted and removable.
+more), search history.
 
-**Queue** — real queue with play next, add to end, remove, drag-free reorder,
-clear upcoming, shuffle upcoming (current track never moves), dedupe. Autoplay
-("keep playing similar music") is a **separate** auto-queue, clearly labelled and
-switchable off in settings.
-
-**Library** — Liked Songs, Songs, Albums, Artists, Playlists, Recently Played.
-Albums and artists are *derived from real track metadata only*; nothing is
-invented to fill a grid. Opening an album or artist you don't actually have shows
-an explicit empty state.
-
-**Playlists** — create, rename, delete, add, remove, reorder, duplicate, play,
-shuffle-play, and save the current queue as a playlist.
-
-**Lyrics** — LRCLIB, synced (LRC) and plain, with instrumental / not-found /
-network-failure states handled distinctly. Highlighting is driven purely by the
-player's position and a per-track offset.
-
-**Desktop integration** — global media keys (play/pause, next, previous, stop),
-a notification-area icon with a transport context menu (play/pause, next,
-previous, show, quit), close-to-tray, balloon notifications on track change,
-session restore (queue + track + position), and a clean shutdown that flushes
-state and stops the proxy. All of it is plain `user32`/`shell32` syscalls — no
-extra dependencies — and each piece degrades to "off" if Windows refuses it.
-
-**UI** — MELO's own dark/light identity (deep slate + ember accent, seven
-selectable accents), keyboard shortcuts, persistent mini player, Now Playing
-view, Home, Artist and Album pages.
+**Library** — Liked Songs, Songs, Albums, Artists, Playlists, Recently Played,
+derived from real metadata only. **Lyrics** — LRCLIB, synced and plain.
+**Desktop integration** — media keys, tray icon, notifications, session restore.
 
 Keyboard: `Ctrl/⌘+K` search · `Space` play/pause · `←/→` seek 5 s ·
 `Ctrl+←/→` prev/next · `↑/↓` volume · `M` mute · `S` shuffle · `R` repeat ·
@@ -113,10 +131,9 @@ Keyboard: `Ctrl/⌘+K` search · `Space` play/pause · `←/→` seek 5 s ·
 
 ## Requirements
 
-- Windows 10 1809+ or Windows 11 with the **WebView2 runtime** (preinstalled on
-  Windows 11 and on up-to-date Windows 10).
-- Internet access for search, streaming and lyrics. The library, playlists and
-  settings are entirely local and work offline.
+- Windows 10 1809+ or Windows 11 with the **WebView2 runtime**.
+- Internet access for search, playback and lyrics. The library, playlists and
+  settings are entirely local.
 
 ## Build
 
@@ -124,6 +141,9 @@ Keyboard: `Ctrl/⌘+K` search · `Space` play/pause · `←/→` seek 5 s ·
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.1
 wails build            # -> build/bin/MELO.exe
 wails dev              # hot-reloading dev build
+
+go test ./...          # Go tests
+go vet ./...
 ```
 
 Frontend-only work:
@@ -131,70 +151,75 @@ Frontend-only work:
 ```bash
 cd frontend
 npm install
-npm run dev      # Vite on :5173
+npm run dev      # Vite on :5173 — browser dev against the fixture backend
 npm test         # vitest
 npm run build    # type-check + production bundle into frontend/dist
 ```
 
-Go:
+`npm run dev` runs against an in-browser fixture backend (a catalogue of real
+YouTube video ids + localStorage persistence) so the UI can be worked on
+without the Go shell. In the browser the app prefers the real YouTube IFrame
+player whenever it can be reached, and otherwise falls back to a silent
+offline transport (`?player=clock` forces it in dev) so the full
+queue/autoplay flow stays testable offline. The fixture never applies when
+Wails bindings exist.
 
-```bash
-go test ./...
-go vet ./...
-```
+## Web deployment
+
+The same frontend ships as a public static site — no Go server, no API. In a
+browser without Wails bindings the app runs on the fixture catalogue and
+plays through the official YouTube IFrame player, exactly like the packaged
+app; if the IFrame API is unreachable it degrades to the silent offline
+transport and says so in a toast.
+
+- **Vercel** — the project builds `frontend/` (`npm run build`) and serves
+  `dist/` at <https://musicapp-rp-1bc2.vercel.app>.
+- **Railway / any Docker host** — the root `Dockerfile` builds the bundle and
+  serves it with nginx on `$PORT`. It is a pure static file server: there is
+  deliberately no `/resolve`, `/stream`, or media proxy anywhere in this
+  architecture.
+- **GitHub Pages** — `cd frontend && npx vite build --base=/musicapp/`, then
+  publish `dist/` (e.g. to the `gh-pages` branch).
+
+The deployed player is the same compliant, integrated one as the desktop
+build: the YouTube IFrame surface is docked into the Now Playing artwork (or
+the mini player bar) — never hidden, 1px, or off-screen — and playback always
+flows UI → PlaybackController → PlaybackAdapter → YouTube IFrame.
 
 ## Data
 
 State lives in `%AppData%\MELO\melo-state.json` (override with `MELO_DATA_DIR`).
-Writes are atomic (temp file + rename) and debounced by 250 ms. A corrupt file is
-moved aside to `melo-state.json.corrupt` and MELO starts with a clean state
-instead of failing to launch. History is capped at 500 entries with a 30 s
-dedupe window; search history at 50.
+Writes are atomic (temp file + rename) and debounced by 250 ms. A corrupt file
+is moved aside and MELO starts clean.
 
-## The resolver dependency
+**Listening history** entries record the track, when it played, how many
+seconds were actually heard, the track's duration, whether the listen completed
+and whether it was skipped — the exact signal the recommendation profile learns
+from. History is capped at 500 entries; a repeated start of the same track
+within 30 s merges into one entry.
 
-MELO uses **yt-dlp** to turn a YouTube video id into a playable audio URL. It is
-not assumed to be on `PATH` and is never invoked from a directory the dev watcher
-looks at.
+## Testing
 
-- The version is pinned in `internal/deps/manifest.json` (currently
-  `2026.08.19`) and the binary is installed to
-  `%LocalAppData%\MELO\bin\yt-dlp.exe`.
-- Downloads are verified against SHA-256 before the file is put in place, from
-  the release's published `SHA2-256SUMS`.
-- Installation happens once, on explicit user action from Settings → Resolver (or
-  the actionable error shown when playback needs it). There is no bootstrap loop
-  and no silent background retry: a failure reports the URL, the HTTP status or
-  the digest mismatch.
-- `go run ./tools/pindeps [version]` refreshes the manifest digests. **Run it and
-  commit the result whenever the pinned version changes** — see the limitation
-  below.
+- `go test ./...` — store, provider (against served fixtures), lyrics.
+- `npm test` — adapters (including the YouTube adapter against a faithful
+  `YT.Player` stand-in), controller/queue semantics, recommender & profile
+  scoring, application smoke tests through the real component tree.
+- `frontend/scripts/e2e.mjs` — an end-to-end run against the dev server
+  (`node scripts/e2e.mjs`) driving the real UI in headless Chromium: listens
+  across artists, completes and skips tracks, likes songs, and verifies the
+  queue panel reflects accumulated behaviour. Screenshots land in
+  `frontend/e2e/shots/`.
 
 ## Known limitations
 
-- **Digest pinning is trust-on-first-use in this checkout.** The sandbox this
-  release was built in cannot reach GitHub release assets, so the `sha256` fields
-  in `internal/deps/manifest.json` are empty. With empty digests MELO falls back
-  to verifying the downloaded binary against the `SHA2-256SUMS` file published
-  with the *same pinned release* — which authenticates the download against
-  GitHub but not against a digest reviewed in source control. Running
-  `go run ./tools/pindeps` on a networked machine and committing the manifest
-  closes this gap.
-- **Not validated on real Windows hardware.** Everything here was built and
-  tested on headless Linux. The Windows binary cross-compiles (7.6 MB, stripped)
-  and all automated tests pass, but no one has yet run `MELO.exe` on Windows and
-  played audio, used media keys, the tray icon or notifications. The Win32
-  syscall layer (`mediakeys_windows.go`, `tray_windows.go`) is compiled and
-  reviewed, not observed — treat it as the first thing to check on a real
-  machine.
-- **No live network validation.** YouTube and LRCLIB are unreachable from the
-  build environment, so the provider, resolver and lyrics clients are covered by
-  tests against recorded/served fixtures rather than the live services.
-- `frontend/.env.development` sets `VITE_MELO_MOCK=1`, which makes `npm run dev`
-  (browser only) run against an in-memory fixture backend so the UI can be worked
-  on without the Go shell. It is ignored the moment real Wails bindings exist, and
-  never applies to `wails dev`, `wails build` or any production bundle.
-- No local-file library, no gapless/crossfade, no equalizer, no offline caching of
-  streams, no account or cloud sync.
+- **Not validated on real Windows hardware in this environment.** The sandbox
+  is Linux-only and offline from YouTube, so the Windows binary cross-compiles
+  and all automated tests pass, but the IFrame playback, tray, media keys and
+  notifications have not been observed on a real Windows machine. The Win32
+  syscall layer is the first thing to check there.
+- The YouTube player is the *embedded* player: a small number of videos forbid
+  embedding. MELO surfaces a clear message and moves on rather than failing.
+- No local-file library, no gapless/crossfade, no equalizer, no offline caching,
+  no account or cloud sync.
 - Album and artist pages cover what is in your library; MELO does not browse a
   catalogue it hasn't got metadata for.

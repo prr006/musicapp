@@ -11,6 +11,8 @@ export interface Track {
   artwork: string
   duration: number
   explicit: boolean
+  /** Optional style/genre hints; used by the recommender where available. */
+  tags?: string[]
   addedAt?: number
 }
 
@@ -40,15 +42,6 @@ export interface SearchResponse {
   provider: string
 }
 
-export interface PlayableSource {
-  trackId: string
-  url: string
-  mimeType: string
-  duration: number
-  bitrate: number
-  expiresAt: number
-}
-
 export interface Playlist {
   id: string
   name: string
@@ -58,9 +51,31 @@ export interface Playlist {
   updatedAt: number
 }
 
+/**
+ * One real playback event. `listenedSec` / `completed` / `skipped` record how
+ * the listen actually went, which is what the recommendation profile learns
+ * from: a fully played track counts far more than one that was skipped.
+ */
 export interface PlayRecord {
   track: Track
   playedAt: number
+  /** Seconds actually heard (0 for the provisional entry created at start). */
+  listenedSec: number
+  /** The track's duration at listen time, when known. */
+  trackDuration: number
+  /** Reached the end naturally (or within the last few seconds). */
+  completed: boolean
+  /** Left behind early via Next / another pick. */
+  skipped: boolean
+}
+
+/** What the player reports about a single track's listen. */
+export interface PlayEvent {
+  /** 'start' creates/refreshes the history entry; 'end' completes it. */
+  phase: 'start' | 'end'
+  listenedSec?: number
+  completed?: boolean
+  skipped?: boolean
 }
 
 export type ThemeMode = 'dark' | 'light' | 'system'
@@ -71,7 +86,6 @@ export interface Settings {
   accent: string
   autoplay: boolean
   defaultSpeed: number
-  audioQuality: 'high' | 'medium' | 'low'
   restoreSession: boolean
   resumeOnStartup: boolean
   mediaKeys: boolean
@@ -87,6 +101,10 @@ export interface Session {
   queue: Track[]
   autoQueue: Track[]
   index: number
+  /** The track that was current when the session was saved. */
+  current: Track | null
+  /** Whether playback was inside the explicit queue or autoplay. */
+  playingFrom: 'queue' | 'autoplay'
   position: number
   shuffle: boolean
   repeat: RepeatMode
@@ -129,21 +147,12 @@ export interface LyricsResult {
   matchedArtist: string
 }
 
-export interface ResolverStatus {
-  installed: boolean
-  path: string
-  version: string
-  message: string
-}
-
 export interface Diagnostics {
   appVersion: string
   goVersion: string
   platform: string
   dataDir: string
-  streamProxy: string
-  resolver: ResolverStatus
-  resolverBinary: string
+  player: string
   mediaKeys: string
   tray: string
 }

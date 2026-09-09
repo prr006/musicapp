@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { backend } from '../bridge/backend'
-import type { AppState, PlayRecord, Playlist, Settings, Track } from '../bridge/types'
+import type { AppState, PlayEvent, PlayRecord, Playlist, Settings, Track } from '../bridge/types'
 import { defaultSettings } from '../lib/defaults'
 
 export interface LibraryState {
@@ -64,8 +64,17 @@ export const library = {
     set({ settings: { ...defaultSettings(), ...saved } })
   },
 
-  async recordPlay(track: Track): Promise<void> {
-    const history = await backend().recordPlay(track)
+  /**
+   * Records what actually happened during a listen. The store merges the two
+   * phases into a single history entry per play: 'start' creates it, 'end'
+   * completes it with listened/completed/skipped. This is the signal the
+   * recommendation profile learns from.
+   */
+  async recordPlayEvent(
+    track: Track,
+    event: PlayEvent,
+  ): Promise<void> {
+    const history = await backend().recordPlayEvent(track, event)
     set({ history: history ?? [] })
   },
 

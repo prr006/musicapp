@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { SPEEDS } from '../lib/defaults'
 import { library, useLibraryStore } from '../state/libraryStore'
 import { playback, usePlayer } from '../state/playback'
@@ -6,6 +7,23 @@ import { Artwork } from './Artwork'
 import { ChevronDown, HeartIcon, LyricsIcon, QueueIcon, SpeedIcon } from './Icons'
 import { LyricsPane } from './LyricsPane'
 import { ProgressRow, TransportButtons, VolumeControl } from './MiniPlayer'
+import { VideoSlot } from './VideoStage'
+
+/**
+ * True while the playback provider has a video surface (the YouTube IFrame).
+ * In that mode the video is presented *as* the artwork — one media surface,
+ * not two players. Providers without a surface show the regular artwork.
+ */
+function useVideoSurface(): boolean {
+  const [has, setHas] = useState(false)
+  useEffect(() => {
+    const check = () => setHas(!!playback.adapter.videoSurface)
+    check()
+    const interval = setInterval(check, 400)
+    return () => clearInterval(interval)
+  }, [])
+  return has
+}
 
 export function NowPlaying() {
   const current = usePlayer((s) => s.current)
@@ -16,6 +34,7 @@ export function NowPlaying() {
   const queueOpen = useUIStore((s) => s.queueOpen)
   const liked = useLibraryStore((s) => (current ? s.liked.some((t) => t.id === current.id) : false))
   const showLyrics = useLibraryStore((s) => s.settings.showLyrics)
+  const hasVideo = useVideoSurface()
 
   const withLyrics = lyricsOpen && showLyrics
 
@@ -26,7 +45,7 @@ export function NowPlaying() {
           <ChevronDown size={20} />
         </button>
         <div className="muted" style={{ fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-          {status === 'loading' ? 'Loading' : status === 'playing' ? 'Playing' : status === 'error' ? 'Error' : 'Paused'}
+          {hasVideo ? (status === 'loading' ? 'Loading from YouTube' : status === 'playing' ? 'Playing from YouTube' : status === 'error' ? 'Error' : 'Paused') : status === 'loading' ? 'Loading' : status === 'playing' ? 'Playing' : status === 'error' ? 'Error' : 'Paused'}
         </div>
         <div className="row">
           {showLyrics && (
@@ -58,11 +77,14 @@ export function NowPlaying() {
         <div className="np-art-col">
           {current ? (
             <>
-              <Artwork
-                src={current.artwork}
-                alt={current.title}
-                className={`np-art ${status === 'loading' ? 'skeleton' : ''}`}
-              />
+              <div className="np-art-wrap">
+                <Artwork
+                  src={current.artwork}
+                  alt={current.title}
+                  className={`np-art ${status === 'loading' ? 'skeleton' : ''}`}
+                />
+                <VideoSlot slotId="np" className="np-video-slot" />
+              </div>
               <div>
                 <h1 className="np-title">{current.title}</h1>
                 <div className="np-artist">
