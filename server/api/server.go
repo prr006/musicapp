@@ -924,22 +924,12 @@ func radioSupplementalQueries(base []model.Track, seedArtist, seedTitle string) 
 		seen[key] = true
 		queries = append(queries, query)
 	}
-	pivotLimit := radioSupplementalLimit
-	if seedArtist != "" {
-		// Reserve two searches for stable seed context. Provider result credits
-		// often include cover uploaders, so blindly walking every apparent artist
-		// can drift far away from the requested song.
-		pivotLimit = 1
-	}
 	for _, track := range base {
 		artist := primaryArtist(track.Artist)
 		if artist == "" || radioArtistKey(artist, track.ID) == seedKey {
 			continue
 		}
 		add(artist)
-		if len(queries) >= pivotLimit {
-			break
-		}
 	}
 	if len(queries) < radioSupplementalLimit && seedArtist != "" {
 		add(seedArtist + " similar music")
