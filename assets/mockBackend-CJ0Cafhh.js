@@ -1,4 +1,4 @@
-import{d as A}from"./index-BpWUyRfd.js";const y="melo.mock.state",v=500;function w(a,o){const l=`<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400">
+import{d as A}from"./index-BjRH1F4Z.js";const y="melo.mock.state",v=500;function w(a,o){const l=`<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400">
     <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="hsl(${o},62%,52%)"/>
       <stop offset="100%" stop-color="hsl(${(o+48)%360},55%,28%)"/>
