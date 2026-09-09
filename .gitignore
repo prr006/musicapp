@@ -12,3 +12,6 @@ frontend/wailsjs/
 
 # end-to-end run artifacts (evidence copies live in docs/evidence)
 frontend/e2e/
+
+# Pages build output (published to the gh-pages branch, not tracked)
+frontend/dist-pages/
