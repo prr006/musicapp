@@ -1123,8 +1123,10 @@ func providerErrorStatus(err error) (int, string) {
 		return http.StatusGatewayTimeout, "provider_timeout"
 	case errors.Is(err, cache.ErrCircuitOpen):
 		return http.StatusServiceUnavailable, "provider_backoff"
-	case errors.Is(err, media.ErrUnavailable), errors.Is(err, media.ErrNoAudio):
+	case errors.Is(err, media.ErrUnavailable):
 		return http.StatusNotFound, "media_unavailable"
+	case errors.Is(err, media.ErrNoAudio):
+		return http.StatusNotFound, "no_supported_audio"
 	case errors.Is(err, media.ErrProviderNetwork):
 		return http.StatusBadGateway, "provider_network"
 	default:
@@ -1144,15 +1146,21 @@ func writeSearchError(w http.ResponseWriter, err error) {
 func writeResolveError(w http.ResponseWriter, err error) {
 	status, code := providerErrorStatus(err)
 	message := "Couldn't resolve this track. Try again."
-	switch status {
-	case http.StatusNotFound:
-		message = "This track has no playable source or is unavailable."
-	case http.StatusGatewayTimeout:
+	switch code {
+	case "media_unavailable":
+		message = "The playback provider reports this media as unavailable."
+	case "no_supported_audio":
+		message = "The provider returned no supported progressive audio format."
+	case "provider_timeout":
 		message = "Track resolution timed out. Try again."
-	case http.StatusServiceUnavailable:
+	case "provider_backoff":
 		message = "Playback provider is temporarily unavailable. Try again shortly."
 	}
-	writeError(w, status, code, message)
+	errorBody := map[string]any{"code": code, "message": message}
+	if attempts := media.ResolverAttempts(err); len(attempts) > 0 {
+		errorBody["resolverAttempts"] = attempts
+	}
+	writeJSON(w, status, map[string]any{"error": errorBody})
 }
 
 func writeLyricsError(w http.ResponseWriter, err error) {

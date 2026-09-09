@@ -43,6 +43,32 @@ var (
 	ErrProviderNetwork = errors.New("provider network unavailable")
 )
 
+// ResolverAttempt is a sanitized account of one bounded yt-dlp player-client
+// attempt. It deliberately contains no provider URL, header, token, cookie, or
+// raw provider response and is safe to attach to operational error responses.
+type ResolverAttempt struct {
+	Clients string `json:"clients"`
+	Outcome string `json:"outcome"`
+}
+
+type resolverAttemptError struct {
+	cause    error
+	attempts []ResolverAttempt
+}
+
+func (e *resolverAttemptError) Error() string { return e.cause.Error() }
+func (e *resolverAttemptError) Unwrap() error { return e.cause }
+
+// ResolverAttempts extracts a defensive copy of the sanitized client outcomes
+// from a failed resolution.
+func ResolverAttempts(err error) []ResolverAttempt {
+	var attemptErr *resolverAttemptError
+	if !errors.As(err, &attemptErr) {
+		return nil
+	}
+	return append([]ResolverAttempt(nil), attemptErr.attempts...)
+}
+
 // ---- temporary diagnostics (MELO_RESOLVER_DIAG=1) ----
 //
 // These record, for a single failing video, every format yt-dlp returned and
@@ -255,10 +281,14 @@ var resolveClients = []string{
 
 func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolved, error) {
 	// Bounded, deterministic fallback across client sets: try each in order and
-	// stop at the first that produces a browser-playable stream. Only
-	// "no playable stream" advances to the next set; real failures (network,
-	// unavailable, unreadable output) are returned immediately and never masked.
+	// stop at the first that produces a browser-playable stream. Client-specific
+	// no-format and unavailable responses advance to the next supported set;
+	// network/process failures stop immediately.
 	var lastErr error
+	attempts := make([]ResolverAttempt, 0, len(resolveClients))
+	failed := func(err error) (Resolved, error) {
+		return Resolved{}, &resolverAttemptError{cause: err, attempts: append([]ResolverAttempt(nil), attempts...)}
+	}
 	for i, clients := range resolveClients {
 		args := []string{
 			"--dump-single-json", "--no-playlist", "--no-warnings",
@@ -272,37 +302,44 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 			diagf("resolve %s: yt-dlp exited with error: %s", sourceID, err.Error())
 			switch classifyResolverError(err) {
 			case ErrNoAudio:
-				// This client set exposed no downloadable formats; try the next.
+				attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "no_supported_audio"})
 				lastErr = fmt.Errorf("%w: %s", ErrNoAudio, firstLine(err.Error()))
 				continue
 			case ErrProviderNetwork:
-				return Resolved{}, fmt.Errorf("%w: resolver request failed", ErrProviderNetwork)
+				attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "provider_network"})
+				return failed(fmt.Errorf("%w: resolver request failed", ErrProviderNetwork))
 			case ErrUnavailable:
-				// UNPLAYABLE can be client-specific (notably visionos for music
-				// uploads). Try the remaining bounded supported clients; truly
-				// private/removed media will be rejected by every set.
+				attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "provider_unavailable"})
+				// UNPLAYABLE can be client-specific. Try the remaining bounded
+				// supported clients; private/removed media fails every set.
 				lastErr = fmt.Errorf("%w: provider rejected this media for %s", ErrUnavailable, clients)
 				continue
 			default:
-				return Resolved{}, fmt.Errorf("%w: resolver process failed", ErrResolve)
+				attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "resolver_process_error"})
+				return failed(fmt.Errorf("%w: resolver process failed", ErrResolve))
 			}
 		}
 		res, perr := ParseResolved(out, sourceID, quality)
 		if perr == nil {
 			return res, nil
 		}
-		if !errors.Is(perr, ErrNoAudio) {
-			// A real failure (unavailable, live, unreadable output), not a lack
-			// of formats — surface it rather than retrying with another client.
-			return Resolved{}, perr
+		if errors.Is(perr, ErrNoAudio) {
+			attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "no_supported_audio"})
+			lastErr = perr
+			diagf("resolve %s: attempt %d/%d had no playable stream; trying the next client set", sourceID, i+1, len(resolveClients))
+			continue
 		}
-		lastErr = perr
-		diagf("resolve %s: attempt %d/%d had no playable stream; trying the next client set", sourceID, i+1, len(resolveClients))
+		if errors.Is(perr, ErrUnavailable) {
+			attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "provider_unavailable"})
+		} else {
+			attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "unreadable_response"})
+		}
+		return failed(perr)
 	}
 	if lastErr != nil {
-		return Resolved{}, lastErr
+		return failed(lastErr)
 	}
-	return Resolved{}, ErrNoAudio
+	return failed(ErrNoAudio)
 }
 
 func classifyResolverError(err error) error {

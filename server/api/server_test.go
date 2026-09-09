@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,6 +22,12 @@ import (
 )
 
 type fakeProvider struct{ calls int }
+
+type unavailableRunner struct{}
+
+func (unavailableRunner) Run(context.Context, ...string) ([]byte, error) {
+	return nil, errors.New("ERROR: Video unavailable")
+}
 
 func (f *fakeProvider) Search(_ context.Context, query, _ string) (model.SearchResponse, error) {
 	f.calls++
@@ -103,6 +110,67 @@ func TestCORSRejectsUnapprovedOrigin(t *testing.T) {
 	}
 	if res.Header().Get("Access-Control-Allow-Origin") != "" {
 		t.Fatal("an unapproved origin received an allow-origin header")
+	}
+}
+
+func TestResolveErrorsDistinguishUnavailableFromUnsupportedFormats(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		code string
+	}{
+		{name: "provider unavailable", err: media.ErrUnavailable, code: "media_unavailable"},
+		{name: "no supported audio", err: media.ErrNoAudio, code: "no_supported_audio"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			writeResolveError(res, tt.err)
+			if res.Code != http.StatusNotFound {
+				t.Fatalf("expected 404, got %d", res.Code)
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error.Code != tt.code {
+				t.Fatalf("expected %s, got %s", tt.code, body.Error.Code)
+			}
+		})
+	}
+}
+
+func TestResolveErrorIncludesOnlySanitizedAttemptOutcomes(t *testing.T) {
+	resolver := media.NewResolver(unavailableRunner{})
+	_, err := resolver.Resolve(context.Background(), "Kx7B-XvmFtE", "high")
+	if err == nil {
+		t.Fatal("expected resolution to fail")
+	}
+	res := httptest.NewRecorder()
+	writeResolveError(res, err)
+	var body struct {
+		Error struct {
+			Code     string                  `json:"code"`
+			Attempts []media.ResolverAttempt `json:"resolverAttempts"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "media_unavailable" || len(body.Error.Attempts) != 3 {
+		t.Fatalf("unexpected sanitized resolver detail: %+v", body.Error)
+	}
+	for _, attempt := range body.Error.Attempts {
+		if attempt.Outcome != "provider_unavailable" {
+			t.Fatalf("unexpected attempt outcome: %+v", attempt)
+		}
+	}
+	if strings.Contains(res.Body.String(), "youtube.com/watch") {
+		t.Fatal("resolve diagnostics exposed a provider URL")
 	}
 }
 

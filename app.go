@@ -39,6 +39,7 @@ type App struct {
 	depMu      sync.Mutex
 	depErr     error
 	depChecked bool
+	depVersion string
 }
 
 type Diagnostics struct {
@@ -131,11 +132,26 @@ func (a *App) startup(ctx context.Context) {
 	a.applyTray(settings.MinimizeToTray)
 	// Install the resolver in the background so first search/play is instant.
 	go func() {
-		if _, err := a.resolverBinary(); err != nil {
+		path, err := a.resolverBinary()
+		if err != nil {
 			wruntime.EventsEmit(ctx, "melo:resolver-error", err.Error())
 			return
 		}
-		wruntime.EventsEmit(ctx, "melo:resolver-ready", a.deps.Version())
+		actualVersion, err := a.deps.SelfCheck(path)
+		if err != nil {
+			wruntime.EventsEmit(ctx, "melo:resolver-error", err.Error())
+			return
+		}
+		if actualVersion != a.deps.Version() {
+			wruntime.EventsEmit(ctx, "melo:resolver-error", fmt.Sprintf(
+				"media resolver version mismatch: expected %s, got %s", a.deps.Version(), actualVersion,
+			))
+			return
+		}
+		a.depMu.Lock()
+		a.depVersion = actualVersion
+		a.depMu.Unlock()
+		wruntime.EventsEmit(ctx, "melo:resolver-ready", actualVersion)
 	}()
 }
 
@@ -164,13 +180,20 @@ func (a *App) GetDiagnostics() Diagnostics {
 	if p, err := a.deps.BinaryPath(); err == nil {
 		bin = p
 	}
+	resolverStatus := a.deps.Status()
+	a.depMu.Lock()
+	if a.depVersion != "" {
+		resolverStatus.Version = a.depVersion
+		resolverStatus.Message = "verified at startup"
+	}
+	a.depMu.Unlock()
 	return Diagnostics{
 		AppVersion:     appVersion,
 		GoVersion:      runtime.Version(),
 		Platform:       runtime.GOOS + "/" + runtime.GOARCH,
 		DataDir:        a.store.Dir(),
 		StreamProxy:    a.proxy.Addr(),
-		Resolver:       a.deps.Status(),
+		Resolver:       resolverStatus,
 		ResolverBinary: bin,
 		MediaKeys:      mediaKeySupport(),
 		Tray:           traySupport(),
@@ -318,6 +341,7 @@ func (a *App) InstallResolver() (deps.Status, error) {
 	a.depMu.Lock()
 	a.depChecked = false
 	a.depErr = nil
+	a.depVersion = ""
 	a.depMu.Unlock()
 	if _, err := a.resolverBinary(); err != nil {
 		return a.deps.Status(), err

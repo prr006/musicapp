@@ -40,7 +40,22 @@ func main() {
 		logger.Error("configure resolver", "error", err)
 		os.Exit(1)
 	}
-	resolverPath := func() (string, error) { return dependencyManager.Ensure(nil) }
+	resolverBinary, err := dependencyManager.Ensure(nil)
+	if err != nil {
+		logger.Error("install resolver", "error", err)
+		os.Exit(1)
+	}
+	actualResolverVersion, err := dependencyManager.SelfCheck(resolverBinary)
+	if err != nil {
+		logger.Error("verify resolver", "error", err)
+		os.Exit(1)
+	}
+	if actualResolverVersion != dependencyManager.Version() {
+		logger.Error("resolver version mismatch", "expected", dependencyManager.Version(), "actual", actualResolverVersion)
+		os.Exit(1)
+	}
+	logger.Info("resolver verified", "version", actualResolverVersion)
+	resolverPath := func() (string, error) { return resolverBinary, nil }
 	runner := provider.Exec{Path: resolverPath}
 	searchProvider := provider.New(runner)
 	resolver := media.NewResolver(runner)
@@ -65,7 +80,13 @@ func main() {
 	handler := api.New(api.Dependencies{
 		Config: cfg, Auth: authService, Accounts: accounts, Provider: searchProvider,
 		Resolver: resolver, Streamer: streamer, Lyrics: lyricsProvider,
-		ResolverInfo: dependencyManager.Status, Logger: logger,
+		ResolverInfo: func() deps.Status {
+			status := dependencyManager.Status()
+			status.Version = actualResolverVersion
+			status.Message = "verified at startup"
+			return status
+		},
+		Logger: logger,
 	})
 	httpServer := &http.Server{
 		Addr: cfg.Addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second,

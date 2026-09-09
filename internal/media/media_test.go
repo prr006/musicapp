@@ -465,8 +465,18 @@ func TestResolverBoundedFallbackExhaustsAllSets(t *testing.T) {
 		resolveClients[1]: storyboardOnlyJSON(),
 	}}
 	res := NewResolver(runner)
-	if _, err := res.Resolve(context.Background(), "vid", "high"); !errors.Is(err, ErrNoAudio) {
+	_, err := res.Resolve(context.Background(), "vid", "high")
+	if !errors.Is(err, ErrNoAudio) {
 		t.Fatalf("expected ErrNoAudio after exhausting all sets, got %v", err)
+	}
+	attempts := ResolverAttempts(err)
+	if len(attempts) != len(resolveClients) {
+		t.Fatalf("expected %d sanitized outcomes, got %+v", len(resolveClients), attempts)
+	}
+	for _, attempt := range attempts {
+		if attempt.Outcome != "no_supported_audio" {
+			t.Fatalf("unexpected attempt outcome: %+v", attempt)
+		}
 	}
 	if len(runner.calls) != len(resolveClients) {
 		t.Fatalf("expected exactly %d attempts, got %d: %v", len(resolveClients), len(runner.calls), runner.calls)
