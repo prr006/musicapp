@@ -2,6 +2,7 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { initBackend, setBackend } from './bridge/backend'
+import { ClockAdapter } from './audio/clockAdapter'
 import { selectAdapter } from './audio/select'
 import { ACCENTS } from './lib/defaults'
 import { library, useLibraryStore } from './state/libraryStore'
@@ -28,17 +29,22 @@ function applyTheme(): void {
 }
 
 async function boot(): Promise<void> {
-  // 1. Choose the playback provider (YouTube IFrame in the packaged app).
-  const { adapter, degraded } = await selectAdapter()
+  // 1+2. Pick the playback provider and connect the data backend in parallel:
+  // the catalogue and search must never depend on the player (or vice versa),
+  // and a provider failure falls back to the offline transport rather than
+  // taking the whole app down.
+  const [adapterChoice, be] = await Promise.all([
+    selectAdapter().catch(() => ({ adapter: new ClockAdapter(), degraded: true })),
+    initBackend(),
+  ])
+  const { adapter, degraded } = adapterChoice
   playback.attachAdapter(adapter)
   if (degraded) {
-    // Only reachable in a browser deployment whose network cannot reach the
-    // YouTube IFrame API; the packaged app always selects the YouTube player.
+    // Only reachable when the YouTube IFrame API cannot be reached; the
+    // packaged app always selects the YouTube player.
     ui.toast('YouTube player unreachable — offline demo mode (no audio)', 'info')
   }
 
-  // 2. Connect the data backend (native bindings, or the dev fixture).
-  const be = await initBackend()
   setBackend(be)
   if (!be.isNative) {
     // Dev/preview mode searches the instant, local fixture backend; the

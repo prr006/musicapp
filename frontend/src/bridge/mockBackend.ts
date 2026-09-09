@@ -193,6 +193,15 @@ function loadState(): AppState {
   }
 }
 
+/**
+ * JSON deep clone, not structuredClone: the fixture state is JSON by design
+ * (it round-trips localStorage as JSON), and structuredClone would exclude
+ * every browser older than Chrome 98 / Safari 15.4 from the web deployment.
+ */
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
 export function createMockBackend(): Backend {
   const state = loadState()
   const persist = () => {
@@ -210,7 +219,7 @@ export function createMockBackend(): Backend {
 
   return {
     isNative: false,
-    getState: () => delay(structuredClone(state), 40),
+    getState: () => delay(clone(state), 40),
     getDiagnostics: () =>
       delay<Diagnostics>({
         appVersion: '3.0.0-dev',
