@@ -44,14 +44,24 @@ from “Believer” by Imagine Dragons and passed at least five Next transitions
 the Autoplay buffer stayed populated at roughly five to eight items, showed no
 empty/duplicate buffer, and retained explicit-queue priority.
 
-The current parity revision extracts ordering, projection, prefetch order,
+The shared parity revision extracts ordering, projection, prefetch order,
 incremental append, canonical reconciliation, and failed-candidate removal into
 `frontend/src/domain/queueEngine.ts`. That domain and `PlaybackController` are
-shared by Wails and web; `WebBackend` remains transport/cache only. Local
-validation passes 131 frontend tests and the production build, including eight
-buffered radio transitions and silent resolver-failure replacement. A fresh live
-eight-transition audible run is required after this revision deploys and remains
-unverified until recorded below.
+shared by Wails and web; `WebBackend` remains transport/cache only. Its first
+production candidate was not accepted: a fresh Believer run exposed visual
+`CURRENT` advancement before the selected stream was audibly playing.
+
+The current repair makes each transition transactional. Resolution and media
+loading are provisional; current metadata, queue cursor, discovery consumption,
+lyrics, history, and Media Session state commit only after
+`HTMLAudioElement.play()` succeeds. A rejected candidate is removed alone and the
+canonical explicit-first alternative is attempted while the prior committed
+current remains visible. Duplicate ended events and stale refill/radio responses
+cannot enqueue a second or superseded transition. Local validation passes 135
+frontend tests and the production build, including buffering-time resolver/refill
+completion, rejected `play()`, eight radio transitions, and stale-command guards.
+A fresh live eight-transition audible run is required after this repair deploys
+and remains unverified until recorded below.
 
 Still unverified in production: invalid/expired-ticket recovery, account
 register/logout/relogin and cross-account isolation, library/playlist persistence

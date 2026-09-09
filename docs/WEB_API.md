@@ -38,9 +38,13 @@ the original radio context and then the advancing current track as needed, and
 supplement short batches with bounded search candidates. Refills append and
 canonical-deduplicate; they never replace either queue with a raw search response
 or an empty failed response. Hosted playback prefetches up to three candidates in
-explicit-first order. A candidate whose resolution fails is removed alone, the
-buffer is refilled, and the next explicit/discovery alternative starts without a
-player error when one is available.
+explicit-first order. Resolution, prefetch, and refill remain non-mutating:
+`CURRENT`, queue cursor, discovery consumption, metadata, lyrics, and history are
+committed only after the single media element confirms `play()` succeeded. A
+candidate whose resolution or media start fails is removed alone, the buffer is
+refilled, and the next explicit/discovery alternative starts without a player
+error when one is available. Duplicate ended events and stale asynchronous radio
+or refill continuations cannot advance the committed cursor.
 
 ## Account and library
 

@@ -67,6 +67,9 @@ export class PlaybackController {
   private readonly mediaSession: BrowserMediaSession
   private prefetchedTracks = new Set<string>()
   private prefetchingTracks = new Set<string>()
+  private pendingTrackId: string | null = null
+  private handledEndedGeneration = -1
+  private transitionIntent = 0
   private recoveredTrackId: string | null = null
 
   constructor(engine = new PlaybackEngine()) {
@@ -90,6 +93,12 @@ export class PlaybackController {
     switch (event.type) {
       case 'state': {
         const { status, duration, buffered, error, volume, muted, rate } = event.snapshot
+        if (this.pendingTrackId && event.snapshot.trackId === this.pendingTrackId) {
+          // Resolver/media readiness is provisional. Keep the committed CURRENT
+          // and cursor unchanged until HTMLAudioElement.play() has succeeded.
+          setPlayerState({ status: 'loading', error: null, volume, muted, speed: rate })
+          break
+        }
         positionChannel.setDuration(duration)
         positionChannel.setBuffered(buffered)
         setPlayerState({ status, error, volume, muted, speed: rate })
@@ -106,6 +115,12 @@ export class PlaybackController {
         break
       }
       case 'position': {
+        if (this.pendingTrackId && event.trackId === this.pendingTrackId) break
+        if (this.handledEndedGeneration === this.engine.currentGeneration && event.position > 0.25) {
+          // Repeat One reuses the source generation. Actual playback progress
+          // starts a new cycle; duplicate ended events before progress stay ignored.
+          this.handledEndedGeneration = -1
+        }
         positionChannel.setPosition(event.position)
         this.mediaSession.updatePosition()
         const state = playerState()
@@ -121,8 +136,10 @@ export class PlaybackController {
         this.handleEnded(event.trackId)
         break
       case 'error': {
+        if (this.pendingTrackId && event.trackId === this.pendingTrackId) return
         const current = playerState().current
-        if (event.recoverable && current && current.id === event.trackId && this.recoveredTrackId !== current.id) {
+        if (!current || current.id !== event.trackId) return
+        if (event.recoverable && this.recoveredTrackId !== current.id) {
           this.recoveredTrackId = current.id
           backend().invalidatePlayable?.(current.id)
           void backend().reportPlaybackError?.({
@@ -152,12 +169,16 @@ export class PlaybackController {
   private handleEnded(trackId: string): void {
     const state = playerState()
     if (!state.current || state.current.id !== trackId) return
+    const generation = this.engine.currentGeneration
+    if (this.handledEndedGeneration === generation) return
+    this.handledEndedGeneration = generation
+    const intent = ++this.transitionIntent
     if (state.repeat === 'one') {
       positionChannel.setPosition(0)
       this.engine.restart()
       return
     }
-    void this.advance(1, { auto: true })
+    void this.advance(1, { auto: true }, intent)
   }
 
   /** Tray tooltip / notification mirroring. Best-effort and never blocking. */
@@ -189,6 +210,7 @@ export class PlaybackController {
    * discovery rebuilds around it — a list of search results is never enqueued.
    */
   async play(track: Track, context: PlayContext = {}): Promise<void> {
+    this.transitionIntent += 1
     const previous = playerState()
     const freshSession = !previous.current && previous.queue.length === 0 && previous.autoQueue.length === 0
     // A deliberate selection re-anchors future discovery, but keeps the ready
@@ -212,11 +234,12 @@ export class PlaybackController {
     }
     setPlayerState({
       queue,
-      index,
+      // Keep the selected item in Up Next until confirmed, just like desktop.
+      index: index - 1,
       contextLabel: context.label ?? '',
       playingFrom: 'queue',
     })
-    await this.start(track)
+    await this.playSelection({ track, source: 'queue', queueIndex: index })
   }
 
   /**
@@ -225,40 +248,81 @@ export class PlaybackController {
    * discovery. Discovery then rebuilds around the newly chosen track.
    */
   async playDiscovered(track: Track): Promise<void> {
-    // Clicking an autoplay item stays inside the same discovery/radio session.
-    setPlayerState({
-      autoQueue: playerState().autoQueue.filter((candidate) => candidate.id !== track.id),
-      playingFrom: 'autoplay',
-    })
-    await this.start(track)
+    this.transitionIntent += 1
+    // Clicking an autoplay item stays inside the same discovery/radio session,
+    // but it remains upcoming until the media element confirms playback.
+    await this.playSelection({ track, source: 'autoplay' })
   }
 
-  /** Starts a specific track: clears old state first, then resolves. */
-  private async start(track: Track, startAt = 0, recovering = false): Promise<void> {
+  /**
+   * Resolves and starts a candidate transactionally. CURRENT, queue cursor,
+   * metadata and discovery consumption are committed only after the media
+   * element confirms that play() succeeded.
+   */
+  private async start(
+    track: Track,
+    startAt = 0,
+    recovering = false,
+    selection?: QueueSelection,
+  ): Promise<boolean> {
+    const intent = this.transitionIntent
     if (!recovering) this.recoveredTrackId = null
+    this.pendingTrackId = track.id
     const token = this.engine.beginLoad(track.id)
     this.recordedForToken.clear()
-    positionChannel.reset()
-    positionChannel.setDuration(track.duration || 0)
-    setPlayerState({ current: track, status: 'loading', error: null })
-    this.rememberTrack(track)
-    this.pruneDiscoveryQueue()
-    this.mediaSession.setTrack(track)
-    this.mediaSession.setPlaybackState('loading')
-    lyrics.loadFor(track, () => this.engine.isCurrent(token))
-    this.mirrorToDesktop(track.title, track.artist)
+    setPlayerState({ status: 'loading', error: null })
 
     try {
       const source = await backend().getPlayable(track)
-      if (!this.engine.isCurrent(token)) return // a newer track won the race
-      if (source.duration > 0) positionChannel.setDuration(source.duration)
-      await this.engine.load(token, source.url, startAt)
+      if (!this.engine.isCurrent(token)) return false
+      const loaded = await this.engine.load(token, source.url, startAt)
+      if (!this.engine.isCurrent(token)) return false
+      if (!loaded) {
+        throw new Error(this.engine.snapshot().error || 'Playback did not start.')
+      }
+
+      const state = playerState()
+      const latestQueueIndex = state.queue.findIndex((candidate) => candidate.id === track.id)
+      const transition = selection?.source === 'queue'
+        ? {
+            index: latestQueueIndex >= 0 ? latestQueueIndex : selection.queueIndex ?? state.index,
+            playingFrom: 'queue' as const,
+          }
+        : selection?.source === 'autoplay'
+          ? {
+              autoQueue: state.autoQueue.filter((candidate) => candidate.id !== track.id),
+              playingFrom: 'autoplay' as const,
+            }
+          : {}
+      this.pendingTrackId = null
+      positionChannel.reset()
+      positionChannel.setDuration(source.duration > 0 ? source.duration : track.duration || 0)
+      setPlayerState({
+        ...transition,
+        current: track,
+        status: this.engine.snapshot().status,
+        error: null,
+      })
+      this.rememberTrack(track)
+      this.pruneDiscoveryQueue()
+      this.mediaSession.setTrack(track)
+      this.mediaSession.setPlaybackState(this.engine.snapshot().status)
+      lyrics.loadFor(track, () => this.engine.isCurrent(token))
+      this.mirrorToDesktop(track.title, track.artist)
+      this.markPlayed()
+      void this.refillDiscovery().then(() => this.prefetchNext())
+      void this.prefetchNext()
+      this.queueSessionSave()
+      return true
     } catch (err) {
-      if (!this.engine.isCurrent(token)) return
-      if (await this.skipUnplayableTrack(track)) return
+      if (!this.engine.isCurrent(token)) return false
+      if (this.pendingTrackId === track.id) this.pendingTrackId = null
+      if (await this.skipUnplayableTrack(track, selection, intent)) return false
       const message = err instanceof Error ? err.message : 'Couldn\u2019t load this song.'
       this.engine.fail(token, message)
       setPlayerState({ status: 'error', error: message })
+      if (playerState().current?.id !== track.id) ui.toast(message, 'error')
+      return false
     }
   }
 
@@ -267,9 +331,14 @@ export class PlaybackController {
    * the canonical explicit-first selection order. A resolver error is surfaced
    * only when no alternative remains.
    */
-  private async skipUnplayableTrack(track: Track): Promise<boolean> {
+  private async skipUnplayableTrack(
+    track: Track,
+    selection: QueueSelection | undefined,
+    intent: number,
+  ): Promise<boolean> {
+    if (intent !== this.transitionIntent) return true
     const state = playerState()
-    const source = state.playingFrom
+    const source = selection?.source ?? state.playingFrom
     this.rememberRejected(track)
     this.prefetchedTracks.delete(track.id)
     this.prefetchingTracks.delete(track.id)
@@ -284,9 +353,10 @@ export class PlaybackController {
     setPlayerState(remaining)
     this.queueSessionSave()
     await this.refillDiscovery(true)
-    const selection = selectNextTrack(playerState(), useLibraryStore.getState().settings.autoplay)
-    if (!selection) return false
-    await this.playSelection(selection)
+    if (intent !== this.transitionIntent) return true
+    const next = selectNextTrack(playerState(), useLibraryStore.getState().settings.autoplay)
+    if (!next) return false
+    await this.playSelection(next)
     return true
   }
 
@@ -314,6 +384,8 @@ export class PlaybackController {
 
   /** Manual stop: clears the transport and never advances the queue. */
   stop(): void {
+    this.transitionIntent += 1
+    this.pendingTrackId = null
     this.engine.stop()
     this.recordedForToken.clear()
     positionChannel.reset()
@@ -326,10 +398,12 @@ export class PlaybackController {
   }
 
   async next(): Promise<void> {
-    await this.advance(1, { auto: false })
+    const intent = ++this.transitionIntent
+    await this.advance(1, { auto: false }, intent)
   }
 
   async previous(): Promise<void> {
+    this.transitionIntent += 1
     const state = playerState()
     if (!state.current) return
     if (positionChannel.getPosition() > PREVIOUS_RESTART_THRESHOLD) {
@@ -337,23 +411,22 @@ export class PlaybackController {
       return
     }
     if (state.index > 0) {
-      const track = state.queue[state.index - 1]
-      setPlayerState({ index: state.index - 1 })
-      await this.start(track)
+      const queueIndex = state.index - 1
+      const track = state.queue[queueIndex]
+      await this.playSelection({ track, source: 'queue', queueIndex })
       return
     }
     if (state.repeat === 'all' && state.queue.length > 0) {
-      const index = state.queue.length - 1
-      setPlayerState({ index })
-      await this.start(state.queue[index])
+      const queueIndex = state.queue.length - 1
+      await this.playSelection({ track: state.queue[queueIndex], source: 'queue', queueIndex })
       return
     }
     this.seek(0)
   }
 
   /** The single implementation of "move by one track". */
-  private async advance(step: number, _opts: { auto: boolean }): Promise<void> {
-    if (step < 0) return
+  private async advance(step: number, _opts: { auto: boolean }, intent: number): Promise<void> {
+    if (step < 0 || intent !== this.transitionIntent) return
     const autoplay = useLibraryStore.getState().settings.autoplay
     let selection = selectNextTrack(playerState(), autoplay)
 
@@ -361,6 +434,7 @@ export class PlaybackController {
     // completes; only shift the selected item after append/reconciliation.
     if (selection?.source === 'autoplay' && playerState().autoQueue.length <= DISCOVERY_REFILL_THRESHOLD) {
       await this.refillDiscovery()
+      if (intent !== this.transitionIntent) return
       selection = selectNextTrack(playerState(), autoplay)
     }
 
@@ -368,30 +442,24 @@ export class PlaybackController {
     // net when playback catches an in-flight request at the end of the buffer.
     if (!selection && autoplay) {
       await this.refillDiscovery(true)
+      if (intent !== this.transitionIntent) return
       selection = selectNextTrack(playerState(), autoplay)
     }
     if (!selection) {
       this.finish()
       return
     }
+    if (intent !== this.transitionIntent) return
     await this.playSelection(selection)
   }
 
   private async playSelection(selection: QueueSelection): Promise<void> {
-    if (selection.source === 'queue') {
-      setPlayerState({ index: selection.queueIndex ?? playerState().index, playingFrom: 'queue' })
-    } else {
-      const state = playerState()
-      setPlayerState({
-        autoQueue: state.autoQueue[0]?.id === selection.track.id ? state.autoQueue.slice(1) : state.autoQueue,
-        playingFrom: 'autoplay',
-      })
-    }
-    await this.start(selection.track)
+    await this.start(selection.track, 0, false, selection)
   }
 
   /** Reached the end of everything: stop cleanly without clearing the queue. */
   private finish(): void {
+    this.pendingTrackId = null
     this.engine.stop()
     setPlayerState({ status: 'idle' })
     positionChannel.setPosition(0)
@@ -399,12 +467,13 @@ export class PlaybackController {
   }
 
   async playQueueIndex(index: number): Promise<void> {
+    this.transitionIntent += 1
     const state = playerState()
     const track = state.queue[index]
     if (!track) return
     // Explicit priority changes without destroying the prepared radio buffer.
-    setPlayerState({ index, playingFrom: 'queue' })
-    await this.start(track)
+    // Cursor commit waits for confirmed media playback.
+    await this.playSelection({ track, source: 'queue', queueIndex: index })
   }
 
   seek(seconds: number): void {
@@ -552,6 +621,7 @@ export class PlaybackController {
    * Hosted builds ask the radio API; desktop falls back to the existing search
    * provider so the same controls remain useful in Wails. */
   async startRadio(kind: RadioKind, seedId: string, seed?: Partial<Track>): Promise<void> {
+    const intent = ++this.transitionIntent
     let tracks: Track[] = []
     let sessionID = `${kind}:${seedId}`
     try {
@@ -566,9 +636,12 @@ export class PlaybackController {
         tracks = dedupeTracks([...(result.songs ?? []), ...(result.videos ?? [])])
       }
     } catch {
+      if (intent !== this.transitionIntent) return
       ui.toast("Couldn't start radio — your current queue is unchanged", 'error')
       return
     }
+    // A later Play/Next/radio intent supersedes this asynchronous response.
+    if (intent !== this.transitionIntent) return
     const { added: fresh } = appendDiscovery(
       [],
       tracks,
@@ -591,13 +664,13 @@ export class PlaybackController {
       titles: new Set<string>(),
     }
     this.markRadioSeen(fresh)
-    const [first, ...rest] = fresh
+    const [first] = fresh
     setPlayerState({
-      autoQueue: rest.slice(0, DISCOVERY_TARGET),
-      playingFrom: 'autoplay',
+      // Keep the candidate visibly upcoming until playback is confirmed.
+      autoQueue: fresh,
       contextLabel: `${kind[0].toUpperCase()}${kind.slice(1)} Radio`,
     })
-    await this.start(first)
+    await this.playSelection({ track: first, source: 'autoplay' })
   }
 
   /**
@@ -926,6 +999,7 @@ export class PlaybackController {
     repeat: RepeatMode
     speed: number
   }, autoResume: boolean): Promise<void> {
+    this.transitionIntent += 1
     const queue = session.queue ?? []
     const index = Math.min(Math.max(session.index, -1), queue.length - 1)
     this.reanchorDiscovery()

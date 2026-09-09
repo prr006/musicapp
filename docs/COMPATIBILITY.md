@@ -11,18 +11,21 @@ path, while the current CI guards its build and shared tests.
 > <https://musicapp-production-9257.up.railway.app>. Real search, signed hosted
 > playback, audible play/pause/seek, several transitions, Song Radio, synced
 > lyrics, and lyric seek have been manually verified. The repaired five-to-eight
-> item radio buffer passes a five-transition automated regression and is deployed;
-> a fresh audible Believer Song Radio run also passed five production transitions
-> without an empty/duplicate buffer and retained explicit priority. The current
-> shared-domain parity revision passes an eight-transition automated run plus
-> silent failed-candidate replacement; its fresh eight-transition production run
-> remains pending. Account relogin/isolation, restart persistence, multi-browser
-> responsive behavior, Media
-> Session, PWA install, and expired-ticket recovery remain unverified.
+> item radio buffer passed a five-transition production run without an
+> empty/duplicate buffer and retained explicit priority. A later production test
+> of the shared-domain parity candidate exposed premature visual `CURRENT`
+> advancement before audible playback, so that deployment is not accepted as
+> parity-complete. The current transactional repair keeps a candidate upcoming
+> until `HTMLAudioElement.play()` succeeds and passes 135 local frontend tests,
+> including eight radio transitions, duplicate-ended suppression, stale-response
+> guards, and failed-candidate fallback; its fresh production deployment and
+> eight-audible-transition run remain pending. Account relogin/isolation, restart
+> persistence, multi-browser responsive behavior, Media Session, PWA install,
+> and expired-ticket recovery remain unverified.
 
 | Capability | Wails desktop | Hosted web | Notes |
 | --- | :---: | :---: | --- |
-| Play / pause / next / previous | Yes | Implemented | One HTMLAudioElement engine and controller |
+| Play / pause / next / previous | Yes | Implemented | One HTMLAudioElement engine; queue/current commit only after confirmed play |
 | Seek / volume / mute / speed | Yes | Implemented | Browser media pipeline is authoritative |
 | Repeat off/all/one / shuffle | Yes | Implemented | Shared queue controller |
 | Sleep timer | Yes | Implemented | Now Playing 15/30/45/60 minute control |

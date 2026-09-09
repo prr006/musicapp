@@ -132,8 +132,8 @@ describe('track switching', () => {
     h.resolveDelays.set(a.id, 60)
 
     const playA = h.controller.play(a, { tracks: [a, b], index: 0 })
-    // The UI already shows A as loading, with no audio attached.
-    expect(state().current?.id).toBe(a.id)
+    // A is only pending: CURRENT is not promoted before audio play succeeds.
+    expect(state().current).toBeNull()
     expect(state().status).toBe('loading')
     expect(h.media.src).toBe('')
 
@@ -162,7 +162,7 @@ describe('track switching', () => {
     expect(useLyricsStore.getState().result?.lines[0].text).toContain(b.id)
   })
 
-  it('clears stale metadata, artwork and position when switching', async () => {
+  it('keeps committed metadata while buffering, then replaces it atomically', async () => {
     const h = harness()
     const a = track('a')
     const b = track('b', { artwork: 'http://img/b.jpg' })
@@ -173,10 +173,67 @@ describe('track switching', () => {
 
     h.resolveDelays.set(b.id, 30)
     const playB = h.controller.play(b, { tracks: [a, b], index: 1 })
+    expect(state().current?.id).toBe(a.id)
+    expect(state().current?.artwork).toBe(a.artwork)
+    expect(positionChannel.getPosition()).toBe(42)
+    expect(useLyricsStore.getState().trackId).toBe(a.id)
+
+    await playB
+    expect(state().current?.id).toBe(b.id)
     expect(state().current?.artwork).toBe('http://img/b.jpg')
     expect(positionChannel.getPosition()).toBe(0)
-    expect(useLyricsStore.getState().result).toBeNull()
-    await playB
+  })
+
+  it('does not commit CURRENT or cursor while resolves/refills finish during buffering', async () => {
+    const h = harness()
+    const current = track('current')
+    const next = track('next')
+    const discovery = Array.from({ length: 9 }, (_, index) => track(`discovery${index}`))
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: '', songs: discovery, videos: [], albums: [], artists: [], provider: 'test',
+    })
+    await h.controller.play(current, { tracks: [current, next], index: 0 })
+    await vi.waitFor(() => expect(state().autoQueue).toHaveLength(8))
+
+    h.resolveDelays.set(next.id, 80)
+    const transition = h.controller.next()
+    // Complete unrelated resolve responses and trigger an incremental refill
+    // while NEXT is still buffering. None may promote NEXT or move the cursor.
+    await Promise.all([
+      h.backend.getPlayable(discovery[0]),
+      h.backend.getPlayable(discovery[1]),
+    ])
+    h.controller.removeFromAutoQueue(state().autoQueue.length - 1)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(state().current?.id).toBe(current.id)
+    expect(state().index).toBe(0)
+    expect(state().status).toBe('loading')
+
+    await transition
+    expect(state().current?.id).toBe(next.id)
+    expect(state().index).toBe(1)
+    expect(state().status).toBe('playing')
+  })
+
+  it('never promotes a failed play candidate before a later alternative starts', async () => {
+    const h = harness()
+    const current = track('current')
+    const bad = track('bad')
+    const good = track('good')
+    await h.controller.play(current, { tracks: [current, bad, good], index: 0 })
+    h.media.failNextPlay = 'media play rejected'
+    h.resolveDelays.set(good.id, 60)
+
+    const transition = h.controller.next()
+    await vi.waitFor(() => expect(state().queue.some((candidate) => candidate.id === bad.id)).toBe(false))
+    expect(state().current?.id).toBe(current.id)
+    expect(state().index).toBe(0)
+
+    await transition
+    expect(state().current?.id).toBe(good.id)
+    expect(state().index).toBe(1)
+    expect(state().status).toBe('playing')
   })
 
   it('surfaces a resolver failure as an actionable error', async () => {
@@ -487,7 +544,7 @@ describe('discovery (endless queue)', () => {
     )
   })
 
-  it('does not shift the last discovery item until its in-flight refill completes', async () => {
+  it('does not shift the last discovery item during refill and handles ended exactly once', async () => {
     const h = harness()
     useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: false } })
     const current = track('current')
@@ -504,15 +561,46 @@ describe('discovery (endless queue)', () => {
       return { query: '', songs: additions, videos: [], albums: [], artists: [], provider: 'test' }
     })
 
-    const moving = h.controller.next()
+    const playsBefore = h.media.playCount
+    h.media.endNaturally()
+    h.media.endNaturally() // duplicate media event must not enqueue a second advance
     await vi.waitFor(() => expect(h.backend.search).toHaveBeenCalled())
     expect(state().current?.id).toBe(current.id)
     expect(state().autoQueue.map((candidate) => candidate.id)).toEqual([next.id])
 
     release()
-    await moving
-    expect(state().current?.id).toBe(next.id)
+    await vi.waitFor(() => expect(state().current?.id).toBe(next.id))
+    expect(h.media.playCount).toBe(playsBefore + 1)
     expect(state().autoQueue.length).toBeGreaterThanOrEqual(5)
+  })
+
+  it('does not let a stale ended/refill continuation override a later Play intent', async () => {
+    const h = harness()
+    useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: false } })
+    const current = track('current')
+    const upcoming = track('upcoming')
+    const replacement = track('replacement')
+    await h.controller.play(current)
+    usePlayerStore.setState({ autoQueue: [upcoming] })
+    useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: true } })
+
+    let release!: () => void
+    ;(h.backend.search as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise((resolve) => {
+      release = () => resolve({
+        query: '', songs: Array.from({ length: 8 }, (_, index) => track(`late${index}`)),
+        videos: [], albums: [], artists: [], provider: 'test',
+      })
+    }))
+
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(h.backend.search).toHaveBeenCalled())
+    useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: false } })
+    await h.controller.play(replacement)
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(state().current?.id).toBe(replacement.id)
+    expect(h.media.src).toBe('http://local/replacement')
   })
 
   it('fills the background queue and keeps it separate from the explicit queue', async () => {
@@ -857,6 +945,30 @@ describe('discovery (endless queue)', () => {
     expect(state().queue.map((candidate) => candidate.id)).toEqual([current.id, explicit.id])
     expect(state().autoQueue.map((candidate) => candidate.id)).toEqual([discovered.id])
     expect(useUIStore.getState().toasts.at(-1)?.message).toMatch(/unchanged/)
+  })
+
+  it('ignores a stale Song Radio response after a later Play intent', async () => {
+    const h = harness()
+    useLibraryStore.setState({ settings: { ...defaultSettings(), autoplay: false } })
+    const a = track('a')
+    const b = track('b')
+    const stale = track('stale-radio')
+    await h.controller.play(a)
+
+    let release!: (session: { id: string; kind: 'song'; seedId: string; tracks: Track[]; generatedAt: number }) => void
+    h.backend.radio = vi.fn(() => new Promise<{
+      id: string; kind: 'song'; seedId: string; tracks: Track[]; generatedAt: number
+    }>((resolve) => { release = resolve })) as Backend['radio']
+    const radio = h.controller.startRadio('song', a.id, a)
+    await vi.waitFor(() => expect(h.backend.radio).toHaveBeenCalled())
+
+    await h.controller.play(b)
+    release({ id: 'stale-session', kind: 'song', seedId: a.id, tracks: [a, stale], generatedAt: Date.now() })
+    await radio
+
+    expect(state().current?.id).toBe(b.id)
+    expect(state().autoQueue).toEqual([])
+    expect(h.media.src).toBe('http://local/b')
   })
 
   it('drops a late discovery response from a superseded track', async () => {
