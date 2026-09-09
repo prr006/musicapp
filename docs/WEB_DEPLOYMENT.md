@@ -75,9 +75,10 @@ plus a 60-second browser request deadline, deployed successfully. Direct checks
 were subsequently shown to be metadata-only, zero-format responses rather than
 explicit unavailable statuses. Without changing resolver policy or yt-dlp version,
 the next Railway process resolved Believer, Thunder, Demons, unrelated music, and
-non-music controls again. This establishes a transient provider/outbound-context
-response class, but no audible queue result is claimed from HTTP checks alone. The
-exact metadata, client-set outcomes, version verification, desktop/web code-path
+non-music controls again; its `856f56d` successor reverted to zero formats. This
+establishes a process/time-dependent provider/outbound-context response class. No
+audible queue result is claimed. The exact metadata,
+client-set outcomes, version verification, desktop/web code-path
 comparison, and cross-content sample are recorded in
 [`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md). A fresh live
 eight-transition run remains required.

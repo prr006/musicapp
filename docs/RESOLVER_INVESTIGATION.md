@@ -157,6 +157,15 @@ credential, token, proxy, or format-policy change produced it. The provider bega
 supplying formats to a new hosted process/time window where the immediately prior
 process/time window received metadata-only empty lists.
 
+A later `856f56d` deployment, whose only runtime change removed disabled legacy
+local diagnostic logging, switched Believer, Thunder, Demons, and the non-music
+developer control back to the exact zero-format response above. Repeating Believer
+in that same process produced zero formats again, while `dQw4w9WgXcQ` still
+resolved. Startup continued to verify `2026.08.19`. Across three consecutive
+process epochs, the pattern was therefore **zero formats → playable formats → zero
+formats** with an unchanged resolver command and extractor version. The `856f56d`
+process was in the zero-format epoch when sampled.
+
 ## Cross-content production sample
 
 All checks used the same deployed resolver and no credentials. Results are grouped
@@ -251,9 +260,11 @@ yt-dlp results—not false queue promotion and not a MELO codec-selection mistak
 The sample shows a broad, variable provider response class tied to hosted outbound
 process/time context, not a universal music-content rule.
 
-The provider did not genuinely or permanently refuse those IDs: without changing
-resolver policy or yt-dlp version, the next deployment began resolving Believer,
-Thunder, Demons, unrelated music, and non-music controls again. Production
-resolution is currently available, but this investigation does not convert HTTP
-resolution into an audible-playback claim. The Believer eight-transition browser
-run must still be repeated and recorded separately.
+The provider did not permanently refuse those IDs: without changing resolver
+policy or yt-dlp version, one deployment resolved Believer, Thunder, Demons,
+unrelated music, and non-music controls again. The following deployment reverted
+to zero-format responses, establishing a process/time-dependent hosted environment
+limitation. The last documented runtime sample (`856f56d`) was blocked for the
+affected class, so an eight-audible-transition Believer browser run cannot honestly
+be claimed. It must be repeated and recorded if a compliant format-serving epoch
+becomes stable.

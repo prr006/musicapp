@@ -22,10 +22,10 @@ path, while the current CI guards its build and shared tests.
 > resolved), so no queue parity pass is claimed. A bounded supported-client
 > resolver fallback and a 60-second browser request deadline are deployed without
 > tokens or credentials. Richer diagnostics established a transient metadata-only,
-> zero-format provider response class; after a same-version redeployment, Believer,
-> Thunder, Demons, unrelated music, and non-music controls all resolved again.
-> The eight-audible-transition retest is now pending, not passed. The detailed
-> provider-response and desktop/web comparison is in
+> zero-format provider response class; one same-version process resolved Believer,
+> Thunder, Demons, unrelated music, and non-music controls again, while the next
+> process (`856f56d`) reverted to zero formats. The eight-audible-transition retest
+> remains blocked, not passed. The detailed provider-response and desktop/web comparison is in
 > [`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md).
 > Account relogin/isolation,
 > restart persistence, multi-browser responsive behavior, Media Session, PWA
