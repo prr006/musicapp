@@ -43,13 +43,17 @@ type clientArgsRunner struct {
 	errors map[string]error
 }
 
-func (r *clientArgsRunner) Run(_ context.Context, args ...string) ([]byte, error) {
-	clients := ""
+func playerClientsFromArgs(args []string) string {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == "--extractor-args" && strings.HasPrefix(args[i+1], "youtube:player_client=") {
-			clients = strings.TrimPrefix(args[i+1], "youtube:player_client=")
+			return strings.TrimPrefix(args[i+1], "youtube:player_client=")
 		}
 	}
+	return ""
+}
+
+func (r *clientArgsRunner) Run(_ context.Context, args ...string) ([]byte, error) {
+	clients := playerClientsFromArgs(args)
 	r.calls = append(r.calls, clients)
 	if err := r.errors[clients]; err != nil {
 		return nil, err
@@ -58,6 +62,40 @@ func (r *clientArgsRunner) Run(_ context.Context, args ...string) ([]byte, error
 		return out, nil
 	}
 	return []byte(`{"id":"vid","formats":[]}`), nil
+}
+
+type sequenceRunner struct {
+	mu      sync.Mutex
+	calls   []string
+	outs    [][]byte
+	errors  []error
+	delay   time.Duration
+}
+
+func (r *sequenceRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
+	if r.delay > 0 {
+		select {
+		case <-time.After(r.delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	index := len(r.calls)
+	r.calls = append(r.calls, playerClientsFromArgs(args))
+	var out []byte
+	if index < len(r.outs) {
+		out = r.outs[index]
+	}
+	var err error
+	if index < len(r.errors) {
+		err = r.errors[index]
+	}
+	if out == nil {
+		out = []byte(`{"id":"vid","title":"Song","formats":[]}`)
+	}
+	return out, err
 }
 
 func storyboardOnlyJSON() []byte {
@@ -486,6 +524,189 @@ func TestResolverBoundedFallbackExhaustsAllSets(t *testing.T) {
 	}
 	if len(runner.calls) != len(resolveClients) {
 		t.Fatalf("expected exactly %d attempts, got %d: %v", len(resolveClients), len(runner.calls), runner.calls)
+	}
+}
+
+func TestResolverRetriesZeroFormatRoundThenSucceeds(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	zero := []byte(`{"id":"vid","title":"Song","formats":[]}`)
+	playable := infoJSON(t, exp, []map[string]any{audioFmt("140", "m4a", 128, exp)})
+	runner := &sequenceRunner{outs: [][]byte{zero, zero, zero, playable}}
+	resolver := NewResolver(runner)
+	resolver.retryBackoffs = []time.Duration{0, 0}
+
+	resolved, err := resolver.Resolve(context.Background(), "vid", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != len(resolveClients)+1 {
+		t.Fatalf("expected a fresh subprocess in the second bounded round, got %v", runner.calls)
+	}
+	if !resolved.Diagnostics.RecoveredAfterRetry || resolved.Diagnostics.FinalOutcome != "resolved" {
+		t.Fatalf("expected an observable retry recovery, got %+v", resolved.Diagnostics)
+	}
+	if len(resolved.Diagnostics.Attempts) != 4 {
+		t.Fatalf("expected four subprocess attempts, got %+v", resolved.Diagnostics.Attempts)
+	}
+	for index, attempt := range resolved.Diagnostics.Attempts {
+		if attempt.Attempt != index+1 {
+			t.Fatalf("attempt numbers are not stable: %+v", resolved.Diagnostics.Attempts)
+		}
+		if index < 3 && attempt.Outcome != "zero_formats" {
+			t.Fatalf("expected a sanitized zero-format outcome, got %+v", attempt)
+		}
+	}
+	last := resolved.Diagnostics.Attempts[3]
+	if last.Outcome != "resolved" || !last.Final {
+		t.Fatalf("expected the retry to finish with a playable result, got %+v", last)
+	}
+}
+
+func TestResolverAllZeroFormatRoundsReturnUnavailable(t *testing.T) {
+	runner := &sequenceRunner{}
+	resolver := NewResolver(runner)
+	resolver.retryBackoffs = []time.Duration{0, 0}
+
+	_, err := resolver.Resolve(context.Background(), "vid", "high")
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("expected exhausted zero-format retries to be unavailable, got %v", err)
+	}
+	expectedCalls := len(resolveClients) * 3
+	if len(runner.calls) != expectedCalls {
+		t.Fatalf("expected exactly %d bounded subprocesses, got %d: %v", expectedCalls, len(runner.calls), runner.calls)
+	}
+	diagnostics := ResolverFailureDiagnostics(err)
+	if diagnostics == nil || diagnostics.FinalOutcome != "media_unavailable" || diagnostics.RecoveredAfterRetry {
+		t.Fatalf("unexpected final diagnostics: %+v", diagnostics)
+	}
+	if len(diagnostics.Attempts) != expectedCalls {
+		t.Fatalf("expected all attempts in sanitized diagnostics, got %+v", diagnostics.Attempts)
+	}
+	for index, attempt := range diagnostics.Attempts {
+		if attempt.Attempt != index+1 || attempt.Outcome != "zero_formats" {
+			t.Fatalf("unexpected zero-format attempt: %+v", attempt)
+		}
+		if attempt.Final != (index == expectedCalls-1) {
+			t.Fatalf("only the final bounded attempt may be marked final: %+v", diagnostics.Attempts)
+		}
+	}
+}
+
+func TestResolverNormalSuccessDoesNotRetry(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	runner := &sequenceRunner{outs: [][]byte{
+		infoJSON(t, exp, []map[string]any{audioFmt("140", "m4a", 128, exp)}),
+	}}
+	resolved, err := NewResolver(runner).Resolve(context.Background(), "vid", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 || len(resolved.Diagnostics.Attempts) != 1 {
+		t.Fatalf("normal success invoked unnecessary subprocesses: calls=%v diagnostics=%+v", runner.calls, resolved.Diagnostics)
+	}
+	attempt := resolved.Diagnostics.Attempts[0]
+	if attempt.Outcome != "resolved" || !attempt.Final || resolved.Diagnostics.RecoveredAfterRetry {
+		t.Fatalf("unexpected normal-success diagnostics: %+v", resolved.Diagnostics)
+	}
+}
+
+func TestResolverProcessTimeoutAndFailureDoNotRetry(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		want    error
+		outcome string
+	}{
+		{name: "timeout", err: context.DeadlineExceeded, want: context.DeadlineExceeded, outcome: "provider_timeout"},
+		{name: "process failure", err: errors.New("resolver executable crashed"), want: ErrResolve, outcome: "resolver_process_error"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &sequenceRunner{errors: []error{test.err}}
+			_, err := NewResolver(runner).Resolve(context.Background(), "vid", "high")
+			if !errors.Is(err, test.want) {
+				t.Fatalf("expected %v, got %v", test.want, err)
+			}
+			if len(runner.calls) != 1 {
+				t.Fatalf("process error was retried: %v", runner.calls)
+			}
+			diagnostics := ResolverFailureDiagnostics(err)
+			if diagnostics == nil || len(diagnostics.Attempts) != 1 || diagnostics.Attempts[0].Outcome != test.outcome {
+				t.Fatalf("unexpected process diagnostics: %+v", diagnostics)
+			}
+		})
+	}
+}
+
+func TestResolverCoalescesConcurrentRetryRecovery(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	zero := []byte(`{"id":"vid","title":"Song","formats":[]}`)
+	playable := infoJSON(t, exp, []map[string]any{audioFmt("140", "m4a", 128, exp)})
+	runner := &sequenceRunner{outs: [][]byte{zero, zero, zero, playable}, delay: 10 * time.Millisecond}
+	resolver := NewResolver(runner)
+	resolver.retryBackoffs = []time.Duration{0, 0}
+
+	const callers = 8
+	start := make(chan struct{})
+	results := make(chan Resolved, callers)
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			resolved, err := resolver.Resolve(context.Background(), "vid", "high")
+			results <- resolved
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(runner.calls) != len(resolveClients)+1 {
+		t.Fatalf("concurrent callers caused a retry storm: %v", runner.calls)
+	}
+	coalesced := 0
+	for resolved := range results {
+		if resolved.Diagnostics.Coalesced {
+			coalesced++
+		}
+	}
+	if coalesced != callers-1 {
+		t.Fatalf("expected one owner and %d coalesced callers, got %d", callers-1, coalesced)
+	}
+}
+
+func TestResolverCoalescesConcurrentExhaustedRetries(t *testing.T) {
+	runner := &sequenceRunner{delay: 5 * time.Millisecond}
+	resolver := NewResolver(runner)
+	resolver.retryBackoffs = []time.Duration{0, 0}
+
+	const callers = 6
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := resolver.Resolve(context.Background(), "vid", "high")
+			if !errors.Is(err, ErrUnavailable) {
+				t.Errorf("expected shared unavailable result, got %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if expected := len(resolveClients) * 3; len(runner.calls) != expected {
+		t.Fatalf("concurrent failures caused a retry storm: got %d subprocesses, want %d", len(runner.calls), expected)
 	}
 }
 

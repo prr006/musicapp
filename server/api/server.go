@@ -484,9 +484,15 @@ func (s *Server) resolveTrack(w http.ResponseWriter, r *http.Request, trackID, s
 	}
 	signature := s.playbackSignature(sourceID, expires)
 	url := fmt.Sprintf("/api/v1/stream/%s?expires=%d&signature=%s", sourceID, expires, signature)
-	writeJSON(w, http.StatusOK, model.PlayableSource{
-		TrackID: trackID, URL: url, MimeType: resolved.MimeType, Duration: resolved.Duration,
-		Bitrate: resolved.Bitrate, ExpiresAt: expires * 1000,
+	writeJSON(w, http.StatusOK, struct {
+		model.PlayableSource
+		ResolverDiagnostics media.ResolverDiagnostics `json:"resolverDiagnostics"`
+	}{
+		PlayableSource: model.PlayableSource{
+			TrackID: trackID, URL: url, MimeType: resolved.MimeType, Duration: resolved.Duration,
+			Bitrate: resolved.Bitrate, ExpiresAt: expires * 1000,
+		},
+		ResolverDiagnostics: resolved.Diagnostics,
 	})
 }
 
@@ -1157,8 +1163,9 @@ func writeResolveError(w http.ResponseWriter, err error) {
 		message = "Playback provider is temporarily unavailable. Try again shortly."
 	}
 	errorBody := map[string]any{"code": code, "message": message}
-	if attempts := media.ResolverAttempts(err); len(attempts) > 0 {
-		errorBody["resolverAttempts"] = attempts
+	if diagnostics := media.ResolverFailureDiagnostics(err); diagnostics != nil {
+		errorBody["resolverAttempts"] = diagnostics.Attempts
+		errorBody["resolverDiagnostics"] = diagnostics
 	}
 	if metadata := media.ResolverFailureMetadata(err); metadata != nil {
 		errorBody["resolverMetadata"] = metadata

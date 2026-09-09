@@ -44,13 +44,28 @@ var (
 // attempt. It deliberately contains no provider URL, header, token, cookie, or
 // raw provider response and is safe to attach to operational error responses.
 type ResolverAttempt struct {
+	Attempt                   int      `json:"attempt"`
 	Clients                   string   `json:"clients"`
 	Outcome                   string   `json:"outcome"`
+	DurationMS                int64    `json:"durationMs"`
+	Final                     bool     `json:"final"`
 	FormatCount               int      `json:"formatCount"`
 	FormatsWithURL            int      `json:"formatsWithUrl"`
 	AudioFormatsWithURL       int      `json:"audioFormatsWithUrl"`
 	SupportedProgressiveAudio int      `json:"supportedProgressiveAudio"`
 	Protocols                 []string `json:"protocols"`
+}
+
+// ResolverDiagnostics is a sanitized summary of a bounded resolution. It is
+// safe to return to clients: it deliberately excludes media URLs, headers,
+// signatures, cookies, tokens, command stderr, and raw provider responses.
+type ResolverDiagnostics struct {
+	Attempts            []ResolverAttempt `json:"attempts"`
+	FinalOutcome        string            `json:"finalOutcome"`
+	DurationMS          int64             `json:"durationMs"`
+	RecoveredAfterRetry bool              `json:"recoveredAfterRetry"`
+	Cached              bool              `json:"cached"`
+	Coalesced           bool              `json:"coalesced"`
 }
 
 // ResolverMetadata is the non-sensitive media identity returned by yt-dlp
@@ -69,22 +84,41 @@ type ResolverMetadata struct {
 }
 
 type resolverAttemptError struct {
-	cause    error
-	attempts []ResolverAttempt
-	metadata *ResolverMetadata
+	cause       error
+	diagnostics ResolverDiagnostics
+	metadata    *ResolverMetadata
 }
 
 func (e *resolverAttemptError) Error() string { return e.cause.Error() }
 func (e *resolverAttemptError) Unwrap() error { return e.cause }
 
+func cloneResolverDiagnostics(d ResolverDiagnostics) ResolverDiagnostics {
+	d.Attempts = append([]ResolverAttempt(nil), d.Attempts...)
+	for i := range d.Attempts {
+		d.Attempts[i].Protocols = append([]string(nil), d.Attempts[i].Protocols...)
+	}
+	return d
+}
+
 // ResolverAttempts extracts a defensive copy of the sanitized client outcomes
 // from a failed resolution.
 func ResolverAttempts(err error) []ResolverAttempt {
+	diagnostics := ResolverFailureDiagnostics(err)
+	if diagnostics == nil {
+		return nil
+	}
+	return diagnostics.Attempts
+}
+
+// ResolverFailureDiagnostics returns the safe bounded-attempt summary attached
+// to a failed resolution.
+func ResolverFailureDiagnostics(err error) *ResolverDiagnostics {
 	var attemptErr *resolverAttemptError
 	if !errors.As(err, &attemptErr) {
 		return nil
 	}
-	return append([]ResolverAttempt(nil), attemptErr.attempts...)
+	diagnostics := cloneResolverDiagnostics(attemptErr.diagnostics)
+	return &diagnostics
 }
 
 // ResolverFailureMetadata returns a copy of the safe yt-dlp metadata associated
@@ -104,18 +138,19 @@ type Runner interface {
 
 // Resolved is the raw upstream stream description (internal to Go).
 type Resolved struct {
-	SourceID  string
-	URL       string
-	MimeType  string
-	Duration  float64
-	Bitrate   int
-	Filesize  int64
-	ExpiresAt time.Time
-	Headers   map[string]string
-	Title     string
-	Artist    string
-	Album     string
-	Artwork   string
+	SourceID    string
+	URL         string
+	MimeType    string
+	Duration    float64
+	Bitrate     int
+	Filesize    int64
+	ExpiresAt   time.Time
+	Headers     map[string]string
+	Title       string
+	Artist      string
+	Album       string
+	Artwork     string
+	Diagnostics ResolverDiagnostics
 }
 
 func (r Resolved) Expired(now time.Time) bool {
@@ -123,11 +158,12 @@ func (r Resolved) Expired(now time.Time) bool {
 }
 
 type Resolver struct {
-	runner Runner
-	mu     sync.Mutex
-	cache  map[string]Resolved
-	inWork map[string]*call
-	now    func() time.Time
+	runner        Runner
+	mu            sync.Mutex
+	cache         map[string]Resolved
+	inWork        map[string]*call
+	now           func() time.Time
+	retryBackoffs []time.Duration
 }
 
 type call struct {
@@ -138,10 +174,11 @@ type call struct {
 
 func NewResolver(r Runner) *Resolver {
 	return &Resolver{
-		runner: r,
-		cache:  map[string]Resolved{},
-		inWork: map[string]*call{},
-		now:    time.Now,
+		runner:        r,
+		cache:         map[string]Resolved{},
+		inWork:        map[string]*call{},
+		now:           time.Now,
+		retryBackoffs: []time.Duration{150 * time.Millisecond, 350 * time.Millisecond},
 	}
 }
 
@@ -156,13 +193,21 @@ func (r *Resolver) Resolve(ctx context.Context, sourceID, quality string) (Resol
 	r.mu.Lock()
 	if hit, ok := r.cache[key]; ok && !hit.Expired(r.now()) {
 		r.mu.Unlock()
+		hit.Diagnostics = ResolverDiagnostics{
+			Attempts: []ResolverAttempt{}, FinalOutcome: "resolved", Cached: true,
+		}
 		return hit, nil
 	}
 	if c, ok := r.inWork[key]; ok {
 		r.mu.Unlock()
 		select {
 		case <-c.done:
-			return c.res, c.err
+			resolved := c.res
+			if c.err == nil {
+				resolved.Diagnostics = cloneResolverDiagnostics(resolved.Diagnostics)
+				resolved.Diagnostics.Coalesced = true
+			}
+			return resolved, c.err
 		case <-ctx.Done():
 			return Resolved{}, ctx.Err()
 		}
@@ -177,7 +222,11 @@ func (r *Resolver) Resolve(ctx context.Context, sourceID, quality string) (Resol
 	r.mu.Lock()
 	delete(r.inWork, key)
 	if c.err == nil {
-		r.cache[key] = c.res
+		cached := c.res
+		cached.Diagnostics = ResolverDiagnostics{
+			Attempts: []ResolverAttempt{}, FinalOutcome: "resolved", Cached: true,
+		}
+		r.cache[key] = cached
 	}
 	r.mu.Unlock()
 	return c.res, c.err
@@ -221,72 +270,167 @@ var resolveClients = []string{
 }
 
 func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolved, error) {
-	// Bounded, deterministic fallback across client sets: try each in order and
-	// stop at the first that produces a browser-playable stream. Client-specific
-	// no-format and unavailable responses advance to the next supported set;
-	// network/process failures stop immediately.
+	// A retry round preserves the exact ordered client policy. Only a successful
+	// yt-dlp response whose decoded format list is empty can start another round;
+	// process, transport, explicit-unavailable, and non-empty unsupported-format
+	// outcomes keep their existing behavior.
+	started := time.Now()
 	var lastErr error
 	var metadata *ResolverMetadata
-	attempts := make([]ResolverAttempt, 0, len(resolveClients))
+	attempts := make([]ResolverAttempt, 0, len(resolveClients)*(len(r.retryBackoffs)+1))
+
+	finishDiagnostics := func(finalOutcome string, recovered bool) ResolverDiagnostics {
+		if len(attempts) > 0 {
+			attempts[len(attempts)-1].Final = true
+		}
+		return ResolverDiagnostics{
+			Attempts:            append([]ResolverAttempt(nil), attempts...),
+			FinalOutcome:        finalOutcome,
+			DurationMS:          time.Since(started).Milliseconds(),
+			RecoveredAfterRetry: recovered,
+		}
+	}
 	failed := func(err error) (Resolved, error) {
 		return Resolved{}, &resolverAttemptError{
-			cause: err, attempts: append([]ResolverAttempt(nil), attempts...), metadata: metadata,
+			cause:       err,
+			diagnostics: finishDiagnostics(resolverFinalOutcome(err), false),
+			metadata:    metadata,
 		}
 	}
-	for _, clients := range resolveClients {
-		args := []string{
-			"--dump-single-json", "--no-playlist", "--no-warnings",
-			"--ignore-no-formats-error",
-			"--extractor-args", "youtube:player_client=" + clients,
-			"https://www.youtube.com/watch?v=" + sourceID,
-		}
-		out, err := r.runner.Run(ctx, args...)
-		if err != nil {
-			switch classifyResolverError(err) {
-			case ErrNoAudio:
-				attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "no_supported_audio"})
-				lastErr = fmt.Errorf("%w: %s", ErrNoAudio, firstLine(err.Error()))
-				continue
-			case ErrProviderNetwork:
-				attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "provider_network"})
-				return failed(fmt.Errorf("%w: resolver request failed", ErrProviderNetwork))
-			case ErrUnavailable:
-				attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "provider_unavailable"})
-				// UNPLAYABLE can be client-specific. Try the remaining bounded
-				// supported clients; private/removed media fails every set.
-				lastErr = fmt.Errorf("%w: provider rejected this media for %s", ErrUnavailable, clients)
-				continue
-			default:
-				attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "resolver_process_error"})
-				return failed(fmt.Errorf("%w: resolver process failed", ErrResolve))
+
+	for round := 0; ; round++ {
+		sawZeroFormats := false
+		sawNonZeroFormats := false
+		for _, clients := range resolveClients {
+			args := []string{
+				"--dump-single-json", "--no-playlist", "--no-warnings",
+				"--ignore-no-formats-error",
+				"--extractor-args", "youtube:player_client=" + clients,
+				"https://www.youtube.com/watch?v=" + sourceID,
 			}
-		}
-		attempt, attemptMetadata := inspectResolverOutput(out, clients)
-		if metadata == nil && attemptMetadata != nil {
-			metadata = attemptMetadata
-		}
-		res, perr := ParseResolved(out, sourceID, quality)
-		if perr == nil {
-			return res, nil
-		}
-		if errors.Is(perr, ErrNoAudio) {
-			attempt.Outcome = "no_supported_audio"
+			attemptStarted := time.Now()
+			out, err := r.runner.Run(ctx, args...)
+			attempt := ResolverAttempt{
+				Attempt: len(attempts) + 1, Clients: clients,
+				DurationMS: time.Since(attemptStarted).Milliseconds(), Protocols: []string{},
+			}
+			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					attempt.Outcome = "provider_timeout"
+					attempts = append(attempts, attempt)
+					return failed(err)
+				}
+				switch classifyResolverError(err) {
+				case ErrNoAudio:
+					attempt.Outcome = "no_supported_audio"
+					attempts = append(attempts, attempt)
+					sawNonZeroFormats = true
+					lastErr = fmt.Errorf("%w: %s", ErrNoAudio, firstLine(err.Error()))
+					continue
+				case ErrProviderNetwork:
+					attempt.Outcome = "provider_network"
+					attempts = append(attempts, attempt)
+					return failed(fmt.Errorf("%w: resolver request failed", ErrProviderNetwork))
+				case ErrUnavailable:
+					attempt.Outcome = "provider_unavailable"
+					attempts = append(attempts, attempt)
+					// UNPLAYABLE can be client-specific. Try the remaining bounded
+					// supported clients; private/removed media fails every set.
+					lastErr = fmt.Errorf("%w: provider rejected this media for %s", ErrUnavailable, clients)
+					continue
+				default:
+					attempt.Outcome = "resolver_process_error"
+					attempts = append(attempts, attempt)
+					return failed(fmt.Errorf("%w: resolver process failed", ErrResolve))
+				}
+			}
+
+			inspected, attemptMetadata := inspectResolverOutput(out, clients)
+			inspected.Attempt = attempt.Attempt
+			inspected.DurationMS = attempt.DurationMS
+			attempt = inspected
+			if metadata == nil && attemptMetadata != nil {
+				metadata = attemptMetadata
+			}
+			res, perr := ParseResolved(out, sourceID, quality)
+			if perr == nil {
+				attempt.Outcome = "resolved"
+				attempts = append(attempts, attempt)
+				res.Diagnostics = finishDiagnostics("resolved", round > 0)
+				return res, nil
+			}
+			if errors.Is(perr, ErrNoAudio) {
+				if attempt.FormatCount == 0 {
+					attempt.Outcome = "zero_formats"
+					sawZeroFormats = true
+				} else {
+					attempt.Outcome = "no_supported_audio"
+					sawNonZeroFormats = true
+				}
+				attempts = append(attempts, attempt)
+				lastErr = perr
+				continue
+			}
+			if errors.Is(perr, ErrUnavailable) {
+				attempt.Outcome = "provider_unavailable"
+			} else {
+				attempt.Outcome = "unreadable_response"
+			}
 			attempts = append(attempts, attempt)
-			lastErr = perr
-			continue
+			return failed(perr)
 		}
-		if errors.Is(perr, ErrUnavailable) {
-			attempt.Outcome = "provider_unavailable"
-		} else {
-			attempt.Outcome = "unreadable_response"
+
+		// Retry only the exact transient condition established in production: all
+		// successfully decoded format responses in this round were empty. Each
+		// next round invokes fresh yt-dlp subprocesses for the unchanged clients.
+		if sawZeroFormats && !sawNonZeroFormats {
+			if round < len(r.retryBackoffs) {
+				if err := waitForResolverRetry(ctx, r.retryBackoffs[round]); err != nil {
+					return failed(err)
+				}
+				continue
+			}
+			return failed(fmt.Errorf("%w: provider temporarily returned zero formats", ErrUnavailable))
 		}
-		attempts = append(attempts, attempt)
-		return failed(perr)
+		if lastErr != nil {
+			return failed(lastErr)
+		}
+		return failed(ErrNoAudio)
 	}
-	if lastErr != nil {
-		return failed(lastErr)
+}
+
+func waitForResolverRetry(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
 	}
-	return failed(ErrNoAudio)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func resolverFinalOutcome(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return "provider_timeout"
+	case errors.Is(err, ErrUnavailable):
+		return "media_unavailable"
+	case errors.Is(err, ErrNoAudio):
+		return "no_supported_audio"
+	case errors.Is(err, ErrProviderNetwork):
+		return "provider_network"
+	default:
+		return "resolver_error"
+	}
 }
 
 func classifyResolverError(err error) error {

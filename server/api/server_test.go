@@ -25,8 +25,14 @@ type fakeProvider struct{ calls int }
 
 type unavailableRunner struct{}
 
+type zeroFormatsRunner struct{}
+
 func (unavailableRunner) Run(context.Context, ...string) ([]byte, error) {
 	return nil, errors.New("ERROR: Video unavailable")
+}
+
+func (zeroFormatsRunner) Run(context.Context, ...string) ([]byte, error) {
+	return []byte(`{"id":"Kx7B-XvmFtE","title":"Believer","artist":"Imagine Dragons","formats":[]}`), nil
 }
 
 func (f *fakeProvider) Search(_ context.Context, query, _ string) (model.SearchResponse, error) {
@@ -45,6 +51,14 @@ func (fakeResolver) Resolve(_ context.Context, id, _ string) (media.Resolved, er
 	return media.Resolved{
 		SourceID: id, URL: "https://provider.invalid/private", MimeType: "audio/mp4",
 		Duration: 180, Bitrate: 128, ExpiresAt: time.Now().Add(time.Hour),
+		Diagnostics: media.ResolverDiagnostics{
+			Attempts: []media.ResolverAttempt{{
+				Attempt: 1, Clients: "visionos,web", Outcome: "resolved", DurationMS: 12,
+				Final: true, FormatCount: 3, FormatsWithURL: 2, AudioFormatsWithURL: 1,
+				SupportedProgressiveAudio: 1, Protocols: []string{"https"},
+			}},
+			FinalOutcome: "resolved", DurationMS: 12,
+		},
 	}, nil
 }
 
@@ -154,14 +168,16 @@ func TestResolveErrorIncludesOnlySanitizedAttemptOutcomes(t *testing.T) {
 	writeResolveError(res, err)
 	var body struct {
 		Error struct {
-			Code     string                  `json:"code"`
-			Attempts []media.ResolverAttempt `json:"resolverAttempts"`
+			Code        string                    `json:"code"`
+			Attempts    []media.ResolverAttempt   `json:"resolverAttempts"`
+			Diagnostics media.ResolverDiagnostics `json:"resolverDiagnostics"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Error.Code != "media_unavailable" || len(body.Error.Attempts) != 3 {
+	if body.Error.Code != "media_unavailable" || len(body.Error.Attempts) != 3 ||
+		body.Error.Diagnostics.FinalOutcome != "media_unavailable" {
 		t.Fatalf("unexpected sanitized resolver detail: %+v", body.Error)
 	}
 	for _, attempt := range body.Error.Attempts {
@@ -171,6 +187,45 @@ func TestResolveErrorIncludesOnlySanitizedAttemptOutcomes(t *testing.T) {
 	}
 	if strings.Contains(res.Body.String(), "youtube.com/watch") {
 		t.Fatal("resolve diagnostics exposed a provider URL")
+	}
+}
+
+func TestExhaustedZeroFormatRetriesReturnSanitizedUnavailable(t *testing.T) {
+	resolver := media.NewResolver(zeroFormatsRunner{})
+	_, err := resolver.Resolve(context.Background(), "Kx7B-XvmFtE", "high")
+	if err == nil {
+		t.Fatal("expected zero-format retries to be exhausted")
+	}
+	res := httptest.NewRecorder()
+	writeResolveError(res, err)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", res.Code, res.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code        string                    `json:"code"`
+			Attempts    []media.ResolverAttempt   `json:"resolverAttempts"`
+			Diagnostics media.ResolverDiagnostics `json:"resolverDiagnostics"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "media_unavailable" || body.Error.Diagnostics.FinalOutcome != "media_unavailable" {
+		t.Fatalf("unexpected exhausted retry response: %+v", body.Error)
+	}
+	if len(body.Error.Attempts) != 9 || len(body.Error.Diagnostics.Attempts) != 9 {
+		t.Fatalf("expected nine bounded subprocess attempts, got %+v", body.Error)
+	}
+	for _, attempt := range body.Error.Attempts {
+		if attempt.Outcome != "zero_formats" {
+			t.Fatalf("unexpected attempt outcome: %+v", attempt)
+		}
+	}
+	for _, forbidden := range []string{"youtube.com/watch", "signature", "cookie", "token"} {
+		if strings.Contains(strings.ToLower(res.Body.String()), forbidden) {
+			t.Fatalf("resolver diagnostics exposed forbidden data %q: %s", forbidden, res.Body.String())
+		}
 	}
 }
 
@@ -188,6 +243,16 @@ func TestResolveReturnsTicketNotProviderURL(t *testing.T) {
 	}
 	if !strings.Contains(res.Body.String(), "/api/v1/stream/abcdefghijk?") {
 		t.Fatalf("missing signed playback URL: %s", res.Body.String())
+	}
+	var body struct {
+		Diagnostics media.ResolverDiagnostics `json:"resolverDiagnostics"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Diagnostics.FinalOutcome != "resolved" || len(body.Diagnostics.Attempts) != 1 ||
+		body.Diagnostics.Attempts[0].Outcome != "resolved" {
+		t.Fatalf("missing sanitized success diagnostics: %+v", body.Diagnostics)
 	}
 }
 
