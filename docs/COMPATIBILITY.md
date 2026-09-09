@@ -12,7 +12,8 @@ path, while the current CI guards its build and shared tests.
 > playback, audible play/pause/seek, several transitions, Song Radio, synced
 > lyrics, and lyric seek have been manually verified. The repaired five-to-eight
 > item radio buffer passes a five-transition automated regression and is deployed;
-> its fresh post-fix five-transition audible browser run remains pending. Account
+> a fresh audible Believer Song Radio run also passed five production transitions
+> without an empty/duplicate buffer and retained explicit priority. Account
 > relogin/isolation, restart persistence, multi-browser responsive behavior, Media
 > Session, PWA install, and expired-ticket recovery remain unverified.
 

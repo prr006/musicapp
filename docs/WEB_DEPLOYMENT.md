@@ -39,9 +39,10 @@ Verified in production:
   handoff, queue priority, search isolation, and multi-refill canonical dedupe.
 
 The queue-controller repair that maintains a five-to-eight item discovery buffer
-is deployed. Its five-transition test is automated; a fresh **post-fix audible
-browser run through five Believer Song Radio transitions is still pending** and
-must not be inferred from the earlier three-transition manual run.
+is deployed. On 2026-09-09, a fresh audible production run started Song Radio
+from “Believer” by Imagine Dragons and passed at least five Next transitions:
+the Autoplay buffer stayed populated at roughly five to eight items, showed no
+empty/duplicate buffer, and retained explicit-queue priority.
 
 Still unverified in production: invalid/expired-ticket recovery, account
 register/logout/relogin and cross-account isolation, library/playlist persistence
