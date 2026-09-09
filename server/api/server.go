@@ -1160,6 +1160,9 @@ func writeResolveError(w http.ResponseWriter, err error) {
 	if attempts := media.ResolverAttempts(err); len(attempts) > 0 {
 		errorBody["resolverAttempts"] = attempts
 	}
+	if metadata := media.ResolverFailureMetadata(err); metadata != nil {
+		errorBody["resolverMetadata"] = metadata
+	}
 	writeJSON(w, status, map[string]any{"error": errorBody})
 }
 

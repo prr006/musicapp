@@ -463,6 +463,7 @@ func TestResolverBoundedFallbackExhaustsAllSets(t *testing.T) {
 	runner := &clientArgsRunner{outs: map[string][]byte{
 		resolveClients[0]: storyboardOnlyJSON(),
 		resolveClients[1]: storyboardOnlyJSON(),
+		resolveClients[2]: storyboardOnlyJSON(),
 	}}
 	res := NewResolver(runner)
 	_, err := res.Resolve(context.Background(), "vid", "high")
@@ -474,9 +475,14 @@ func TestResolverBoundedFallbackExhaustsAllSets(t *testing.T) {
 		t.Fatalf("expected %d sanitized outcomes, got %+v", len(resolveClients), attempts)
 	}
 	for _, attempt := range attempts {
-		if attempt.Outcome != "no_supported_audio" {
+		if attempt.Outcome != "no_supported_audio" || attempt.FormatCount != 1 ||
+			len(attempt.Protocols) != 1 || attempt.Protocols[0] != "mhtml" {
 			t.Fatalf("unexpected attempt outcome: %+v", attempt)
 		}
+	}
+	metadata := ResolverFailureMetadata(err)
+	if metadata == nil || metadata.ID != "vid" || metadata.Title != "Song" {
+		t.Fatalf("expected safe resolver metadata, got %+v", metadata)
 	}
 	if len(runner.calls) != len(resolveClients) {
 		t.Fatalf("expected exactly %d attempts, got %d: %v", len(resolveClients), len(runner.calls), runner.calls)

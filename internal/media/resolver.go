@@ -47,13 +47,34 @@ var (
 // attempt. It deliberately contains no provider URL, header, token, cookie, or
 // raw provider response and is safe to attach to operational error responses.
 type ResolverAttempt struct {
-	Clients string `json:"clients"`
-	Outcome string `json:"outcome"`
+	Clients                   string   `json:"clients"`
+	Outcome                   string   `json:"outcome"`
+	FormatCount               int      `json:"formatCount,omitempty"`
+	FormatsWithURL            int      `json:"formatsWithUrl,omitempty"`
+	AudioFormatsWithURL       int      `json:"audioFormatsWithUrl,omitempty"`
+	SupportedProgressiveAudio int      `json:"supportedProgressiveAudio,omitempty"`
+	Protocols                 []string `json:"protocols,omitempty"`
+}
+
+// ResolverMetadata is the non-sensitive media identity returned by yt-dlp
+// before MELO filters its formats. Descriptions, URLs, headers, and tokens are
+// intentionally excluded.
+type ResolverMetadata struct {
+	ID           string  `json:"id,omitempty"`
+	Title        string  `json:"title,omitempty"`
+	Track        string  `json:"track,omitempty"`
+	Artist       string  `json:"artist,omitempty"`
+	Uploader     string  `json:"uploader,omitempty"`
+	Album        string  `json:"album,omitempty"`
+	Duration     float64 `json:"duration,omitempty"`
+	Availability string  `json:"availability,omitempty"`
+	LiveStatus   string  `json:"liveStatus,omitempty"`
 }
 
 type resolverAttemptError struct {
 	cause    error
 	attempts []ResolverAttempt
+	metadata *ResolverMetadata
 }
 
 func (e *resolverAttemptError) Error() string { return e.cause.Error() }
@@ -67,6 +88,17 @@ func ResolverAttempts(err error) []ResolverAttempt {
 		return nil
 	}
 	return append([]ResolverAttempt(nil), attemptErr.attempts...)
+}
+
+// ResolverFailureMetadata returns a copy of the safe yt-dlp metadata associated
+// with a failed resolution, when the provider returned parseable JSON.
+func ResolverFailureMetadata(err error) *ResolverMetadata {
+	var attemptErr *resolverAttemptError
+	if !errors.As(err, &attemptErr) || attemptErr.metadata == nil {
+		return nil
+	}
+	metadata := *attemptErr.metadata
+	return &metadata
 }
 
 // ---- temporary diagnostics (MELO_RESOLVER_DIAG=1) ----
@@ -285,9 +317,12 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 	// no-format and unavailable responses advance to the next supported set;
 	// network/process failures stop immediately.
 	var lastErr error
+	var metadata *ResolverMetadata
 	attempts := make([]ResolverAttempt, 0, len(resolveClients))
 	failed := func(err error) (Resolved, error) {
-		return Resolved{}, &resolverAttemptError{cause: err, attempts: append([]ResolverAttempt(nil), attempts...)}
+		return Resolved{}, &resolverAttemptError{
+			cause: err, attempts: append([]ResolverAttempt(nil), attempts...), metadata: metadata,
+		}
 	}
 	for i, clients := range resolveClients {
 		args := []string{
@@ -319,21 +354,27 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 				return failed(fmt.Errorf("%w: resolver process failed", ErrResolve))
 			}
 		}
+		attempt, attemptMetadata := inspectResolverOutput(out, clients)
+		if metadata == nil && attemptMetadata != nil {
+			metadata = attemptMetadata
+		}
 		res, perr := ParseResolved(out, sourceID, quality)
 		if perr == nil {
 			return res, nil
 		}
 		if errors.Is(perr, ErrNoAudio) {
-			attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "no_supported_audio"})
+			attempt.Outcome = "no_supported_audio"
+			attempts = append(attempts, attempt)
 			lastErr = perr
 			diagf("resolve %s: attempt %d/%d had no playable stream; trying the next client set", sourceID, i+1, len(resolveClients))
 			continue
 		}
 		if errors.Is(perr, ErrUnavailable) {
-			attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "provider_unavailable"})
+			attempt.Outcome = "provider_unavailable"
 		} else {
-			attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "unreadable_response"})
+			attempt.Outcome = "unreadable_response"
 		}
+		attempts = append(attempts, attempt)
 		return failed(perr)
 	}
 	if lastErr != nil {
@@ -409,17 +450,53 @@ type ytFormat struct {
 }
 
 type ytInfo struct {
-	ID        string     `json:"id"`
-	Title     string     `json:"title"`
-	Artist    string     `json:"artist"`
-	Track     string     `json:"track"`
-	Album     string     `json:"album"`
-	Uploader  string     `json:"uploader"`
-	Channel   string     `json:"channel"`
-	Duration  float64    `json:"duration"`
-	Thumbnail string     `json:"thumbnail"`
-	Formats   []ytFormat `json:"formats"`
-	IsLive    bool       `json:"is_live"`
+	ID           string     `json:"id"`
+	Title        string     `json:"title"`
+	Artist       string     `json:"artist"`
+	Track        string     `json:"track"`
+	Album        string     `json:"album"`
+	Uploader     string     `json:"uploader"`
+	Channel      string     `json:"channel"`
+	Duration     float64    `json:"duration"`
+	Thumbnail    string     `json:"thumbnail"`
+	Formats      []ytFormat `json:"formats"`
+	Availability string     `json:"availability"`
+	LiveStatus   string     `json:"live_status"`
+	IsLive       bool       `json:"is_live"`
+}
+
+func inspectResolverOutput(raw []byte, clients string) (ResolverAttempt, *ResolverMetadata) {
+	attempt := ResolverAttempt{Clients: clients}
+	var info ytInfo
+	if json.Unmarshal(raw, &info) != nil {
+		return attempt, nil
+	}
+	protocols := map[string]struct{}{}
+	attempt.FormatCount = len(info.Formats)
+	for _, format := range info.Formats {
+		if format.Protocol != "" {
+			protocols[format.Protocol] = struct{}{}
+		}
+		if format.URL != "" {
+			attempt.FormatsWithURL++
+		}
+		if format.URL != "" && format.ACodec != "" && format.ACodec != "none" {
+			attempt.AudioFormatsWithURL++
+		}
+		if rejectReason(format) == "" {
+			attempt.SupportedProgressiveAudio++
+		}
+	}
+	for protocol := range protocols {
+		attempt.Protocols = append(attempt.Protocols, protocol)
+	}
+	sort.Strings(attempt.Protocols)
+	metadata := &ResolverMetadata{
+		ID: info.ID, Title: info.Title, Track: info.Track, Artist: info.Artist,
+		Uploader: info.Uploader, Album: info.Album, Duration: info.Duration,
+		Availability: info.Availability, LiveStatus: info.LiveStatus,
+	}
+	return attempt, metadata
 }
 
 // ParseResolved picks the best playable stream for the requested quality tier
