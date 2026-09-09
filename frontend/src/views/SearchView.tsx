@@ -22,7 +22,7 @@ export function SearchView() {
   const submitted = useSearchStore((s) => s.submitted)
   const history = useLibraryStore((s) => s.searchHistory)
 
-  // The Go backend marshals empty slices as JSON `null` (the yt-dlp fallback and
+  // The Go backend marshals empty slices as JSON `null` (video-only and other
   // video-only InnerTube responses have no album/artist lists at all). Never
   // trust the response shape: normalise every section to an array here so a
   // `null` section can't crash the render (which would blank the whole app).

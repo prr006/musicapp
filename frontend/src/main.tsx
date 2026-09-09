@@ -2,9 +2,13 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { initBackend, setBackend } from './bridge/backend'
+import { selectAdapter } from './audio/select'
 import { ACCENTS } from './lib/defaults'
 import { library, useLibraryStore } from './state/libraryStore'
 import { playback } from './state/playback'
+import { usePlayerStore } from './state/playerStore'
+import { useSearchStore } from './state/searchStore'
+import { recommenderTuning } from './state/recommender'
 import { ui } from './state/uiStore'
 import './styles/global.css'
 
@@ -24,8 +28,22 @@ function applyTheme(): void {
 }
 
 async function boot(): Promise<void> {
+  // 1. Choose the playback provider (YouTube IFrame in the packaged app).
+  const { adapter, degraded } = await selectAdapter()
+  playback.attachAdapter(adapter)
+  if (degraded && import.meta.env.DEV) {
+    ui.toast('YouTube player unreachable — offline demo mode (no audio)', 'info')
+  }
+
+  // 2. Connect the data backend (native bindings, or the dev fixture).
   const be = await initBackend()
   setBackend(be)
+  if (!be.isNative) {
+    // Dev/preview mode searches the instant, local fixture backend; the
+    // cooldown that protects a real provider from hammering would only slow
+    // the demo down.
+    recommenderTuning.fetchCooldownMs = 800
+  }
 
   try {
     const state = await be.getState()
@@ -33,9 +51,9 @@ async function boot(): Promise<void> {
     applyTheme()
 
     const settings = state.settings
-    playback.engine.setVolume(settings.volume)
-    playback.engine.setMuted(settings.muted)
-    playback.engine.setRate(settings.defaultSpeed)
+    adapter.setVolume(settings.volume)
+    adapter.setMuted(settings.muted)
+    adapter.setRate(settings.defaultSpeed)
 
     if (settings.restoreSession && state.session) {
       await playback.restoreSession(state.session, settings.resumeOnStartup)
@@ -48,7 +66,7 @@ async function boot(): Promise<void> {
   useLibraryStore.subscribe(applyTheme)
   window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme)
 
-  // Native integrations: OS media keys and resolver lifecycle events.
+  // Native integration: OS media keys.
   be.on('melo:mediakey', (...args: unknown[]) => {
     switch (args[0]) {
       case 'playpause':
@@ -67,21 +85,19 @@ async function boot(): Promise<void> {
         break
     }
   })
-  be.on('melo:resolver-error', (...args: unknown[]) => {
-    ui.setResolverError(String(args[0] ?? 'The media resolver could not be installed.'))
-    ui.setResolverProgress(null)
-  })
-  be.on('melo:resolver-ready', () => {
-    ui.setResolverError(null)
-    ui.setResolverProgress(null)
-  })
-  be.on('melo:resolver-progress', (...args: unknown[]) => {
-    const p = args[0] as { done: number; total: number } | undefined
-    if (p) ui.setResolverProgress(p)
-  })
 
   // Persist the session on shutdown so a restart can pick up where we left off.
   window.addEventListener('beforeunload', () => void playback.saveSession())
+
+  // Dev-only, read-only introspection used by the end-to-end test drive.
+  if (import.meta.env.DEV) {
+    ;(window as unknown as Record<string, unknown>).__meloApp = {
+      player: () => usePlayerStore.getState(),
+      library: () => useLibraryStore.getState(),
+      search: () => useSearchStore.getState(),
+      adapter: () => playback.adapter.kind,
+    }
+  }
 }
 
 createRoot(document.getElementById('root')!).render(

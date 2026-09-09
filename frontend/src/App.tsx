@@ -4,6 +4,7 @@ import { NowPlaying } from './components/NowPlaying'
 import { QueuePanel } from './components/QueuePanel'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
+import { VideoDock } from './components/VideoStage'
 import { ErrorState } from './components/States'
 import { useKeyboardShortcuts } from './lib/shortcuts'
 import { useLibraryStore } from './state/libraryStore'
@@ -80,29 +81,6 @@ function Toasts() {
   )
 }
 
-function ResolverBanner() {
-  const error = useUIStore((s) => s.resolverError)
-  const progress = useUIStore((s) => s.resolverProgress)
-  if (progress && progress.total > 0 && progress.done < progress.total) {
-    const pct = Math.round((progress.done / progress.total) * 100)
-    return (
-      <div className="banner">
-        <span className="spinner" />
-        <span>Preparing the media resolver… {pct}%</span>
-      </div>
-    )
-  }
-  if (!error) return null
-  return (
-    <div className="banner warn" role="alert">
-      <span>{error}</span>
-      <button className="btn ghost" style={{ marginLeft: 'auto', height: 30 }} onClick={() => ui.navigate({ name: 'settings' })} type="button">
-        Open settings
-      </button>
-    </div>
-  )
-}
-
 export function App() {
   const queueOpen = useUIStore((s) => s.queueOpen)
   const nowPlayingOpen = useUIStore((s) => s.nowPlayingOpen)
@@ -123,7 +101,6 @@ export function App() {
       <Sidebar />
       <main className="main">
         <TopBar scrolled={scrolled} />
-        <ResolverBanner />
         <div className="content" ref={contentRef} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 8)}>
           {loadError ? (
             <ErrorState
@@ -141,6 +118,7 @@ export function App() {
         {queueOpen && <QueuePanel />}
         {nowPlayingOpen && <NowPlaying />}
       </main>
+      <VideoDock />
       <MiniPlayer />
       <Toasts />
     </div>

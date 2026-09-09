@@ -126,62 +126,11 @@ func TestMissingArtworkStaysEmpty(t *testing.T) {
 	}
 }
 
-type fakeRunner struct {
-	out []byte
-	err error
-	got []string
-}
-
-func (f *fakeRunner) Run(_ context.Context, args ...string) ([]byte, error) {
-	f.got = args
-	return f.out, f.err
-}
-
-func TestParseYTDLPSearch(t *testing.T) {
-	payload := map[string]any{"entries": []map[string]any{{
-		"id": "xyz", "title": "Track One", "uploader": "Chan", "duration": 200.0,
-		"thumbnails": []map[string]any{{"url": "http://img/1.jpg", "width": 100}},
-	}, {"id": "", "title": "skip"}}}
-	raw, _ := json.Marshal(payload)
-	res, err := ParseYTDLPSearch(raw, "q")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Songs) != 1 || res.Songs[0].ID != "yt:xyz" || res.Songs[0].Artist != "Chan" {
-		t.Fatalf("bad parse: %+v", res.Songs)
-	}
-	if res.Provider != "yt-dlp" {
-		t.Fatalf("provider should be tagged: %q", res.Provider)
-	}
-}
-
-func TestSearchFallsBackToYTDLP(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer srv.Close()
-
-	raw, _ := json.Marshal(map[string]any{"entries": []map[string]any{
-		{"id": "fallback1", "title": "Fallback", "uploader": "Chan", "duration": 100.0},
-	}})
-	runner := &fakeRunner{out: raw}
-	c := New(runner)
-	c.Endpoint = srv.URL
-
-	res, err := c.Search(context.Background(), "anything", "")
-	if err != nil {
-		t.Fatalf("expected fallback to succeed: %v", err)
-	}
-	if res.Provider != "yt-dlp" || len(res.Songs) != 1 || res.Songs[0].SourceID != "fallback1" {
-		t.Fatalf("unexpected fallback result: %+v", res)
-	}
-}
-
 func TestSearchSurfacesNetworkError(t *testing.T) {
-	c := New(&fakeRunner{err: context.DeadlineExceeded})
+	c := New()
 	c.Endpoint = "http://127.0.0.1:1/none"
 	if _, err := c.Search(context.Background(), "x", ""); err == nil {
-		t.Fatal("expected an error when both provider and fallback fail")
+		t.Fatal("expected a network error to surface")
 	}
 }
 
@@ -196,7 +145,7 @@ func TestSearchInnerTubeSuccess(t *testing.T) {
 		_, _ = w.Write([]byte(innerTubeFixture))
 	}))
 	defer srv.Close()
-	c := New(&fakeRunner{})
+	c := New()
 	c.Endpoint = srv.URL
 	res, err := c.Search(context.Background(), "nightfall", "songs")
 	if err != nil {
@@ -208,7 +157,7 @@ func TestSearchInnerTubeSuccess(t *testing.T) {
 }
 
 func TestEmptyQueryShortCircuits(t *testing.T) {
-	c := New(&fakeRunner{})
+	c := New()
 	res, err := c.Search(context.Background(), "   ", "")
 	if err != nil || len(res.Songs) != 0 {
 		t.Fatalf("expected empty response, got %+v %v", res, err)

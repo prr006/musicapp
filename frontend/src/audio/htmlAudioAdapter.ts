@@ -1,35 +1,16 @@
 /**
- * PlaybackEngine — the one and only audio transport in MELO.
+ * HtmlAudioAdapter — a generic URL-based media element adapter.
  *
- * It wraps a single HTMLAudioElement, which in a Wails build is WebView2's
- * native media pipeline. The element is the authority for position, duration,
- * buffering and end-of-file; nothing in the app simulates a playback clock.
- *
- * Every load takes a generation token. Anything that arrives late (a resolver
- * result, a media event from a previous source) is discarded, so a rapid
- * A -> B -> C switch can never resurrect an older track.
+ * It wraps a single HTMLAudioElement: the element is the authority for
+ * position, duration, buffering and end-of-file; nothing simulates a playback
+ * clock. This adapter exists for engine-level tests and for any future
+ * provider that hands MELO a direct media URL. It is deliberately NOT the
+ * YouTube path: nothing in this app resolves or extracts YouTube media.
  */
+import type { PlaybackAdapter, PlaybackEvent, PlaybackSnapshot, PlaybackStatus } from './adapter'
+import type { Track } from '../bridge/types'
 
-export type EngineStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
-
-export interface EngineSnapshot {
-  status: EngineStatus
-  trackId: string | null
-  duration: number
-  buffered: number
-  error: string | null
-  volume: number
-  muted: boolean
-  rate: number
-}
-
-export type EngineEvent =
-  | { type: 'state'; snapshot: EngineSnapshot }
-  | { type: 'position'; position: number; trackId: string | null }
-  | { type: 'ended'; trackId: string }
-  | { type: 'error'; trackId: string | null; message: string }
-
-type Listener = (event: EngineEvent) => void
+type Listener = (event: PlaybackEvent) => void
 
 const POSITION_INTERVAL_MS = 100
 
@@ -49,12 +30,14 @@ function mediaErrorMessage(el: HTMLAudioElement): string {
   }
 }
 
-export class PlaybackEngine {
+export class HtmlAudioAdapter implements PlaybackAdapter {
+  readonly kind = 'html-audio' as const
+  readonly videoSurface: HTMLElement | null = null
   readonly el: HTMLAudioElement
   private listeners = new Set<Listener>()
   private generation = 0
   private trackId: string | null = null
-  private status: EngineStatus = 'idle'
+  private status: PlaybackStatus = 'idle'
   private error: string | null = null
   private timer: ReturnType<typeof setInterval> | null = null
   private lastPosition = -1
@@ -62,8 +45,8 @@ export class PlaybackEngine {
   constructor(el?: HTMLAudioElement) {
     this.el = el ?? new Audio()
     this.el.preload = 'auto'
-    // No crossOrigin: the loopback stream is same-machine and we never read
-    // pixel/PCM data from it, so requiring CORS mode would only add failures.
+    // No crossOrigin: this adapter only plays same-machine/direct URLs and we
+    // never read pixel/PCM data from them, so CORS mode would only add failures.
     this.bind()
   }
 
@@ -103,7 +86,7 @@ export class PlaybackEngine {
     return () => this.listeners.delete(listener)
   }
 
-  private emit(event: EngineEvent): void {
+  private emit(event: PlaybackEvent): void {
     for (const l of [...this.listeners]) l(event)
   }
 
@@ -118,7 +101,7 @@ export class PlaybackEngine {
     this.emit({ type: 'position', position: pos, trackId: this.trackId })
   }
 
-  private setStatus(status: EngineStatus): void {
+  private setStatus(status: PlaybackStatus): void {
     if (this.status === status) return
     this.status = status
     if (status === 'playing') this.startTimer()
@@ -137,7 +120,7 @@ export class PlaybackEngine {
     this.timer = null
   }
 
-  snapshot(): EngineSnapshot {
+  snapshot(): PlaybackSnapshot {
     const el = this.el
     let buffered = 0
     try {
@@ -165,11 +148,6 @@ export class PlaybackEngine {
     return this.generation
   }
 
-  /**
-   * beginLoad clears the current source immediately and returns the token that
-   * must be presented to `load`. Call it the instant the user picks a track so
-   * the previous audio stops before the new one is resolved.
-   */
   beginLoad(trackId: string): number {
     this.generation += 1
     this.hardStop()
@@ -180,10 +158,14 @@ export class PlaybackEngine {
     return this.generation
   }
 
-  /** Returns false when the token is stale, meaning the caller lost the race. */
-  async load(token: number, url: string, startAt = 0, autoplay = true): Promise<boolean> {
+  async load(token: number, track: Track, startAt = 0, autoplay = true): Promise<boolean> {
     if (token !== this.generation) return false
     const el = this.el
+    const url = track.url
+    if (!url) {
+      this.fail(token, 'This track has no playable source.')
+      return false
+    }
     el.src = url
     el.load()
     if (startAt > 0) {
@@ -214,7 +196,6 @@ export class PlaybackEngine {
     return token === this.generation
   }
 
-  /** Marks the in-flight load as failed (used when the resolver errors). */
   fail(token: number, message: string): void {
     if (token !== this.generation) return
     this.error = message
@@ -242,7 +223,6 @@ export class PlaybackEngine {
     if (this.status !== 'error') this.setStatus('paused')
   }
 
-  /** Stop is explicit: it clears the transport but never advances the queue. */
   stop(): void {
     this.generation += 1
     this.hardStop()
@@ -281,7 +261,6 @@ export class PlaybackEngine {
     this.emitPosition(true)
   }
 
-  /** Restarts the current source from zero (used by Repeat One). */
   restart(): void {
     this.seek(0)
     void this.play()

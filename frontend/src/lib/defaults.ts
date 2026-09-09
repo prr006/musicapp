@@ -6,7 +6,6 @@ export function defaultSettings(): Settings {
     accent: 'ember',
     autoplay: true,
     defaultSpeed: 1,
-    audioQuality: 'high',
     restoreSession: true,
     resumeOnStartup: false,
     mediaKeys: true,

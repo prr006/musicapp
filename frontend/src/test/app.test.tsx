@@ -2,12 +2,13 @@
  * Application-level smoke test: boots the real App shell against the fixture
  * backend and walks the primary user journey — search, single-click play,
  * mini player, queue, like, EOF advance — through the real stores, the real
- * playback controller and the real engine.
+ * playback controller and a real HTML-audio adapter.
  */
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
+import { HtmlAudioAdapter } from '../audio/htmlAudioAdapter'
 import { setBackend, type Backend } from '../bridge/backend'
 import type { SearchResponse, Track } from '../bridge/types'
 import { defaultSettings } from '../lib/defaults'
@@ -16,10 +17,12 @@ import { playback } from '../state/playback'
 import { usePlayerStore } from '../state/playerStore'
 import { useSearchStore } from '../state/searchStore'
 import { useUIStore } from '../state/uiStore'
+import { recommenderTuning } from '../state/recommender'
+import { FakeMedia } from './fakeMedia'
 
 function song(id: string, title: string): Track {
   return {
-    id: `yt:${id}`, sourceId: id, source: 'youtube', url: '', title, artist: 'Halcyon',
+    id: `yt:${id}`, sourceId: id, source: 'youtube', url: `http://local/${id}`, title, artist: 'Halcyon',
     album: 'Blue Hours', artwork: `http://img/${id}.jpg`, duration: 120, explicit: false,
   }
 }
@@ -38,13 +41,9 @@ function stubBackend(): Backend {
     })),
     getDiagnostics: vi.fn(async () => ({
       appVersion: '0.0.0', goVersion: 'go1.21', platform: 'linux', dataDir: '/tmp',
-      streamProxy: 'off', resolver: { installed: false, path: '', version: '', message: '' },
-      resolverBinary: '', mediaKeys: 'off', tray: 'on',
+      player: 'YouTube embedded player (IFrame API)', mediaKeys: 'off', tray: 'on',
     })),
     search: vi.fn(async () => ({ query: 'night', songs: [a, b], videos: [], albums: [], artists: [], provider: 'ytmusic' })),
-    getPlayable: vi.fn(async (t: Track) => ({
-      trackId: t.id, url: `http://local/${t.sourceId}`, mimeType: 'audio/mp4', duration: 120, bitrate: 128, expiresAt: 0,
-    })),
     getLyrics: vi.fn(async (q: { trackId: string }) => ({
       trackId: q.trackId, source: 'lrclib', synced: true,
       lines: [{ time: 0, text: 'first line' }, { time: 60, text: 'second line' }],
@@ -55,7 +54,9 @@ function stubBackend(): Backend {
       liked = on ? [t] : []
       return liked
     }),
-    recordPlay: vi.fn(async (t: Track) => [{ track: t, playedAt: Date.now() }]),
+    recordPlayEvent: vi.fn(async (t: Track) => [
+      { track: t, playedAt: Date.now(), listenedSec: 0, trackDuration: 120, completed: false, skipped: false },
+    ]),
     clearHistory: vi.fn(async () => {}),
     addSearchTerm: vi.fn(async () => ['night']),
     removeSearchTerm: vi.fn(async () => []),
@@ -72,7 +73,6 @@ function stubBackend(): Backend {
     removeTrackFromPlaylist: vi.fn(),
     reorderPlaylist: vi.fn(),
     duplicatePlaylist: vi.fn(),
-    installResolver: vi.fn(),
     setNowPlaying: vi.fn(async () => {}),
     on: vi.fn(() => () => {}),
   } as unknown as Backend
@@ -80,13 +80,19 @@ function stubBackend(): Backend {
   return be
 }
 
+const media = new FakeMedia()
+
 beforeEach(() => {
+  // The app tests run the real controller with a real URL-based adapter over
+  // a controllable fake media element (jsdom has no media pipeline).
+  playback.attachAdapter(new HtmlAudioAdapter(media.asElement()))
+  recommenderTuning.fetchCooldownMs = 0
   useLibraryStore.setState({ ready: true, loadError: null, settings: defaultSettings(), liked: [], playlists: [], history: [], searchHistory: [] })
   usePlayerStore.setState({
     queue: [], autoQueue: [], index: -1, current: null, status: 'idle', error: null,
     shuffle: false, repeat: 'off', volume: 1, muted: false, speed: 1, playingFrom: 'queue', contextLabel: '',
   })
-  useUIStore.setState({ route: { name: 'home' }, history: [], future: [], queueOpen: false, nowPlayingOpen: false, lyricsOpen: false, toasts: [], resolverError: null, resolverProgress: null })
+  useUIStore.setState({ route: { name: 'home' }, history: [], future: [], queueOpen: false, nowPlayingOpen: false, lyricsOpen: false, toasts: [] })
 })
 
 describe('MELO application', () => {
@@ -121,7 +127,7 @@ describe('MELO application', () => {
 
     // Natural end of file advances exactly once, into autoplay.
     act(() => {
-      playback.engine.el.dispatchEvent(new Event('ended'))
+      media.endNaturally()
     })
     await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe(b.id))
     expect(usePlayerStore.getState().playingFrom).toBe('autoplay')
@@ -258,22 +264,22 @@ describe('MELO application', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/backend isn’t running/)
   })
 
-  it('keeps search usable after a playback resolution failure', async () => {
+  it('keeps search usable after a playback failure', async () => {
     const be = stubBackend()
-    // First search: normal full shape. After the resolver fails, the next search
-    // returns the null-section shape real responses can have (yt-dlp fallback /
-    // video-only). The search page must still render instead of going blank.
+    // First search: normal full shape. After playback fails, the next search
+    // returns the null-section shape real responses can have. The search page
+    // must still render instead of going blank.
+    const broken = { ...a, url: '' }
     be.search = vi
       .fn()
-      .mockResolvedValueOnce({ query: 'night', songs: [a, b], videos: [], albums: [], artists: [], provider: 'ytmusic' })
-      .mockResolvedValue({ query: 'night', songs: [a, b], videos: null, albums: null, artists: null, provider: 'yt-dlp' } as unknown as SearchResponse) as unknown as Backend['search']
-    be.getPlayable = vi.fn().mockRejectedValue(new Error('this song has no playable audio stream')) as unknown as Backend['getPlayable']
+      .mockResolvedValueOnce({ query: 'night', songs: [broken, b], videos: [], albums: [], artists: [], provider: 'ytmusic' })
+      .mockResolvedValue({ query: 'night', songs: [a, b], videos: null, albums: null, artists: null, provider: 'ytmusic' } as unknown as SearchResponse) as unknown as Backend['search']
 
     render(<App />)
     await userEvent.type(screen.getByRole('textbox', { name: 'Search' }), 'night{enter}')
     await waitFor(() => expect(screen.getByText('Nightfall')).toBeInTheDocument())
 
-    // Clicking a result now fails at the resolver.
+    // Clicking a result whose source cannot load surfaces a real error.
     await userEvent.click(screen.getByRole('button', { name: /Play Nightfall/i }))
     await waitFor(() => expect(usePlayerStore.getState().status).toBe('error'))
 

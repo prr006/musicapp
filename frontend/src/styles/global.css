@@ -1185,9 +1185,30 @@ p {
   width: 100%;
 }
 
-.np-art {
+.np-art-wrap {
+  position: relative;
   width: 100%;
+  aspect-ratio: 1 / 1;
+}
+
+.np-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   box-shadow: var(--shadow-3);
+  border-radius: var(--radius-lg);
+}
+
+/* Positioning target for the YouTube stage (see components/VideoStage.tsx).
+   Invisible by itself — the provider's player surface docks on top of it. */
+.video-slot {
+  pointer-events: none;
+}
+
+.np-video-slot {
+  position: absolute;
+  inset: 0;
   border-radius: var(--radius-lg);
 }
 
@@ -1863,4 +1884,65 @@ select.input {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+
+/* ---------------- youtube video dock ---------------- */
+
+/*
+ * The adapter's player stage (`.yt-stage`) is positioned by VideoStage over
+ * whichever slot is active. This is the mini dock shown when Now Playing is
+ * closed: attached to the player bar, always visible, ≥ 200×200 so the
+ * embedded player stays compliant while it plays.
+ */
+.video-dock {
+  position: fixed;
+  bottom: calc(var(--player-h) + 24px);
+  width: 228px;
+  padding: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  cursor: pointer;
+  z-index: 74;
+  animation: panel-in 240ms var(--ease);
+}
+
+.video-dock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px 8px;
+  color: var(--text-2);
+}
+
+.video-dock-label {
+  font-size: 11px;
+  font-weight: 660;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.video-dock-head svg {
+  transform: rotate(180deg);
+}
+
+.video-dock-slot {
+  width: 216px;
+  height: 216px;
+  border-radius: 10px;
+  background: var(--surface-3);
+}
+
+/* Queue panel: autoplay rows + hint copy */
+.track-row.compact.auto {
+  opacity: 0.78;
+}
+
+.queue-hint {
+  font-size: 12px;
+  color: var(--text-3);
+  padding: 2px 12px 10px;
+  line-height: 1.5;
 }

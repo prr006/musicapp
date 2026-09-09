@@ -1,9 +1,9 @@
-// Package provider implements music search. The primary source is the
-// YouTube Music InnerTube endpoint (rich metadata: artist, album, artwork,
-// duration); when it is unavailable or its shape changes, search falls back to
-// yt-dlp's own search, which is slower but very stable.
+// Package provider implements music search through the YouTube Music
+// InnerTube endpoint (rich metadata: artist, album, artwork, duration).
 //
 // Nothing here knows about playback: the output is plain model.Track values.
+// Playing a track is the frontend YouTube IFrame adapter's job — no resolver,
+// no extraction, no stream URLs.
 package provider
 
 import (
@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -35,22 +34,15 @@ const (
 	userAgent    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
-type YTDLPRunner interface {
-	// Run executes yt-dlp with args and returns stdout.
-	Run(ctx context.Context, args ...string) ([]byte, error)
-}
-
 type Client struct {
-	HTTP  *http.Client
-	YTDLP YTDLPRunner
+	HTTP *http.Client
 	// Endpoint is overridable for tests.
 	Endpoint string
 }
 
-func New(ytdlp YTDLPRunner) *Client {
+func New() *Client {
 	return &Client{
 		HTTP:     &http.Client{Timeout: 20 * time.Second},
-		YTDLP:    ytdlp,
 		Endpoint: innertubeURL,
 	}
 }
@@ -62,21 +54,7 @@ func (c *Client) Search(ctx context.Context, query, filter string) (model.Search
 	if query == "" {
 		return model.SearchResponse{Query: query}, nil
 	}
-	res, err := c.searchInnerTube(ctx, query, filter)
-	if err == nil && len(res.Songs)+len(res.Videos) > 0 {
-		return res, nil
-	}
-	fallback, ferr := c.searchYTDLP(ctx, query)
-	if ferr == nil && len(fallback.Songs) > 0 {
-		return fallback, nil
-	}
-	if err != nil {
-		return model.SearchResponse{Query: query}, err
-	}
-	if ferr != nil {
-		return model.SearchResponse{Query: query}, ferr
-	}
-	return res, nil
+	return c.searchInnerTube(ctx, query, filter)
 }
 
 func filterParams(filter string) string {
@@ -468,116 +446,4 @@ func uniqueStrings(in []string) []string {
 		out = append(out, s)
 	}
 	return out
-}
-
-// ---------------- yt-dlp fallback ----------------
-
-type ytdlpEntry struct {
-	ID         string  `json:"id"`
-	Title      string  `json:"title"`
-	Uploader   string  `json:"uploader"`
-	Channel    string  `json:"channel"`
-	Artist     string  `json:"artist"`
-	Album      string  `json:"album"`
-	Track      string  `json:"track"`
-	Duration   float64 `json:"duration"`
-	WebpageURL string  `json:"webpage_url"`
-	Thumbnails []struct {
-		URL    string `json:"url"`
-		Width  int    `json:"width"`
-		Height int    `json:"height"`
-	} `json:"thumbnails"`
-	Thumbnail string `json:"thumbnail"`
-}
-
-func (c *Client) searchYTDLP(ctx context.Context, query string) (model.SearchResponse, error) {
-	if c.YTDLP == nil {
-		return model.SearchResponse{}, ErrProvider
-	}
-	out, err := c.YTDLP.Run(ctx, "--dump-single-json", "--flat-playlist", "--no-warnings",
-		fmt.Sprintf("ytsearch25:%s", query))
-	if err != nil {
-		return model.SearchResponse{}, fmt.Errorf("%w: %v", ErrNetwork, err)
-	}
-	return ParseYTDLPSearch(out, query)
-}
-
-func ParseYTDLPSearch(raw []byte, query string) (model.SearchResponse, error) {
-	var payload struct {
-		Entries []ytdlpEntry `json:"entries"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return model.SearchResponse{}, fmt.Errorf("%w: malformed yt-dlp output", ErrProvider)
-	}
-	res := model.SearchResponse{Query: query, Provider: "yt-dlp"}
-	for _, e := range payload.Entries {
-		if e.ID == "" {
-			continue
-		}
-		res.Songs = append(res.Songs, TrackFromYTDLP(e.ID, e.Title, firstNonEmpty(e.Artist, e.Uploader, e.Channel),
-			e.Album, bestEntryThumb(e), e.Duration))
-	}
-	return res, nil
-}
-
-func bestEntryThumb(e ytdlpEntry) string {
-	best := e.Thumbnail
-	bw := 0
-	for _, t := range e.Thumbnails {
-		if t.Width >= bw && t.URL != "" {
-			best, bw = t.URL, t.Width
-		}
-	}
-	if best == "" {
-		best = "https://i.ytimg.com/vi/" + e.ID + "/hqdefault.jpg"
-	}
-	return best
-}
-
-func TrackFromYTDLP(id, title, artist, album, artwork string, duration float64) model.Track {
-	return model.Track{
-		ID:       "yt:" + id,
-		SourceID: id,
-		Source:   "youtube",
-		URL:      "https://www.youtube.com/watch?v=" + id,
-		Title:    strings.TrimSpace(title),
-		Artist:   strings.TrimSpace(artist),
-		Album:    strings.TrimSpace(album),
-		Artwork:  artwork,
-		Duration: duration,
-	}
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
-}
-
-// Exec is the production YTDLPRunner backed by the managed binary.
-type Exec struct {
-	Path func() (string, error)
-}
-
-func (e Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
-	bin, err := e.Path()
-	if err != nil {
-		return nil, err
-	}
-	cmd := exec.CommandContext(ctx, bin, args...)
-	hideWindow(cmd)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return nil, errors.New(msg)
-	}
-	return out, nil
 }

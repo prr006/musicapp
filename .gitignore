@@ -9,3 +9,6 @@ frontend/wailsjs/
 # local tooling
 .env.local
 .env.*.local
+
+# end-to-end run artifacts (evidence copies live in docs/evidence)
+frontend/e2e/

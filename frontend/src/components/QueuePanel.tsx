@@ -8,6 +8,14 @@ import { CloseIcon, DownIcon, PlusIcon, TrashIcon, UpIcon } from './Icons'
 import { RepeatButton, ShuffleButton } from './MiniPlayer'
 import { EmptyState } from './States'
 
+/**
+ * The queue panel — modelled on the Spotify / YouTube Music queue:
+ *
+ *   NOW PLAYING      the current track
+ *   UP NEXT          the user's explicit queue, always played first
+ *   AUTOPLAY         a continuously regenerated recommendation buffer that
+ *                    refills as you listen, so playback never runs dry
+ */
 export function QueuePanel() {
   const queue = usePlayer((s) => s.queue)
   const index = usePlayer((s) => s.index)
@@ -59,8 +67,10 @@ export function QueuePanel() {
           )}
         </div>
 
-        {upcoming.length === 0 && autoQueue.length === 0 && (
-          <EmptyState title="Nothing queued" message="Add songs with “Play next” or “Add to queue”." />
+        {upcoming.length === 0 && (
+          <div className="queue-hint">
+            Songs you queue play here — they always come before autoplay.
+          </div>
         )}
 
         {upcoming.map((track, i) => {
@@ -123,20 +133,19 @@ export function QueuePanel() {
         {autoQueue.length > 0 && (
           <>
             <div className="queue-group-title">
-              <span>Autoplay · based on your listening</span>
+              <span>Autoplay · for you {`· ${formatCount(autoQueue.length, 'song')}`}</span>
               <button className="link" onClick={() => playback.clearAutoplay()} type="button" style={{ color: 'var(--text-3)' }}>
                 Clear
               </button>
             </div>
-            {autoQueue.slice(0, 10).map((track, i) => (
+            {autoQueue.map((track, i) => (
               <div
-                className="track-row compact"
+                className="track-row compact auto"
                 key={`auto-${track.id}`}
                 role="button"
                 tabIndex={0}
                 onClick={() => void playback.playDiscovered(track)}
                 onKeyDown={(e) => e.key === 'Enter' && void playback.playDiscovered(track)}
-                style={{ opacity: 0.72 }}
               >
                 <Artwork src={track.artwork} alt={track.title} style={{ width: 44, height: 44 }} />
                 <div className="track-main">
@@ -158,7 +167,14 @@ export function QueuePanel() {
                 </div>
               </div>
             ))}
+            <div className="queue-hint" style={{ paddingBottom: 16 }}>
+              Based on what you listen to, like and skip. Keeps refilling as you listen.
+            </div>
           </>
+        )}
+
+        {autoQueue.length === 0 && upcoming.length === 0 && !current && (
+          <EmptyState title="Nothing queued" message="Add songs with “Play next” or “Add to queue”, or play something and autoplay takes over." />
         )}
       </div>
 
