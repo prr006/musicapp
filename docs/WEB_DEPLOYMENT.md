@@ -70,8 +70,12 @@ while a control ID still resolved, isolating a provider-client compatibility
 failure rather than a queue cursor mutation. The resolver now makes one bounded
 `android_vr` fallback for its token-free progressive MP4 before the existing
 embedded/TV fallback; it does not enable missing-token formats, add credentials,
-or bypass access restrictions. A fresh live eight-transition audible run remains
-required after that fallback deploys and is unverified until recorded below.
+or bypass access restrictions. CI run `34316318398` passed and this fallback,
+plus a 60-second browser request deadline, deployed successfully. Direct checks
+still returned `media_unavailable` for the affected music IDs, however, so the
+provider path remains blocked and no audible queue result is claimed. A fresh
+live eight-transition run remains required once compliant media resolution is
+available.
 
 Still unverified in production: invalid/expired-ticket recovery, account
 register/logout/relogin and cross-account isolation, library/playlist persistence

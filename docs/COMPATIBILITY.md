@@ -20,8 +20,10 @@ path, while the current CI guards its build and shared tests.
 > is deployed. Its first production retest was blocked before transition one by
 > provider `media_unavailable` responses for popular music IDs (a control ID
 > resolved), so no queue parity pass is claimed. A bounded supported-client
-> resolver fallback is implemented without tokens or credentials; deployment and
-> the eight-audible-transition retest remain pending. Account relogin/isolation,
+> resolver fallback and a 60-second browser request deadline are deployed without
+> tokens or credentials, but direct post-deploy checks still report the same
+> provider rejection for those music IDs. The eight-audible-transition retest is
+> therefore blocked, not passed. Account relogin/isolation,
 > restart persistence, multi-browser responsive behavior, Media Session, PWA
 > install, and expired-ticket recovery remain unverified.
 
