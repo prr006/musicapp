@@ -233,7 +233,7 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 			cause: err, attempts: append([]ResolverAttempt(nil), attempts...), metadata: metadata,
 		}
 	}
-	for i, clients := range resolveClients {
+	for _, clients := range resolveClients {
 		args := []string{
 			"--dump-single-json", "--no-playlist", "--no-warnings",
 			"--ignore-no-formats-error",
