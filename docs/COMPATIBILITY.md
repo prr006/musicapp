@@ -23,7 +23,9 @@ path, while the current CI guards its build and shared tests.
 > resolver fallback and a 60-second browser request deadline are deployed without
 > tokens or credentials, but direct post-deploy checks still report the same
 > provider rejection for those music IDs. The eight-audible-transition retest is
-> therefore blocked, not passed. Account relogin/isolation,
+> therefore blocked, not passed. The detailed provider-response and desktop/web
+> comparison is in [`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md).
+> Account relogin/isolation,
 > restart persistence, multi-browser responsive behavior, Media Session, PWA
 > install, and expired-ticket recovery remain unverified.
 

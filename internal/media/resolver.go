@@ -49,26 +49,26 @@ var (
 type ResolverAttempt struct {
 	Clients                   string   `json:"clients"`
 	Outcome                   string   `json:"outcome"`
-	FormatCount               int      `json:"formatCount,omitempty"`
-	FormatsWithURL            int      `json:"formatsWithUrl,omitempty"`
-	AudioFormatsWithURL       int      `json:"audioFormatsWithUrl,omitempty"`
-	SupportedProgressiveAudio int      `json:"supportedProgressiveAudio,omitempty"`
-	Protocols                 []string `json:"protocols,omitempty"`
+	FormatCount               int      `json:"formatCount"`
+	FormatsWithURL            int      `json:"formatsWithUrl"`
+	AudioFormatsWithURL       int      `json:"audioFormatsWithUrl"`
+	SupportedProgressiveAudio int      `json:"supportedProgressiveAudio"`
+	Protocols                 []string `json:"protocols"`
 }
 
 // ResolverMetadata is the non-sensitive media identity returned by yt-dlp
 // before MELO filters its formats. Descriptions, URLs, headers, and tokens are
 // intentionally excluded.
 type ResolverMetadata struct {
-	ID           string  `json:"id,omitempty"`
-	Title        string  `json:"title,omitempty"`
-	Track        string  `json:"track,omitempty"`
-	Artist       string  `json:"artist,omitempty"`
-	Uploader     string  `json:"uploader,omitempty"`
-	Album        string  `json:"album,omitempty"`
-	Duration     float64 `json:"duration,omitempty"`
-	Availability string  `json:"availability,omitempty"`
-	LiveStatus   string  `json:"liveStatus,omitempty"`
+	ID           string  `json:"id"`
+	Title        string  `json:"title"`
+	Track        string  `json:"track"`
+	Artist       string  `json:"artist"`
+	Uploader     string  `json:"uploader"`
+	Album        string  `json:"album"`
+	Duration     float64 `json:"duration"`
+	Availability string  `json:"availability"`
+	LiveStatus   string  `json:"liveStatus"`
 }
 
 type resolverAttemptError struct {
@@ -472,6 +472,7 @@ func inspectResolverOutput(raw []byte, clients string) (ResolverAttempt, *Resolv
 		return attempt, nil
 	}
 	protocols := map[string]struct{}{}
+	attempt.Protocols = []string{}
 	attempt.FormatCount = len(info.Formats)
 	for _, format := range info.Formats {
 		if format.Protocol != "" {

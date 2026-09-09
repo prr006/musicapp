@@ -46,6 +46,14 @@ refilled, and the next explicit/discovery alternative starts without a player
 error when one is available. Duplicate ended events and stale asynchronous radio
 or refill continuations cannot advance the committed cursor.
 
+Resolver failures distinguish a provider-declared `media_unavailable` response
+from `no_supported_audio`, where yt-dlp returned metadata but no format MELO can
+play. Failed responses may include sanitized `resolverAttempts` counts/protocols
+and `resolverMetadata`; these never contain media URLs, request headers, cookies,
+tokens, raw provider payloads, or account data. See
+[`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md) for the production
+comparison that motivated this distinction.
+
 ## Account and library
 
 | Method | Path |

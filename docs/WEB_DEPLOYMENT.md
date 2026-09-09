@@ -73,8 +73,11 @@ embedded/TV fallback; it does not enable missing-token formats, add credentials,
 or bypass access restrictions. CI run `34316318398` passed and this fallback,
 plus a 60-second browser request deadline, deployed successfully. Direct checks
 still returned `media_unavailable` for the affected music IDs, however, so the
-provider path remains blocked and no audible queue result is claimed. A fresh
-live eight-transition run remains required once compliant media resolution is
+provider path remains blocked and no audible queue result is claimed. The exact
+metadata, client-set outcomes, version verification, desktop/web code-path
+comparison, and cross-content sample are recorded in
+[`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md). A fresh live
+eight-transition run remains required once compliant media resolution is
 available.
 
 Still unverified in production: invalid/expired-ticket recovery, account
