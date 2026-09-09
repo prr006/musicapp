@@ -72,13 +72,15 @@ failure rather than a queue cursor mutation. The resolver now makes one bounded
 embedded/TV fallback; it does not enable missing-token formats, add credentials,
 or bypass access restrictions. CI run `34316318398` passed and this fallback,
 plus a 60-second browser request deadline, deployed successfully. Direct checks
-still returned `media_unavailable` for the affected music IDs, however, so the
-provider path remains blocked and no audible queue result is claimed. The exact
-metadata, client-set outcomes, version verification, desktop/web code-path
+were subsequently shown to be metadata-only, zero-format responses rather than
+explicit unavailable statuses. Without changing resolver policy or yt-dlp version,
+the next Railway process resolved Believer, Thunder, Demons, unrelated music, and
+non-music controls again. This establishes a transient provider/outbound-context
+response class, but no audible queue result is claimed from HTTP checks alone. The
+exact metadata, client-set outcomes, version verification, desktop/web code-path
 comparison, and cross-content sample are recorded in
 [`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md). A fresh live
-eight-transition run remains required once compliant media resolution is
-available.
+eight-transition run remains required.
 
 Still unverified in production: invalid/expired-ticket recovery, account
 register/logout/relogin and cross-account isolation, library/playlist persistence

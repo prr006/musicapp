@@ -135,11 +135,27 @@ Each affected ID produced the same result for every bounded client set:
 }
 ```
 
-This resolves the earlier ambiguity: these IDs are **not** consistently returning
-a provider `UNAVAILABLE` class and MELO is not rejecting an otherwise usable AAC,
-Opus, HLS, or DASH format. yt-dlp receives enough data to emit correct metadata,
-but its final format list is empty for all supported client sets in the Railway
-environment.
+This resolves the earlier ambiguity for the failure window: these IDs did **not**
+return a provider `UNAVAILABLE` class and MELO was not rejecting an otherwise
+usable AAC, Opus, HLS, or DASH format. yt-dlp received enough data to emit correct
+metadata, but its final format list was empty for all supported client sets.
+
+### Same-version recovery without a resolver-policy change
+
+After commit `74be016` redeployed the same resolver policy with only richer zero
+field serialization and documentation changes, production began returning formats
+again. The startup-verified yt-dlp version remained `2026.08.19`:
+
+| ID | Recovered production result |
+| --- | --- |
+| `Kx7B-XvmFtE` (Believer) | `audio/webm`, 204 s, 133 kbps |
+| `9ssQKlLxBdQ` (Thunder) | `audio/mp4`, 187 s, 129 kbps |
+| `J1aVXLHQRd4` (Demons) | `audio/mp4`, 175 s, 129 kbps |
+
+This recovery is decisive: no queue change, client-set change, yt-dlp upgrade,
+credential, token, proxy, or format-policy change produced it. The provider began
+supplying formats to a new hosted process/time window where the immediately prior
+process/time window received metadata-only empty lists.
 
 ## Cross-content production sample
 
@@ -150,38 +166,38 @@ variability.
 
 ### Music IDs
 
-| ID | Content | Current result |
-| --- | --- | --- |
-| `Kx7B-XvmFtE` | Imagine Dragons — Believer (Topic) | zero formats on all sets |
-| `9ssQKlLxBdQ` | Imagine Dragons — Thunder (Topic) | zero formats on all sets |
-| `J1aVXLHQRd4` | Imagine Dragons — Demons (Topic) | zero formats on all sets |
-| `I203G1sMGDg` | Imagine Dragons — Bad Liar | `no_supported_audio` |
-| `3Yb2-CWjrME` | Imagine Dragons — Radioactive | `no_supported_audio` |
-| `pIWaVJPl0-c` | Alan Walker — Faded | `no_supported_audio` |
-| `kJQP7kiw5Fk` | Luis Fonsi — Despacito | `no_supported_audio` |
-| `fJ9rUzIMcZQ` | Queen — Bohemian Rhapsody | `no_supported_audio` |
-| `djV11Xbc914` | a-ha — Take On Me | `no_supported_audio` |
-| `DyDfgMOUjCI` | Billie Eilish — bad guy | `no_supported_audio` |
-| `lYBUbBu4W08` | Rick Astley — Never Gonna Give You Up (Topic) | resolved earlier; later changed to zero formats on all sets |
-| `dQw4w9WgXcQ` | Rick Astley official video | resolves (`audio/mp4`, 213 s, 129 kbps) |
+| ID | Content | Failure-window result | Recovered result |
+| --- | --- | --- | --- |
+| `Kx7B-XvmFtE` | Imagine Dragons — Believer (Topic) | zero formats on all sets | `audio/webm`, 204 s |
+| `9ssQKlLxBdQ` | Imagine Dragons — Thunder (Topic) | zero formats on all sets | `audio/mp4`, 187 s |
+| `J1aVXLHQRd4` | Imagine Dragons — Demons (Topic) | zero formats on all sets | `audio/mp4`, 175 s |
+| `I203G1sMGDg` | Imagine Dragons — Bad Liar | `no_supported_audio` | `audio/webm`, 261 s |
+| `3Yb2-CWjrME` | Imagine Dragons — Radioactive | `no_supported_audio` | not repeated after recovery |
+| `pIWaVJPl0-c` | Alan Walker — Faded | `no_supported_audio` | `audio/webm`, 212 s |
+| `kJQP7kiw5Fk` | Luis Fonsi — Despacito | `no_supported_audio` | `audio/webm`, 282 s |
+| `fJ9rUzIMcZQ` | Queen — Bohemian Rhapsody | `no_supported_audio` | `audio/webm`, 359 s |
+| `djV11Xbc914` | a-ha — Take On Me | `no_supported_audio` | `audio/webm`, 244 s |
+| `DyDfgMOUjCI` | Billie Eilish — bad guy | `no_supported_audio` | `audio/webm`, 206 s |
+| `lYBUbBu4W08` | Rick Astley — Never Gonna Give You Up (Topic) | resolved, then changed to zero formats | `audio/mp4`, 214 s |
+| `dQw4w9WgXcQ` | Rick Astley official video | repeatedly resolved | `audio/mp4`, 213 s |
 
 ### Non-music/control IDs
 
-| ID | Content | Observed result |
-| --- | --- | --- |
-| `M7lc1UVf-VE` | YouTube embedded-player developer demo | resolved earlier (`audio/mp4`, 1344 s); later zero formats |
-| `YE7VzlLtp-4` | Big Buck Bunny | resolved earlier (`audio/webm`, 597 s); later zero formats |
-| `ScMzIvxBSi4` | Placeholder Video | resolved earlier (`audio/mp4`, 94 s); later zero formats |
-| `rfscVS0vtbw` | Python tutorial | `no_supported_audio` |
-| `iG9CE55wbtY` | TED talk | `no_supported_audio` |
-| `jNQXAC9IVRw` | Me at the zoo | `no_supported_audio` |
-| `aqz-KE-bpKQ` | Big Buck Bunny control | `no_supported_audio` |
+| ID | Content | Failure-window result | Recovered result |
+| --- | --- | --- | --- |
+| `M7lc1UVf-VE` | YouTube embedded-player developer demo | resolved, then changed to zero formats | `audio/mp4`, 1344 s |
+| `YE7VzlLtp-4` | Big Buck Bunny | resolved, then changed to zero formats | `audio/webm`, 597 s |
+| `ScMzIvxBSi4` | Placeholder Video | resolved, then changed to zero formats | `audio/mp4`, 94 s |
+| `rfscVS0vtbw` | Python tutorial | `no_supported_audio` | `audio/mp4`, 16012 s |
+| `iG9CE55wbtY` | TED talk | `no_supported_audio` | `audio/mp4`, 1203 s |
+| `jNQXAC9IVRw` | Me at the zoo | `no_supported_audio` | `audio/mp4`, 19 s |
+| `aqz-KE-bpKQ` | Big Buck Bunny control | `no_supported_audio` | `audio/mp4`, 635 s |
 
-The failure is therefore neither “all music” nor a fixed list of three tracks.
-It is a provider response class affecting music and non-music IDs, with results
-that can change across hosted instances/time. The one repeatedly successful music
-control also proves that the executable and MELO format picker can still produce
-a valid `Resolved` object when the provider supplies formats.
+The failure was therefore neither “all music” nor a fixed list of three tracks.
+It was a metadata-only provider response class affecting music and non-music IDs,
+and it changed across hosted processes/time. Successful results before, during,
+and after the broad failure also prove that the executable and MELO picker create
+a valid `Resolved` object whenever the provider supplies formats.
 
 ## Desktop/local comparison and first divergence
 
@@ -189,20 +205,25 @@ The resolver implementation does **not** diverge between Wails and hosted web.
 The first possible divergence is inside the same `provider.Exec.Run` call, where
 yt-dlp contacts YouTube from a different outbound environment:
 
-- Railway: yt-dlp exits successfully and returns correct metadata but an empty
-  `formats` array for the affected class.
+- Railway's failure-window process exited successfully with correct metadata but
+  an empty `formats` array. Its next process returned playable formats for the
+  same IDs with the same executable version and command policy.
 - This investigation sandbox, running the exact `2026.08.19` wheel and exact MELO
-  arguments, fails even earlier with `Unable to download API page: TLS/SSL
+  arguments, failed even earlier with `Unable to download API page: TLS/SSL
   connection has been closed (EOF)` for every tested client set.
 - A physical end-user Wails machine uses its own network and the standalone build.
   No fresh capture from that machine was available in this session, so it would be
-  incorrect to claim that the exact three IDs currently resolve there. If they do,
-  the divergence is conclusively the yt-dlp/provider response at `Exec.Run`, before
-  `ParseResolved`, proxying, streaming, player state, or queue state.
+  incorrect to claim that the exact three IDs currently resolve there. If its
+  result differs, the divergence is conclusively the yt-dlp/provider response at
+  `Exec.Run`, before `ParseResolved`, proxying, streaming, player state, or queue
+  state.
 
-In other words, there is no desktop-only resolver fallback hidden elsewhere in
-MELO. Desktop may behave differently only because its yt-dlp packaging and outbound
-provider context differ; the Go resolution code and command policy are shared.
+The first exact environment divergence observed here is therefore Railway's valid
+provider JSON versus the sandbox's pre-metadata TLS EOF. That sandbox is not a
+substitute for the requested physical Wails sample, so no actual desktop-versus-
+Railway divergence is claimed. There is no desktop-only resolver fallback hidden
+elsewhere in MELO; desktop can behave differently only because its yt-dlp packaging
+and outbound provider context differ.
 
 ## Existing non-bypass alternatives in the repository
 
@@ -224,11 +245,15 @@ violate the task constraints and was not attempted.
 
 ## Conclusion
 
-The queue is not involved. The failure occurs before a `PlayableSource` exists.
-The affected production responses are metadata-only, zero-format yt-dlp results,
-not false queue promotion and not a MELO codec-selection mistake. The sample shows
-a broad, variable provider response class tied to the hosted outbound context,
-not a universal music-content rule. Until YouTube supplies a supported progressive
-format to one of the bounded unauthenticated clients from that environment, this is
-an external provider limitation and the Believer audible-transition test remains
-blocked.
+The queue is not involved. During the failure window, the break occurred before a
+`PlayableSource` existed. The affected responses were metadata-only, zero-format
+yt-dlp results—not false queue promotion and not a MELO codec-selection mistake.
+The sample shows a broad, variable provider response class tied to hosted outbound
+process/time context, not a universal music-content rule.
+
+The provider did not genuinely or permanently refuse those IDs: without changing
+resolver policy or yt-dlp version, the next deployment began resolving Believer,
+Thunder, Demons, unrelated music, and non-music controls again. Production
+resolution is currently available, but this investigation does not convert HTTP
+resolution into an audible-playback claim. The Believer eight-transition browser
+run must still be repeated and recorded separately.

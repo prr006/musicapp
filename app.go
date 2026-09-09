@@ -122,7 +122,6 @@ func (a *App) resolverBinary() (string, error) {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	media.InitDiag()
 	settings := a.store.State().Settings
 	if settings.MediaKeys {
 		a.mediaKeys = startMediaKeys(func(action string) {

@@ -26,9 +26,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -99,94 +96,6 @@ func ResolverFailureMetadata(err error) *ResolverMetadata {
 	}
 	metadata := *attemptErr.metadata
 	return &metadata
-}
-
-// ---- temporary diagnostics (MELO_RESOLVER_DIAG=1) ----
-//
-// These record, for a single failing video, every format yt-dlp returned and
-// why the picker accepted or rejected it. They exist only to capture the real
-// Windows failing case and are silent unless the env var is set. Remove this
-// block once the root cause is pinned down.
-
-var (
-	diagOnce   sync.Once
-	diagWriter io.Writer
-	diagPath   string
-	diagErr    error
-)
-
-func diagEnabled() bool {
-	return os.Getenv("MELO_RESOLVER_DIAG") != ""
-}
-
-// ensureDiag opens (creating it if needed) the resolver diagnostic log exactly
-// once. Any setup failure is recorded in diagErr and surfaced — never silently
-// swallowed — so a bad path or permission problem is visible instead of looking
-// like the feature simply isn't there.
-func ensureDiag() (string, bool) {
-	diagOnce.Do(func() {
-		if !diagEnabled() {
-			diagErr = errors.New("MELO_RESOLVER_DIAG is not set")
-			return
-		}
-		dir, err := os.UserConfigDir()
-		if err != nil {
-			diagErr = fmt.Errorf("cannot locate the config directory: %w", err)
-			return
-		}
-		logDir := filepath.Join(dir, "MELO")
-		if err := os.MkdirAll(logDir, 0o755); err != nil {
-			diagErr = fmt.Errorf("cannot create %s: %w", logDir, err)
-			return
-		}
-		path := filepath.Join(logDir, "resolver-diag.log")
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
-			diagErr = fmt.Errorf("cannot open %s: %w", path, err)
-			return
-		}
-		diagWriter, diagPath, diagErr = f, path, nil
-	})
-	if diagErr != nil {
-		return "", false
-	}
-	return diagPath, true
-}
-
-// InitDiag is called once at startup. When MELO_RESOLVER_DIAG is set it prints
-// a line to stderr stating exactly where the log will be written (or why it
-// cannot be), so a missing env var or a bad path is immediately visible in the
-// `wails dev` console instead of silently producing nothing.
-func InitDiag() {
-	if !diagEnabled() {
-		return
-	}
-	path, ok := ensureDiag()
-	if !ok {
-		fmt.Fprintf(os.Stderr, "melo: resolver diagnostics DISABLED: %v\n", diagErr)
-		return
-	}
-	fmt.Fprintf(os.Stderr, "melo: resolver diagnostics ENABLED, log=%s\n", path)
-	diagf("resolver diagnostics ENABLED (MELO_RESOLVER_DIAG=%q), log=%s", os.Getenv("MELO_RESOLVER_DIAG"), path)
-}
-
-func diagf(format string, args ...any) {
-	if !diagEnabled() {
-		return
-	}
-	if _, ok := ensureDiag(); !ok {
-		fmt.Fprintf(os.Stderr, "melo: resolver diag write failed: %v\n", diagErr)
-		return
-	}
-	fmt.Fprintf(diagWriter, "[%s] %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
-}
-
-func truncateForDiag(raw []byte) string {
-	const max = 12000
-	if len(raw) <= max {
-		return string(raw)
-	}
-	return string(raw[:max]) + "\n… [truncated]"
 }
 
 type Runner interface {
@@ -331,10 +240,8 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 			"--extractor-args", "youtube:player_client=" + clients,
 			"https://www.youtube.com/watch?v=" + sourceID,
 		}
-		diagf("resolve %s: attempt %d/%d yt-dlp %v", sourceID, i+1, len(resolveClients), args)
 		out, err := r.runner.Run(ctx, args...)
 		if err != nil {
-			diagf("resolve %s: yt-dlp exited with error: %s", sourceID, err.Error())
 			switch classifyResolverError(err) {
 			case ErrNoAudio:
 				attempts = append(attempts, ResolverAttempt{Clients: clients, Outcome: "no_supported_audio"})
@@ -366,7 +273,6 @@ func (r *Resolver) fetch(ctx context.Context, sourceID, quality string) (Resolve
 			attempt.Outcome = "no_supported_audio"
 			attempts = append(attempts, attempt)
 			lastErr = perr
-			diagf("resolve %s: attempt %d/%d had no playable stream; trying the next client set", sourceID, i+1, len(resolveClients))
 			continue
 		}
 		if errors.Is(perr, ErrUnavailable) {
@@ -515,20 +421,13 @@ func ParseResolved(raw []byte, sourceID, quality string) (Resolved, error) {
 		return Resolved{}, fmt.Errorf("%w: unreadable resolver output", ErrResolve)
 	}
 
-	diagf("resolve %s: raw yt-dlp JSON:\n%s", sourceID, truncateForDiag(raw))
-
 	// Collect everything the media element could actually play, split into
 	// audio-only and combined audio/video candidates.
-	diagf("resolve %s: yt-dlp returned %d formats", sourceID, len(info.Formats))
 	var audioOnly, combined []ytFormat
 	for _, f := range info.Formats {
-		if reason := rejectReason(f); reason != "" {
-			diagf("  REJECT | format %s | ext %s | protocol %s | acodec %s | vcodec %s | abr %.0f | tbr %.0f | url=%t | %s",
-				f.FormatID, f.Ext, f.Protocol, f.ACodec, f.VCodec, f.ABR, f.TBR, f.URL != "", reason)
+		if rejectReason(f) != "" {
 			continue
 		}
-		diagf("  ACCEPT | format %s | ext %s | protocol %s | acodec %s | vcodec %s | abr %.0f | tbr %.0f | url=%t",
-			f.FormatID, f.Ext, f.Protocol, f.ACodec, f.VCodec, f.ABR, f.TBR, f.URL != "")
 		if f.VCodec == "none" || f.VCodec == "" {
 			audioOnly = append(audioOnly, f)
 		} else {
@@ -543,7 +442,6 @@ func ParseResolved(raw []byte, sourceID, quality string) (Resolved, error) {
 		candidates = combined
 	}
 	if len(candidates) == 0 {
-		diagf("resolve %s: no playable stream (audio-only=%d combined=%d)", sourceID, len(audioOnly), len(combined))
 		return Resolved{}, fmt.Errorf("%w: %s exposes %d formats but none is a single progressive audio stream",
 			ErrNoAudio, sourceID, len(info.Formats))
 	}
@@ -607,8 +505,7 @@ func playableAudio(f ytFormat) (string, bool) {
 }
 
 // rejectReason explains why a format is not playable through the Range proxy,
-// or "" when it is. It doubles as the per-format diagnostic used when
-// MELO_RESOLVER_DIAG is set.
+// or "" when it is.
 func rejectReason(f ytFormat) string {
 	switch {
 	case f.URL == "":

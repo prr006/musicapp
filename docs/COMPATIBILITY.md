@@ -21,10 +21,12 @@ path, while the current CI guards its build and shared tests.
 > provider `media_unavailable` responses for popular music IDs (a control ID
 > resolved), so no queue parity pass is claimed. A bounded supported-client
 > resolver fallback and a 60-second browser request deadline are deployed without
-> tokens or credentials, but direct post-deploy checks still report the same
-> provider rejection for those music IDs. The eight-audible-transition retest is
-> therefore blocked, not passed. The detailed provider-response and desktop/web
-> comparison is in [`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md).
+> tokens or credentials. Richer diagnostics established a transient metadata-only,
+> zero-format provider response class; after a same-version redeployment, Believer,
+> Thunder, Demons, unrelated music, and non-music controls all resolved again.
+> The eight-audible-transition retest is now pending, not passed. The detailed
+> provider-response and desktop/web comparison is in
+> [`RESOLVER_INVESTIGATION.md`](RESOLVER_INVESTIGATION.md).
 > Account relogin/isolation,
 > restart persistence, multi-browser responsive behavior, Media Session, PWA
 > install, and expired-ticket recovery remain unverified.
