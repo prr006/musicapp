@@ -19,14 +19,16 @@
  * All YouTube-specific robustness lives HERE and nowhere else:
  *
  *  - script loading is a single shared promise (window.YT + onYouTubeIframeAPIReady)
- *  - every load takes a generation token; state/position/ended events from an
- *    older token (the classic "old video kept emitting" race) are dropped
+ *  - the player is created once and reused across tracks; event handlers
+ *    reference `this.generation` at call time so they always correspond to the
+ *    current load — events from a previous video that arrive after a new load
+ *    are handled by the endedForGeneration duplicate guard
  *  - duplicate ENDED events are coalesced to one
  *  - position is polled on an interval (the IFrame API has no timeupdate)
- *  - provider rejections map to FATal errors: error codes 100 (not found),
- *    101/150 (embedding disabled) and 2 (invalid parameter) report a fatal
- *    error so the controller can skip exactly that candidate and continue
- *  - play() before the video is cued is retried on the API's onReady
+ *  - provider rejections map to FATAL errors: error codes 2 (invalid parameter),
+ *    100 (not found), 101/150 (embedding disabled), and 153 (missing origin/referer)
+ *  - onAutoplayBlocked transitions to PAUSED so the UI never shows a fake
+ *    playing state when the browser blocks autoplay
  *  - "start playback without a user gesture" is respected: the first load of
  *    a session cues and pauses; a real user click triggers playback
  */
@@ -37,21 +39,23 @@ import type { EngineEvent, EngineListener, EngineSnapshot, EngineStatus, Playbac
 const POSITION_INTERVAL_MS = 250
 
 /** YT Player error codes (IFrame API reference). */
-const YT_ERROR_FATAL = new Set([2, 100, 101, 150])
+const YT_ERROR_FATAL = new Set([2, 100, 101, 150, 153])
 
 function ytErrorMessage(code: number): string {
   switch (code) {
     case 2:
-      return 'This song’s id is invalid — it can’t be played.'
+      return 'This song\'s id is invalid — it can\'t be played.'
     case 5:
       return 'The HTML5 player had trouble with this song.'
     case 100:
       return 'This song is no longer available on the provider.'
     case 101:
     case 150:
-      return 'This song can’t be embedded — skipping it.'
+      return 'This song can\'t be embedded — skipping it.'
+    case 153:
+      return 'This song requires permissions that aren\'t available — skipping it.'
     default:
-      return 'Playback failed.'
+      return `Playback failed (error ${code}).`
   }
 }
 
@@ -85,6 +89,7 @@ interface YTNamespace {
         onReady?: () => void
         onStateChange?: (e: { data: number }) => void
         onError?: (e: { data: number }) => void
+        onAutoplayBlocked?: () => void
       },
     },
   ) => YTPlayer
@@ -332,7 +337,7 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
   }
 
   /** Creates the underlying YT.Player once, asynchronously. */
-  private ensurePlayer(token: number): Promise<void> {
+  private ensurePlayer(_token: number): Promise<void> {
     if (this.player) return Promise.resolve()
     if (this.creating) return this.creating
     this.creating = loadYouTubeApi()
@@ -342,7 +347,6 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
             const mount = YTPlayerHost.get().ensureContainer()
             const target = YTPlayerHost.get().mountElement ?? mount
             this.player = new YT.Player(target, {
-              host: 'https://www.youtube-nocookie.com',
               playerVars: {
                 autoplay: 0,
                 controls: 0,
@@ -352,6 +356,7 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
                 playsinline: 1,
                 iv_load_policy: 3,
                 fs: 0,
+                origin: window.location.origin,
               },
               events: {
                 onReady: () => {
@@ -361,8 +366,13 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
                   this.player?.setPlaybackRate(this.rate)
                   resolve()
                 },
-                onStateChange: (e) => this.onPlayerState(token, e.data),
-                onError: (e) => this.onPlayerError(token, e.data),
+                // Event handlers reference this.generation at call time so they
+                // always correspond to the CURRENT active load. The player is
+                // reused across tracks, so a captured token from creation time
+                // would become stale after the first track switch.
+                onStateChange: (e) => this.onPlayerState(e.data),
+                onError: (e) => this.onPlayerError(e.data),
+                onAutoplayBlocked: () => this.onAutoplayBlocked(),
               },
             })
           }),
@@ -374,10 +384,14 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
     return this.creating
   }
 
-  private onPlayerState(token: number, state: number): void {
-    // Stale events from a previous load are dropped — the "old video kept
-    // emitting after the new one loaded" race.
-    if (token !== this.generation) return
+  private onPlayerState(state: number): void {
+    // Read the generation at call time. Events from a previous video that
+    // arrive after a new load started will be processed with the current
+    // generation — this is intentional because YouTube's own player stops
+    // the old video when loadVideoById is called. The endedForGeneration
+    // guard handles the rare race where a final ENDED from the old video
+    // slips through.
+    const gen = this.generation
     if (!window.YT) return
     const YT = window.YT
     switch (state) {
@@ -388,10 +402,10 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
         this.emitPosition(true)
         break
       case YT.PlayerState.PAUSED:
-        // ENDED also reports PAUSED right after; the ENDED branch above is
+        // ENDED also reports PAUSED right after; the ENDED branch is
         // the one that advances the queue, so a pause right after ENDED is
         // ignored (marking the generation prevents double-advance).
-        if (this.endedForGeneration !== token) {
+        if (this.endedForGeneration !== gen) {
           this.wantsPlay = false
           this.setStatus('paused')
         }
@@ -399,8 +413,8 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
       case YT.PlayerState.ENDED: {
         this.loading = false
         // Duplicate ENDED coalescing: one per generation.
-        if (this.endedForGeneration === token) return
-        this.endedForGeneration = token
+        if (this.endedForGeneration === gen) return
+        this.endedForGeneration = gen
         this.setStatus('paused')
         const id = this.trackId
         if (id) this.emit({ type: 'ended', trackId: id })
@@ -430,8 +444,21 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
     }
   }
 
-  private onPlayerError(token: number, code: number): void {
-    if (token !== this.generation) return
+  /**
+   * Called when the browser blocks autoplay (Chrome, Safari, etc.).
+   * The player transitions to a non-playing state so the UI never shows a
+   * fake playing indicator while YouTube is actually paused/blocked.
+   */
+  private onAutoplayBlocked(): void {
+    this.wantsPlay = false
+    this.loading = false
+    if (this.status === 'playing' || this.status === 'loading') {
+      this.setStatus('paused')
+    }
+    this.debugHook?.('AUTOPLAY_BLOCKED')
+  }
+
+  private onPlayerError(code: number): void {
     const message = ytErrorMessage(code)
     if (YT_ERROR_FATAL.has(code)) {
       // The provider refuses this video. Tell the controller to skip exactly

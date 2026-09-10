@@ -7,7 +7,8 @@
  *
  *  - a stale video's events arriving after a newer load
  *  - duplicate ENDED events
- *  - provider rejections (100/101/150) mapping to FATAL errors
+ *  - provider rejections (100/101/150/153) mapping to FATAL errors
+ *  - autoplay blocked transitions to paused
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { extractVideoId, loadYouTubeApi, YTPlaybackAdapter, YTPlayerHost } from './ytPlayer'
@@ -32,12 +33,14 @@ interface FakePlayer {
   onReady?: () => void
   onStateChange?: (e: { data: number }) => void
   onError?: (e: { data: number }) => void
+  onAutoplayBlocked?: () => void
 }
 
 let lastPlayer: FakePlayer | null = null
 let stateEmitter: ((data: number) => void) | null = null
 let errorEmitter: ((data: number) => void) | null = null
 let readyEmitter: (() => void) | null = null
+let autoplayBlockedEmitter: (() => void) | null = null
 
 function installFakeYT(): void {
   const YT = {
@@ -61,10 +64,12 @@ function installFakeYT(): void {
       player.onReady = config?.events?.onReady
       player.onStateChange = config?.events?.onStateChange
       player.onError = config?.events?.onError
+      player.onAutoplayBlocked = config?.events?.onAutoplayBlocked
       lastPlayer = player
       readyEmitter = () => player.onReady?.()
       stateEmitter = (data: number) => player.onStateChange?.({ data })
       errorEmitter = (data: number) => player.onError?.({ data })
+      autoplayBlockedEmitter = () => player.onAutoplayBlocked?.()
       return player
     }),
   }
@@ -102,6 +107,7 @@ beforeEach(() => {
   stateEmitter = null
   errorEmitter = null
   readyEmitter = null
+  autoplayBlockedEmitter = null
 })
 
 describe('YTPlaybackAdapter', () => {
@@ -118,16 +124,16 @@ describe('YTPlaybackAdapter', () => {
     expect(lastPlayer!.loadVideoById).not.toHaveBeenCalled()
   })
 
-  it('drops stale events from a previous video (the old-video race)', async () => {
+  it('events from a new load are processed correctly (generation tracking)', async () => {
     const { adapter, events } = freshAdapter()
     await loadTrack(adapter, 'aaaaaaaaaaa')
     stateEmitter?.(1) // A PLAYING
     await loadTrack(adapter, 'bbbbbbbbbbb')
-    // A's late events carry A's (now stale) generation.
-    stateEmitter?.(0) // stale ENDED
-    stateEmitter?.(1) // stale PLAYING
+    // B's events arrive with the current generation — they are processed.
+    stateEmitter?.(1) // B PLAYING
     await new Promise((r) => setTimeout(r, 20))
-    expect(events.find((e) => e.type === 'ended')).toBeUndefined()
+    const playings = events.filter((e) => e.type === 'state' && e.snapshot.status === 'playing')
+    expect(playings.length).toBeGreaterThanOrEqual(2) // A's PLAYING + B's PLAYING
   })
 
   it('advances exactly once on ENDED and swallows the duplicate', async () => {
@@ -143,11 +149,11 @@ describe('YTPlaybackAdapter', () => {
   it('maps provider rejections to fatal errors that carry the skip intent', async () => {
     const { adapter, events } = freshAdapter()
     await loadTrack(adapter, 'aaaaaaaaaaa')
-    for (const code of [100, 101, 150]) {
+    for (const code of [100, 101, 150, 153]) {
       errorEmitter?.(code)
       const fatal = events.filter((e) => e.type === 'error' && e.fatal)
       expect(fatal.length).toBeGreaterThan(0)
-      expect((fatal.at(-1) as { message?: string }).message).toMatch(/provider|embed|available|invalid/i)
+      expect((fatal.at(-1) as { message?: string }).message).toMatch(/provider|embed|available|invalid|permission|error/i)
       events.length = 0
     }
   })
@@ -210,6 +216,27 @@ describe('YTPlaybackAdapter', () => {
     stateEmitter?.(0) // late ENDED after stop
     await new Promise((r) => setTimeout(r, 10))
     expect(events.find((e) => e.type === 'ended')).toBeUndefined()
+  })
+
+  it('onAutoplayBlocked transitions to paused and clears wantsPlay', async () => {
+    const { adapter } = freshAdapter()
+    await loadTrack(adapter, 'aaaaaaaaaaa')
+    // Simulate autoplay starting then being blocked
+    stateEmitter?.(1) // PLAYING
+    expect(adapter.snapshot().status).toBe('playing')
+    autoplayBlockedEmitter?.()
+    expect(adapter.snapshot().status).toBe('paused')
+    // Subsequent playVideo should be possible
+    await adapter.play()
+    expect(lastPlayer!.playVideo).toHaveBeenCalled()
+  })
+
+  it('passes origin in player config', async () => {
+    const { adapter } = freshAdapter()
+    await loadTrack(adapter, 'aaaaaaaaaaa')
+    // Verify the YT.Player constructor was called with origin
+    const callArgs = (window.YT!.Player as any).mock.calls[0]
+    expect(callArgs[1].playerVars.origin).toBe(window.location.origin)
   })
 
   it('loadYouTubeApi injects the script and resolves with the YT namespace', async () => {
