@@ -1426,11 +1426,11 @@ p {
 
 /* The docked playback surface — the iframe's permanent, always-visible home
    in the app shell. A small rounded card floating above the mini player: it
-   appears the moment something is playing (and the surface is not inside the
-   expanded player) and is the legitimate, unobtrusive presence of the
-   provider's player — never display:none, never off-screen, never detached.
-   When the expanded Now Playing opens, the surface MOVES into the artwork
-   column and this card empties out (data-active flips to false). */
+   appears the moment something is playing and is the legitimate, unobtrusive
+   presence of the provider's player — never display:none, never off-screen,
+   never detached. The iframe's DOM parent never changes; when the expanded
+   Now Playing opens, CSS transitions reposition the host over the surface
+   placeholder via CSS custom properties (--yt-x, --yt-y, --yt-w, --yt-h). */
 .yt-dock {
   position: fixed;
   right: 18px;
@@ -1446,13 +1446,31 @@ p {
   opacity: 0;
   pointer-events: none;
   transform: translateY(10px) scale(0.97);
-  transition: opacity 220ms var(--ease), transform 220ms var(--ease);
+  transition: opacity 220ms var(--ease), transform 220ms var(--ease),
+    right 280ms var(--ease), bottom 280ms var(--ease),
+    width 280ms var(--ease), aspect-ratio 0ms;
 }
 
 .yt-dock[data-active='true'] {
   opacity: 1;
   pointer-events: auto;
   transform: none;
+}
+
+/* When the host is in expanded mode (Now Playing open), CSS custom properties
+   set by YTPlayerSurface position the host over the surface placeholder. */
+.yt-dock[data-view='expanded'] {
+  right: auto;
+  bottom: auto;
+  left: var(--yt-x, 50%);
+  top: var(--yt-y, 50%);
+  width: var(--yt-w, min(100%, 320px));
+  aspect-ratio: 16 / 9;
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 60;
+  border-radius: var(--radius-md);
 }
 
 .yt-dock iframe {

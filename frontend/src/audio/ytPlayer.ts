@@ -154,10 +154,16 @@ export function loadYouTubeApi(): Promise<YTNamespace> {
 
 /**
  * The DOM host for the iframe. The adapter creates one fixed container per
- * document; React mounts it (via <YTPlayerHost/>) wherever the design wants
- * the unobtrusive video surface to appear — the expanded Now Playing. The
- * container survives route changes because it is moved, never destroyed, on
- * track switches.
+ * document; the container is attached ONCE to a permanent host element and
+ * never moved via DOM APIs. Visual repositioning (dock ↔ expanded) is done
+ * entirely through CSS transitions on the host element — the iframe's DOM
+ * parent never changes after creation.
+ *
+ * Why: The YouTube IFrame Player API uses internal postMessage channels
+ * between the iframe and the parent window. Moving the iframe between DOM
+ * parents can disrupt these channels, causing origin-mismatch errors. Keeping
+ * the iframe in a single, permanently-attached host eliminates this class of
+ * issues.
  */
 export class YTPlayerHost {
   private static instance: YTPlayerHost | null = null
@@ -169,22 +175,19 @@ export class YTPlayerHost {
   private container: HTMLDivElement | null = null
   private mount: HTMLDivElement | null = null
   /**
-   * The always-attached fallback home of the playback surface (the small
-   * docked card in the app shell). The container must ALWAYS live inside the
-   * document — the IFrame API's Player never reports onReady on a detached
-   * element — so the dock is mounted at boot, before the first load, and the
-   * surface is moved (never hidden) between the dock and the Now Playing view.
+   * The permanent host element. The container (and its iframe) is created
+   * inside this element once and never moved. The host element itself is
+   * always attached to the document from boot — the IFrame API's Player
+   * never reports onReady on a detached element.
    */
-  private dock: HTMLElement | null = null
-  private moveListeners = new Set<() => void>()
+  private permanentHost: HTMLElement | null = null
+  private viewListeners = new Set<(view: 'dock' | 'expanded') => void>()
+  private _view: 'dock' | 'expanded' = 'dock'
 
   ensureContainer(): HTMLDivElement {
     if (this.container) return this.container
     const container = document.createElement('div')
     container.id = 'melo-yt-host'
-    // The iframe is a real, visible element. It is positioned by whoever
-    // currently hosts it (the dock or the Now Playing view); here it only
-    // has to fill its host box.
     container.style.position = 'static'
     container.style.width = '100%'
     container.style.height = '100%'
@@ -194,37 +197,45 @@ export class YTPlayerHost {
     container.appendChild(mount)
     this.container = container
     this.mount = mount
+    // Attach to the permanent host if it's already registered
+    if (this.permanentHost && container.parentElement !== this.permanentHost) {
+      this.permanentHost.appendChild(container)
+    }
     return container
   }
 
-  /** Moves the container (with its live iframe) into `parent`. */
-  attachTo(parent: HTMLElement): void {
-    const container = this.ensureContainer()
-    if (container.parentElement !== parent) {
-      parent.appendChild(container)
-      for (const l of [...this.moveListeners]) l()
+  /**
+   * Registers the permanent host element (called once at boot by
+   * <YTPlayerHostElement/>). The container is created inside this element
+   * and never moved afterward.
+   */
+  setPermanentHost(el: HTMLElement | null): void {
+    this.permanentHost = el
+    // If the container already exists (race: adapter created before React
+    // mounted the host), move it into the permanent host.
+    if (this.container && el && this.container.parentElement !== el) {
+      el.appendChild(this.container)
     }
   }
 
-  /** Registers the app-shell dock (called once at boot by <YTPlayerDock/>). */
-  setDock(el: HTMLElement | null): void {
-    this.dock = el
+  /**
+   * Switches the visual mode between dock and expanded. The host element
+   * applies CSS classes to reposition itself — no DOM movement occurs.
+   */
+  setView(view: 'dock' | 'expanded'): void {
+    if (this._view === view) return
+    this._view = view
+    for (const l of [...this.viewListeners]) l(view)
   }
 
-  /** True when the surface container currently lives inside `parent`. */
-  isDockedHere(parent: HTMLElement): boolean {
-    return !!this.container && this.container.parentElement === parent
+  get view(): 'dock' | 'expanded' {
+    return this._view
   }
 
-  /** Subscribes to container moves (so the dock can mirror its state). */
-  onMove(listener: () => void): () => void {
-    this.moveListeners.add(listener)
-    return () => this.moveListeners.delete(listener)
-  }
-
-  /** Returns the surface to the dock (e.g. when the Now Playing view closes). */
-  attachToDock(): void {
-    if (this.dock) this.attachTo(this.dock)
+  /** Subscribes to view changes (so React components can update state). */
+  onViewChange(listener: (view: 'dock' | 'expanded') => void): () => void {
+    this.viewListeners.add(listener)
+    return () => this.viewListeners.delete(listener)
   }
 
   get mountElement(): HTMLDivElement | null {

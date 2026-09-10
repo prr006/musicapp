@@ -255,35 +255,46 @@ describe('YTPlaybackAdapter', () => {
 })
 
 describe('YTPlayerHost', () => {
-  it('keeps one container and re-attaches it without recreating it', () => {
+  it('creates one container and appends it to the permanent host', () => {
     const host = YTPlayerHost.get()
-    const a = document.createElement('div')
-    const b = document.createElement('div')
-    host.attachTo(a)
-    const first = host.ensureContainer()
-    host.attachTo(b)
-    expect(host.ensureContainer()).toBe(first)
-    expect(first.parentElement).toBe(b)
+    const permanentHost = document.createElement('div')
+    document.body.appendChild(permanentHost)
+    host.setPermanentHost(permanentHost)
+    const container = host.ensureContainer()
+    expect(container.parentElement).toBe(permanentHost)
+    // Calling ensureContainer again returns the same instance
+    expect(host.ensureContainer()).toBe(container)
     host.release()
-    expect(first.parentElement).toBeNull()
+    expect(container.parentElement).toBeNull()
+    document.body.removeChild(permanentHost)
   })
 
-  it('returns the surface to the dock and reports its location', () => {
+  it('switches views and notifies listeners without moving DOM', () => {
     const host = YTPlayerHost.get()
-    const dock = document.createElement('div')
-    const expanded = document.createElement('div')
-    host.setDock(dock)
-    host.attachTo(dock)
-    expect(host.isDockedHere(dock)).toBe(true)
-    expect(host.isDockedHere(expanded)).toBe(false)
-    // The expanded Now Playing claims the container…
-    host.attachTo(expanded)
-    expect(host.isDockedHere(dock)).toBe(false)
-    // …and closing the view returns it to the dock, never detached.
-    host.attachToDock()
-    expect(host.isDockedHere(dock)).toBe(true)
-    expect(host.ensureContainer().parentElement).toBe(dock)
+    const permanentHost = document.createElement('div')
+    document.body.appendChild(permanentHost)
+    host.setPermanentHost(permanentHost)
+    const container = host.ensureContainer()
+
+    expect(host.view).toBe('dock')
+
+    const calls: string[] = []
+    const unsub = host.onViewChange((v) => calls.push(v))
+
+    host.setView('expanded')
+    expect(host.view).toBe('expanded')
+    expect(calls).toEqual(['expanded'])
+    // Container was NOT moved — still in permanent host
+    expect(container.parentElement).toBe(permanentHost)
+
+    host.setView('dock')
+    expect(host.view).toBe('dock')
+    expect(calls).toEqual(['expanded', 'dock'])
+    expect(container.parentElement).toBe(permanentHost)
+
+    unsub()
     host.release()
+    document.body.removeChild(permanentHost)
   })
 })
 

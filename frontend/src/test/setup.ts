@@ -70,3 +70,13 @@ Element.prototype.scrollTo = Element.prototype.scrollTo || (() => {})
 
 // React 18 needs this flag for act() to be honoured outside of RTL's own calls.
 ;(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+// jsdom does not ship ResizeObserver. Provide a minimal stub so that
+// components using ResizeObserver (e.g. YTPlayerSurface) don't crash in tests.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver
+}
