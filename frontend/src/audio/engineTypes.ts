@@ -37,6 +37,12 @@ export type EngineEvent =
    * surfaces them and the user decides.
    */
   | { type: 'error'; trackId: string | null; message: string; fatal?: boolean }
+  /**
+   * Emitted by the YouTube adapter once the IFrame player has loaded a video
+   * and `getVideoData()` returns authoritative metadata. The controller uses
+   * this to reconcile the track's title/artist with YouTube's own metadata.
+   */
+  | { type: 'videoData'; title: string; author: string; videoId: string }
 
 export type EngineListener = (event: EngineEvent) => void
 

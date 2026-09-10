@@ -76,6 +76,7 @@ interface YTPlayer {
   cueVideoById(options: { videoId: string; startSeconds?: number }): void
   destroy(): void
   getPlayerState(): number
+  getVideoData(): { title?: string; author?: string; video_id?: string }
 }
 
 interface YTNamespace {
@@ -250,6 +251,12 @@ export class YTPlayerHost {
   }
 }
 
+export interface YTVideoData {
+  title: string
+  author: string
+  videoId: string
+}
+
 export class YTPlaybackAdapter implements PlaybackEngineLike {
   readonly el: HTMLAudioElement | null = null
   /** The provider plays its own media: no resolver, no extracted stream. */
@@ -345,6 +352,22 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
 
   get currentGeneration(): number {
     return this.generation
+  }
+
+  /** Returns YouTube's authoritative metadata for the currently loaded video. */
+  getVideoData(): YTVideoData | null {
+    if (!this.player) return null
+    try {
+      const data = this.player.getVideoData()
+      if (!data) return null
+      return {
+        title: data.title ?? '',
+        author: data.author ?? '',
+        videoId: data.video_id ?? '',
+      }
+    } catch {
+      return null
+    }
   }
 
   /** Creates the underlying YT.Player once, asynchronously. */
@@ -525,6 +548,12 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
       this.player.loadVideoById({ videoId, startSeconds: startAt })
     } else {
       this.player.cueVideoById({ videoId, startSeconds: startAt })
+    }
+    // Emit YouTube's authoritative video metadata so the controller can
+    // reconcile the track title/artist with what YouTube actually has.
+    const vd = this.getVideoData()
+    if (vd && vd.title) {
+      this.emit({ type: 'videoData', title: vd.title, author: vd.author, videoId: vd.videoId })
     }
     // The state events drive status from here; but if the player reports
     // nothing (rare), the caller can still see a stable paused state.

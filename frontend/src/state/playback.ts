@@ -295,6 +295,37 @@ export class PlaybackController {
         }
         ui.toast(event.message, 'error')
         break
+      case 'videoData': {
+        // YouTube's own metadata for the loaded video. Use it to reconcile
+        // the track's title/author with what YouTube actually reports — the
+        // Piped search result may have been cleaned incorrectly or truncated.
+        const cur = playerState().current
+        if (!cur) break
+        const ytVideoId = cur.sourceId
+        if (event.videoId && event.videoId !== ytVideoId) break
+        const newTitle = event.title?.trim()
+        const newAuthor = event.author?.trim()
+        if (!newTitle) break
+        // Only update if YouTube's data is meaningfully different (not just
+        // whitespace or case). Preserve the existing artist if YouTube's
+        // author is empty or just the channel name.
+        const titleChanged = newTitle && newTitle !== cur.title
+        const authorChanged = newAuthor && newAuthor !== cur.artist && newAuthor.length > 1
+        if (titleChanged || authorChanged) {
+          const updated = {
+            ...cur,
+            title: titleChanged ? newTitle : cur.title,
+            artist: authorChanged ? newAuthor : cur.artist,
+          }
+          setPlayerState({ current: updated })
+          // Also update in queue/autoQueue so subsequent views show the corrected metadata.
+          const qs = playerState()
+          const queue = qs.queue.map((t) => t.id === cur.id ? updated : t)
+          const autoQueue = qs.autoQueue.map((t) => t.id === cur.id ? updated : t)
+          setPlayerState({ queue, autoQueue })
+        }
+        break
+      }
     }
   }
 

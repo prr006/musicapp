@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { YTPlayerHost } from '../audio/ytPlayer'
 import { usePlayer } from '../state/playback'
 
@@ -24,7 +24,6 @@ import { usePlayer } from '../state/playback'
 export function YTPlayerDock() {
   const outerRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
-  const [view, setView] = useState<'dock' | 'expanded'>('dock')
   const hasTrack = usePlayer((s) => !!s.current)
 
   useEffect(() => {
@@ -32,19 +31,17 @@ export function YTPlayerDock() {
     if (!el) return
     YTPlayerHost.get().setPermanentHost(el)
     const initialView = YTPlayerHost.get().view
-    setView(initialView)
     // Set the initial data-view attribute on the outer dock element
     if (outerRef.current) outerRef.current.dataset.view = initialView
     return YTPlayerHost.get().onViewChange((v) => {
-      setView(v)
       if (outerRef.current) outerRef.current.dataset.view = v
     })
   }, [])
 
-  const isDocked = view === 'dock'
+  const isActive = hasTrack
 
   return (
-    <div ref={outerRef} className="yt-dock" data-active={isDocked && hasTrack ? 'true' : 'false'} aria-hidden={!(isDocked && hasTrack)}>
+    <div ref={outerRef} className="yt-dock" data-active={isActive ? 'true' : 'false'} aria-hidden={!isActive}>
       <div ref={innerRef} className="yt-dock-inner" />
     </div>
   )
@@ -74,43 +71,16 @@ export function YTPlayerSurface({ videoId }: { videoId: string | null }) {
       YTPlayerHost.get().setView('dock')
       return
     }
-    // Signal the host to expand its visual mode. The host element handles
+    // Signal the host to expand its visual mode. The dock element handles
     // the CSS transition — no DOM movement occurs.
     YTPlayerHost.get().setView('expanded')
     // When this view unmounts (collapse/navigate), return to dock mode.
     return () => YTPlayerHost.get().setView('dock')
   }, [videoId])
 
-  // Align the host element over this surface placeholder via CSS custom properties.
-  useEffect(() => {
-    if (!surfaceRef.current || !videoId) return
-    if (typeof ResizeObserver === 'undefined') return
-    // The host element is the .yt-dock div (always present in App.tsx).
-    const dockEl = surfaceRef.current.closest('.yt-dock') as HTMLElement | null
-      ?? document.querySelector('.yt-dock') as HTMLElement | null
-    if (!dockEl) return
-    const updatePosition = () => {
-      const surfaceRect = surfaceRef.current?.getBoundingClientRect()
-      if (!surfaceRect) return
-      dockEl.style.setProperty('--yt-x', `${surfaceRect.left}px`)
-      dockEl.style.setProperty('--yt-y', `${surfaceRect.top}px`)
-      dockEl.style.setProperty('--yt-w', `${surfaceRect.width}px`)
-      dockEl.style.setProperty('--yt-h', `${surfaceRect.height}px`)
-    }
-    updatePosition()
-    const ro = new ResizeObserver(updatePosition)
-    ro.observe(surfaceRef.current)
-    window.addEventListener('resize', updatePosition)
-    return () => {
-      ro.disconnect()
-      window.removeEventListener('resize', updatePosition)
-    }
-  }, [videoId])
-
   return (
     <div className="yt-surface" data-active={videoId ? 'true' : 'false'} aria-label="Playback video" ref={surfaceRef}>
       <div className="yt-surface-inner" />
-      <div className="yt-surface-placeholder" aria-hidden="true" />
     </div>
   )
 }

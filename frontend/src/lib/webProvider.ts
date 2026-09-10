@@ -60,6 +60,46 @@ export async function pipedFetch<T = unknown>(
 
 /* ---------------- parsing helpers ---------------- */
 
+/**
+ * Strips ONLY the most obvious YouTube presentation noise from a title.
+ * This is intentionally conservative: we remove phrases that are universally
+ * understood as "not part of the song name" and nothing else.
+ *
+ * Preserved (NOT removed):
+ *   - (From "Raaka"), (From "Karuppu") — soundtrack/source references
+ *   - feat. Artist, ft. Artist — featured artists
+ *   - Part 1, Chapter 1 — subtitles
+ *   - Remix, Acoustic, Live — performance variants
+ *   - Legitimate hyphens in titles
+ *   - Quotes and parentheses in meaningful context
+ *
+ * Removed (ONLY these exact patterns):
+ *   - (Official Music Video), (Official Audio), (Official Video)
+ *   - (Lyrics), (Lyric Video)
+ *   - (HD), (4K), (1080p)
+ *   - (Audio), (Visualizer)
+ *   - Trailing " - Topic" channel suffix
+ */
+export function cleanYouTubeTitle(title: string): string {
+  let t = (title || '').replace(/\s+/g, ' ').trim()
+  // Remove exact presentation suffixes in parentheses/brackets.
+  // Each pattern matches the FULL parenthesized phrase — no partial stripping.
+  t = t
+    .replace(/\s*[\[\(]\s*Official\s+(Music\s+)?Video\s*[\]\)]\s*/gi, ' ')
+    .replace(/\s*[\[\(]\s*Official\s+Audio\s*[\]\)]\s*/gi, ' ')
+    .replace(/\s*[\[\(]\s*Official\s*[\]\)]\s*/gi, ' ')
+    .replace(/\s*[\[\(]\s*Lyrics?\s*[\]\)]\s*/gi, ' ')
+    .replace(/\s*[\[\(]\s*Lyric\s+Video\s*[\]\)]\s*/gi, ' ')
+    .replace(/\s*[\[\(]\s*(HD|4K|1080p|720p)\s*[\]\)]\s*/gi, ' ')
+    .replace(/\s*[\[\(]\s*Audio\s*[\]\)]\s*/gi, ' ')
+    .replace(/\s*[\[\(]\s*Visualizer\s*[\]\)]\s*/gi, ' ')
+  // Remove trailing " - Topic" channel suffix (YouTube Music auto-uploads).
+  t = t.replace(/\s*-\s*Topic\s*$/i, '')
+  // Clean up empty parentheses/brackets left behind after stripping.
+  t = t.replace(/\s*[\[\(]\s*[\]\)]\s*/g, ' ')
+  return t.replace(/\s+/g, ' ').trim()
+}
+
 export interface PipedStreamItem {
   url?: string
   type?: string
@@ -88,15 +128,37 @@ export interface PipedPlaylistPayload {
   nextpage?: string
 }
 
-/** YouTube Music titles always carry "Artist - Song"; plain uploads vary. */
+/**
+ * Attempts to split "Artist - Song" from a YouTube title.
+ *
+ * This is intentionally conservative. A legitimate song title CAN contain "-",
+ * so we only split when the separator is clearly an artist/title delimiter:
+ *   - surrounded by spaces: "Artist Name - Song Name"
+ *   - left side looks like an artist name (not too long, no common song words)
+ *   - right side looks like a song title
+ *
+ * When in doubt, returns the full title as the song with no artist分离.
+ * The caller can override the artist using uploaderName (YouTube Music).
+ */
 function splitTitle(title: string): { artist: string; song: string } {
   const t = (title || '').replace(/\s+/g, ' ').trim()
-  // Patterns like "Artist - Song", "Artist – Song", "Artist | Song"
-  const m = t.match(/^(.{1,80}?)\s+[-–—|]\s+(.{1,120})$/)
+  // Only match "Artist - Song" where:
+  // - The separator is surrounded by spaces (not "word-word")
+  // - Left side is 1-60 chars (artist names are usually short)
+  // - Right side is 1-150 chars
+  // - Left side does NOT contain common song words that indicate it's part of the title
+  const m = t.match(/^(.{1,60}?)\s+[-–—]\s+(.{1,150})$/)
   if (m) {
     const artist = m[1].trim()
     const song = m[2].trim()
-    if (artist && song) return { artist, song }
+    // Reject if the "artist" side looks like it's actually part of the song title
+    // (e.g. it contains words that commonly appear in song titles)
+    const artistLower = artist.toLowerCase()
+    const rejectWords = ['from', 'feat', 'ft', 'part', 'chapter', 'remix', 'version', 'live', 'acoustic']
+    if (rejectWords.some((w) => artistLower.endsWith(` ${w}`) || artistLower === w)) {
+      return { artist: '', song: t }
+    }
+    if (artist && song && artist.length >= 2) return { artist, song }
   }
   return { artist: '', song: t }
 }
@@ -122,15 +184,20 @@ function playable(item: PipedStreamItem): boolean {
 /**
  * Cleans a mirror item into a MELO track. `youtubeMusic` marks rows that came
  * from the music_songs filter (uploader = performing artist, canonical titles).
+ *
+ * Title cleaning is intentionally CONSERVATIVE: we strip only the most obvious
+ * YouTube presentation noise (e.g. "Official Video", "Lyrics", "HD"). We never
+ * strip meaningful content such as:
+ *   - (From "Raaka"), (From "Karuppu") — soundtrack/source references
+ *   - feat. Artist — featured artists
+ *   - Part 1, Chapter 1 — subtitles
+ *   - Remix, Acoustic, Live — performance variants
+ * Legitimate song titles can contain hyphens, parentheses, and quotes.
  */
 export function parsePipedItem(item: PipedStreamItem, youtubeMusic: boolean): Track | null {
   const sourceId = baseId(item.url)
   if (!sourceId || !item.title) return null
-  const cleanedTitle = item.title
-    .replace(/\s*[\(\[](official\s*)?(music\s*)?(lyric[s]?\s*)?(hd\s*)?(4k\s*)?(video|audio|visualizer)[\)\]]\s*/gi, '')
-    .replace(/\s*\((official|lyric|audio|video|visualizer|hd|4k)\)\s*/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  const cleanedTitle = cleanYouTubeTitle(item.title)
   const { artist, song } = splitTitle(youtubeMusic ? item.title : item.title)
   const displayArtist = (youtubeMusic ? item.uploaderName || artist : artist || item.uploaderName || '').trim()
   const title = (youtubeMusic ? song : cleanedTitle) || item.title
