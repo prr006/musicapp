@@ -1,10 +1,18 @@
 /**
- * The single boundary between the React app and the Go backend.
+ * The single boundary between the React app and whatever backs it.
  *
- * In a packaged build Wails injects `window.go.main.App.*` (promise-returning
- * bindings) and `window.runtime` (events). In a plain browser — used for UI
- * work and tests — a fixture backend is used instead, selected explicitly via
- * VITE_MELO_MOCK so production builds can never silently fall back to it.
+ * Three possible backends, selected at boot:
+ *
+ *  1. Wails native (desktop) — `window.go.main.App.*` bindings; playback is
+ *     the HTMLAudioElement + Go resolver stack.
+ *  2. Web — a plain browser with no Wails bindings; playback is the official
+ *     YouTube IFrame Player and metadata comes from CORS-open providers.
+ *     Persistence lives in localStorage. No media is ever extracted or
+ *     proxied: there is no getPlayable/resolve/stream in this build.
+ *  3. Unavailable — nothing is wired (tests, broken install); calls reject
+ *     with an honest error instead of faking data.
+ *
+ * Tests install a controlled backend with setBackend().
  */
 import type {
   AppState, Diagnostics, LyricsQuery, LyricsResult, PlayableSource, PlayEvent,
@@ -17,6 +25,7 @@ export interface Backend {
   search(query: string, filter: string): Promise<SearchResponse>
   /** Dedicated related-music source for autoplay radio (never plain search). */
   relatedTracks(track: Track): Promise<RadioResponse>
+  /** Desktop only: resolves a track to a loopback stream URL. */
   getPlayable(track: Track): Promise<PlayableSource>
   getLyrics(query: LyricsQuery): Promise<LyricsResult>
   saveSettings(settings: Settings): Promise<Settings>
@@ -122,11 +131,16 @@ export function setBackend(b: Backend | null): void {
   override = b
 }
 
-let mockPromise: Promise<Backend> | null = null
+/**
+ * The web backend is created once and kept, so its persistence document is
+ * a singleton for the page (and its flush hook can be registered).
+ */
+let webBackendInstance: Backend | null = null
 
 export function backend(): Backend {
   if (override) return override
   if (hasNativeBackend()) return nativeBackend
+  if (webBackendInstance) return webBackendInstance
   return unavailableBackend
 }
 
@@ -134,16 +148,12 @@ export function backend(): Backend {
 export async function initBackend(): Promise<Backend> {
   if (override) return override
   if (hasNativeBackend()) return nativeBackend
-  if (import.meta.env.DEV && import.meta.env.VITE_MELO_MOCK === '1') {
-    if (!mockPromise) {
-      mockPromise = import('./mockBackend').then((m) => {
-        override = m.createMockBackend()
-        return override
-      })
-    }
-    return mockPromise
+  // Plain browser (no Wails bindings): run fully client-side against the
+  // YouTube IFrame player and CORS metadata providers.
+  if (!webBackendInstance) {
+    webBackendInstance = (await import('./webBackend')).createWebBackend()
   }
-  return unavailableBackend
+  return webBackendInstance
 }
 
 const backendDown = (what: string) => () =>

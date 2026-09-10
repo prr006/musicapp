@@ -14,6 +14,7 @@ const AUTOPLAY_VISIBLE = 10
 const RADIO_SOURCE_LABELS: Record<string, string> = {
   'ytmusic-next': 'Based on this song',
   'yt-dlp-mix': 'Based on this song',
+  'web-radio-mix': 'Based on this song',
   'session-mix': 'Based on your session',
   // The artist text fallback is a last resort: a song/album radio reports it
   // as song context; only Artist Radio calls itself "More from this artist".

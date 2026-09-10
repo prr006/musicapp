@@ -2,10 +2,13 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { initBackend, setBackend } from './bridge/backend'
+import { flushWebBackend } from './bridge/webBackend'
 import { ACCENTS } from './lib/defaults'
 import { library, useLibraryStore } from './state/libraryStore'
 import { playback } from './state/playback'
 import { ui } from './state/uiStore'
+import { YTPlaybackAdapter } from './audio/ytPlayer'
+import type { Backend } from './bridge/backend'
 import './styles/global.css'
 
 /** Applies theme + accent to the document. */
@@ -26,6 +29,16 @@ function applyTheme(): void {
 async function boot(): Promise<void> {
   const be = await initBackend()
   setBackend(be)
+
+  // WEB BUILD: no Wails bindings means we are a plain browser. Playback runs
+  // on the official YouTube IFrame player behind the same engine boundary,
+  // and discovery uses the profile-driven web recommender. The desktop
+  // (Wails) path is untouched: HTMLAudioElement + resolver + provider feeds.
+  const isWeb = !hasWailsBindings(be)
+  if (isWeb) {
+    playback.useEngine(new YTPlaybackAdapter())
+    playback.setDiscoveryMode('web')
+  }
 
   try {
     const state = await be.getState()
@@ -81,7 +94,16 @@ async function boot(): Promise<void> {
   })
 
   // Persist the session on shutdown so a restart can pick up where we left off.
-  window.addEventListener('beforeunload', () => void playback.saveSession())
+  // On the web this also flushes the debounced localStorage document.
+  window.addEventListener('beforeunload', () => {
+    void playback.saveSession()
+    if (isWeb) flushWebBackend()
+  })
+}
+
+/** True when the resolved backend is the Wails-injected native bridge. */
+function hasWailsBindings(be: Backend): boolean {
+  return be.isNative
 }
 
 createRoot(document.getElementById('root')!).render(

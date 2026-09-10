@@ -1368,8 +1368,103 @@ p {
 .np-art-col {
   grid-area: art;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+/* The YouTube playback surface — the provider's own player, compact and
+   secondary. A small rounded 16:9 card beneath the artwork in the expanded
+   player: always visible while the view is open (never display:none, never
+   off-screen), with all YouTube-native controls disabled so Melo's transport
+   stays the only interface. The artwork, metadata and Melo controls carry
+   the design — this is the engine's legitimate surface, not the UI. */
+.yt-surface {
+  width: min(100%, 320px);
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-1);
+  transition: opacity 180ms var(--ease), border-color 180ms var(--ease);
+  opacity: 0.9;
+}
+
+.yt-surface:hover {
+  opacity: 1;
+  border-color: var(--text-3);
+}
+
+.yt-surface iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+}
+
+.yt-surface-inner {
+  width: 100%;
+  height: 100%;
+}
+
+.yt-surface-placeholder {
+  width: 100%;
+  height: 100%;
   display: grid;
-  justify-items: center;
+  place-items: center;
+  color: var(--text-3);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.yt-surface-placeholder::before {
+  content: 'video surface';
+}
+
+/* The docked playback surface — the iframe's permanent, always-visible home
+   in the app shell. A small rounded card floating above the mini player: it
+   appears the moment something is playing (and the surface is not inside the
+   expanded player) and is the legitimate, unobtrusive presence of the
+   provider's player — never display:none, never off-screen, never detached.
+   When the expanded Now Playing opens, the surface MOVES into the artwork
+   column and this card empties out (data-active flips to false). */
+.yt-dock {
+  position: fixed;
+  right: 18px;
+  bottom: 92px;
+  z-index: 55;
+  width: clamp(112px, 11vw, 168px);
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-2);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px) scale(0.97);
+  transition: opacity 220ms var(--ease), transform 220ms var(--ease);
+}
+
+.yt-dock[data-active='true'] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+.yt-dock iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+}
+
+.yt-dock-inner {
+  width: 100%;
+  height: 100%;
 }
 
 .np-info-col {

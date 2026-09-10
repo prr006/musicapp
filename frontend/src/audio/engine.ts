@@ -1,5 +1,5 @@
 /**
- * PlaybackEngine — the one and only audio transport in MELO.
+ * PlaybackEngine — the one and only audio transport in MELO's desktop shell.
  *
  * It wraps a single HTMLAudioElement, which in a Wails build is WebView2's
  * native media pipeline. The element is the authority for position, duration,
@@ -8,28 +8,16 @@
  * Every load takes a generation token. Anything that arrives late (a resolver
  * result, a media event from a previous source) is discarded, so a rapid
  * A -> B -> C switch can never resurrect an older track.
+ *
+ * This is the DESKTOP implementation of the engine boundary
+ * (audio/engineTypes.ts). The web build swaps in the YouTube IFrame adapter
+ * (audio/ytPlayer.ts) beneath the same controller.
  */
+import type { EngineEvent, EngineListener, EngineSnapshot, EngineStatus, PlaybackEngineLike } from './engineTypes'
 
-export type EngineStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
+export type { EngineEvent, EngineSnapshot, EngineStatus } from './engineTypes'
 
-export interface EngineSnapshot {
-  status: EngineStatus
-  trackId: string | null
-  duration: number
-  buffered: number
-  error: string | null
-  volume: number
-  muted: boolean
-  rate: number
-}
-
-export type EngineEvent =
-  | { type: 'state'; snapshot: EngineSnapshot }
-  | { type: 'position'; position: number; trackId: string | null }
-  | { type: 'ended'; trackId: string }
-  | { type: 'error'; trackId: string | null; message: string }
-
-type Listener = (event: EngineEvent) => void
+type Listener = EngineListener
 
 const POSITION_INTERVAL_MS = 100
 
@@ -49,8 +37,10 @@ function mediaErrorMessage(el: HTMLAudioElement): string {
   }
 }
 
-export class PlaybackEngine {
-  readonly el: HTMLAudioElement
+export class PlaybackEngine implements PlaybackEngineLike {
+  readonly el: HTMLAudioElement | null
+  /** The desktop transport resolves a stream URL for every track. */
+  readonly needsResolvedSource = true
   /**
    * Optional click-to-play diagnostics tap. Set only when latency debugging is
    * enabled; the engine reports its handoff stages (SRC_SET / PLAY / CANPLAY /
@@ -78,8 +68,13 @@ export class PlaybackEngine {
     this.bind()
   }
 
+  /** Non-null view of the media element for the engine's own bindings. */
+  private get media(): HTMLAudioElement {
+    return this.el as HTMLAudioElement
+  }
+
   private bind(): void {
-    const el = this.el
+    const el = this.media
     el.addEventListener('playing', () => {
       if (!this.playedThisLoad) {
         this.playedThisLoad = true
@@ -130,7 +125,7 @@ export class PlaybackEngine {
   }
 
   private emitPosition(force = false): void {
-    const pos = this.el.currentTime
+    const pos = this.media.currentTime
     if (!force && Math.abs(pos - this.lastPosition) < 0.02) return
     this.lastPosition = pos
     this.emit({ type: 'position', position: pos, trackId: this.trackId })
@@ -156,7 +151,7 @@ export class PlaybackEngine {
   }
 
   snapshot(): EngineSnapshot {
-    const el = this.el
+    const el = this.media
     let buffered = 0
     try {
       if (el.buffered.length > 0) buffered = el.buffered.end(el.buffered.length - 1)
@@ -176,7 +171,7 @@ export class PlaybackEngine {
   }
 
   get position(): number {
-    return this.el.currentTime
+    return this.media.currentTime
   }
 
   get currentGeneration(): number {
@@ -201,7 +196,7 @@ export class PlaybackEngine {
   /** Returns false when the token is stale, meaning the caller lost the race. */
   async load(token: number, url: string, startAt = 0, autoplay = true): Promise<boolean> {
     if (token !== this.generation) return false
-    const el = this.el
+    const el = this.media
     el.src = url
     el.load()
     this.playedThisLoad = false
@@ -239,12 +234,17 @@ export class PlaybackEngine {
     return token === this.generation
   }
 
-  /** Marks the in-flight load as failed (used when the resolver errors). */
-  fail(token: number, message: string): void {
+  /**
+   * Marks the in-flight load as failed (used when the resolver errors).
+   * `fatal` reports a candidate the provider itself cannot play, so the
+   * controller can skip it and continue the queue; ordinary failures stay
+   * user-visible errors that never advance on their own.
+   */
+  fail(token: number, message: string, fatal = false): void {
     if (token !== this.generation) return
     this.error = message
     this.setStatus('error')
-    this.emit({ type: 'error', trackId: this.trackId, message })
+    this.emit({ type: 'error', trackId: this.trackId, message, fatal })
   }
 
   isCurrent(token: number): boolean {
@@ -252,10 +252,10 @@ export class PlaybackEngine {
   }
 
   async play(): Promise<void> {
-    if (!this.el.src) return
+    if (!this.media.src) return
     try {
       this.debugHook?.('PLAY_CALL')
-      await this.el.play()
+      await this.media.play()
     } catch (err) {
       this.error = err instanceof Error ? err.message : 'Playback failed.'
       this.setStatus('error')
@@ -263,8 +263,8 @@ export class PlaybackEngine {
   }
 
   pause(): void {
-    if (!this.el.src) return
-    this.el.pause()
+    if (!this.media.src) return
+    this.media.pause()
     if (this.status !== 'error') this.setStatus('paused')
   }
 
@@ -279,7 +279,7 @@ export class PlaybackEngine {
   }
 
   private hardStop(): void {
-    const el = this.el
+    const el = this.media
     this.stopTimer()
     try {
       el.pause()
@@ -296,11 +296,11 @@ export class PlaybackEngine {
   }
 
   seek(seconds: number): void {
-    if (!this.el.src) return
-    const duration = Number.isFinite(this.el.duration) ? this.el.duration : Infinity
+    if (!this.media.src) return
+    const duration = Number.isFinite(this.media.duration) ? this.media.duration : Infinity
     const target = Math.max(0, Math.min(seconds, duration))
     try {
-      this.el.currentTime = target
+      this.media.currentTime = target
     } catch {
       return
     }
@@ -314,18 +314,18 @@ export class PlaybackEngine {
   }
 
   setVolume(volume: number): void {
-    this.el.volume = Math.max(0, Math.min(1, volume))
+    this.media.volume = Math.max(0, Math.min(1, volume))
     this.emitState()
   }
 
   setMuted(muted: boolean): void {
-    this.el.muted = muted
+    this.media.muted = muted
     this.emitState()
   }
 
   setRate(rate: number): void {
     this.rate = Math.max(0.25, Math.min(3, rate))
-    this.el.playbackRate = this.rate
+    this.media.playbackRate = this.rate
     this.emitState()
   }
 

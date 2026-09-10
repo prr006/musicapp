@@ -12,6 +12,7 @@
  * with A's audio, metadata, artwork or lyrics attached to B.
  */
 import { PlaybackEngine } from '../audio/engine'
+import type { PlaybackEngineLike } from '../audio/engineTypes'
 import { backend } from '../bridge/backend'
 import type { PlayableSource, RepeatMode, Track } from '../bridge/types'
 import {
@@ -22,6 +23,9 @@ import {
 } from '../lib/radio'
 import { tasteSnapshot, type TasteSnapshot } from '../lib/taste'
 import { representativeTrack } from '../lib/taste'
+import { canonicalTrackKey } from '../lib/profile'
+import { generateRecommendations, mergeIntoBuffer, type RecommendationFetcher } from '../lib/webRecommender'
+import { pipedArtistTopSongs, pipedGenreTopSongs, pipedRadioMix } from '../lib/webProvider'
 import { dedupeTracks, moveItem, spreadSample } from '../lib/queue'
 import { smartShuffle } from '../lib/smartshuffle'
 import { library, useLibraryStore } from './libraryStore'
@@ -116,8 +120,18 @@ function significantAt(track: Track): number {
   return SIGNIFICANT_LISTEN_SECONDS
 }
 
+/**
+ * The web recommender's fetchers, wired to the Piped metadata provider.
+ * Kept at module scope: pure functions, no per-controller state.
+ */
+const webRecommender: RecommendationFetcher = {
+  radioMix: (sourceId) => pipedRadioMix(sourceId),
+  artistTopSongs: (artist) => pipedArtistTopSongs(artist, 10),
+  styleTopSongs: (style) => pipedGenreTopSongs(style, 10),
+}
+
 export class PlaybackController {
-  readonly engine: PlaybackEngine
+  engine: PlaybackEngineLike
   private sessionTimer: ReturnType<typeof setTimeout> | null = null
   /** Wall-clock sleep timer tick (1 Hz). Owned here so it survives rerenders. */
   private sleepTimerTick: ReturnType<typeof setInterval> | null = null
@@ -153,6 +167,14 @@ export class PlaybackController {
   /** An explicit artist/album seed from Start Radio; holds until playback moves on. */
   private explicitSeed: RadioSeed | null = null
   /**
+   * Which discovery generation strategy runs. 'desktop' keeps the historical
+   * provider-feed pipeline; 'web' runs the profile-driven web recommender
+   * (lib/webRecommender). The web bootstrap sets this ONCE at startup — it
+   * is deliberately not derived from the backend object, so tests that stub
+   * a backend keep the desktop behaviour.
+   */
+  private discoveryMode: 'desktop' | 'web' = 'desktop'
+  /**
    * The listening session: tracks actually played recently, most recent first
    * (bounded). This is the drift context — if the listener moves from anime
    * OSTs into phonk, these entries carry the radio along without any
@@ -168,7 +190,7 @@ export class PlaybackController {
   private latencyResolveEndAt = 0
   private latencyTotalLoggedFor = -1
 
-  constructor(engine = new PlaybackEngine()) {
+  constructor(engine: PlaybackEngineLike = new PlaybackEngine()) {
     this.engine = engine
     this.engine.subscribe((event) => this.onEngineEvent(event))
     // Handoff stages come straight from the media element so the timeline is
@@ -195,6 +217,19 @@ export class PlaybackController {
         this.queueSessionSave()
       }
     })
+  }
+
+  /**
+   * Swaps the transport (the web bootstrap installs the YouTube IFrame
+   * adapter). Only valid before the first play: the wiring (subscription,
+   * debug hook, disliked-watcher) is re-established, in-flight state is not
+   * migrated — a fresh boot has none.
+   */
+  useEngine(engine: PlaybackEngineLike): void {
+    this.engine.dispose()
+    this.engine = engine
+    this.engine.subscribe((event) => this.onEngineEvent(event))
+    this.engine.debugHook = null
   }
 
   // ---------- engine events ----------
@@ -251,8 +286,50 @@ export class PlaybackController {
         this.handleEnded(event.trackId)
         break
       case 'error':
+        if (event.fatal) {
+          // The provider refuses this exact track (removed, non-embeddable,
+          // invalid id). Skip ONLY this candidate and continue the queue:
+          // the session, the queue and autoplay all stay intact.
+          this.skipUnplayable(event.message)
+          break
+        }
         ui.toast(event.message, 'error')
         break
+    }
+  }
+
+  /**
+   * A track the PROVIDER cannot play: remove it from the session/queue and
+   * move on. Called only for fatal provider errors — ordinary transport
+   * failures keep the user in control.
+   */
+  private skipUnplayable(message: string): void {
+    const state = playerState()
+    const dead = state.current
+    ui.toast(`Skipping — ${message.charAt(0).toLowerCase()}${message.slice(1)}`, 'error')
+    if (!dead) return
+    // Drop it from the explicit queue (and rebalance the index) so a repeat
+    // pass never lands on it again.
+    if (state.index >= 0 && state.queue[state.index]?.id === dead.id) {
+      const queue = state.queue.filter((_, i) => i !== state.index)
+      const index = Math.min(state.index, queue.length - 1)
+      setPlayerState({ queue, index })
+    }
+    const wasFromAutoplay = state.playingFrom === 'autoplay'
+    // Mark the anchor as concluded so discovery does not wait on it.
+    this.recordConclusion('skipped')
+    if (wasFromAutoplay || state.queue.length === 0) {
+      // Continue with the next discovery candidate (or explicit queue first).
+      void this.advance(1, { auto: true })
+    } else {
+      const next = playerState()
+      const nextTrack = next.queue[next.index + 1]
+      if (nextTrack) {
+        setPlayerState({ index: next.index + 1, playingFrom: 'queue' })
+        void this.start(nextTrack)
+      } else {
+        void this.advance(1, { auto: true })
+      }
     }
   }
 
@@ -510,7 +587,9 @@ export class PlaybackController {
     setPlayerState({
       current: track,
       status: 'loading',
-      loadStage: prefetched ? 'buffering' : 'resolving',
+      // Engines without a resolver (the YouTube IFrame adapter) never have a
+      // resolving stage — the provider starts buffering on its own.
+      loadStage: prefetched || !this.engine.needsResolvedSource ? 'buffering' : 'resolving',
       error: null,
     })
     lyrics.loadFor(track, () => this.engine.isCurrent(token))
@@ -518,10 +597,14 @@ export class PlaybackController {
 
     try {
       // Pre-resolution: if the immediate-next prefetch already answered for
-      // this exact track, use it and skip the resolver round trip.
+      // this exact track, use it and skip the resolver round trip. Engines
+      // that play the provider's own media (web) need no source at all — the
+      // track's canonical provider url is handed to load() directly.
       this.latencyResolveStartAt = performance.now()
       let source: PlayableSource | null = prefetched
-      if (source) {
+      if (!this.engine.needsResolvedSource) {
+        this.latencyResolveEndAt = performance.now()
+      } else if (source) {
         this.latencyResolveEndAt = performance.now()
         playLatency('RESOLVE_END', 'elapsed=0ms cache=prefetch')
       } else {
@@ -534,11 +617,11 @@ export class PlaybackController {
         )
       }
       if (!this.engine.isCurrent(token)) return // a newer track won the race
-      // Source in hand: from here the wait is the audio element's, not the
-      // resolver's.
+      // Source in hand (or not needed): from here the wait is the media
+      // element's, not the resolver's.
       setPlayerState({ loadStage: 'buffering' })
-      if (source.duration > 0) positionChannel.setDuration(source.duration)
-      await this.engine.load(token, source.url, startAt)
+      if (source && source.duration > 0) positionChannel.setDuration(source.duration)
+      await this.engine.load(token, source ? source.url : track.url, startAt)
     } catch (err) {
       if (!this.engine.isCurrent(token)) return
       const message = err instanceof Error ? err.message : 'Couldn\u2019t load this song.'
@@ -812,6 +895,9 @@ export class PlaybackController {
       const next = state.queue[state.index + 1] ?? state.autoQueue[0]
       if (!next || next.id === state.current?.id) return
       this.prefetchArtwork(next)
+      // Engines without a resolver (web) need no stream-url prefetch — the
+      // provider loads its own media.
+      if (!this.engine.needsResolvedSource) return
       if (this.playableCache.has(next.id) || this.prefetchInFlight.has(next.id)) return
       this.prefetchInFlight.add(next.id)
       void backend()
@@ -1150,6 +1236,13 @@ export class PlaybackController {
    * Text search remains the explicit last resort with identity verification.
    */
   private async doDiscoveryFetch(anchorId: string): Promise<void> {
+    // WEB: the profile-driven recommender owns the whole generation. It uses
+    // the same candidate philosophy (genuine radio mix + taste/style anchors)
+    // with the learned listening profile scoring and diversity interleave.
+    if (this.discoveryMode === 'web') {
+      await this.webDiscoveryFetch(anchorId)
+      return
+    }
     const gen = ++this.discoveryGen
     const before = playerState()
     this.radioDebug(
@@ -1398,6 +1491,59 @@ export class PlaybackController {
   }
 
   /**
+   * WEB discovery generation: one batch from the profile-driven recommender
+   * (lib/webRecommender). The rolling buffer APPENDS bounded batches — it is
+   * never wiped — and every response is generation-guarded, so a superseded
+   * request can never pollute the current session.
+   */
+  private async webDiscoveryFetch(anchorId: string): Promise<void> {
+    const gen = ++this.discoveryGen
+    const current = playerState().current
+    if (!current) return
+    const lib = useLibraryStore.getState()
+    const state = playerState()
+    const room = Math.max(0, DISCOVERY_MAX - state.autoQueue.length)
+    if (room === 0) {
+      this.discoveryAnchorsDone.add(anchorId)
+      return
+    }
+    const heardKeys = new Set(lib.history.slice(0, 40).map((h) => canonicalTrackKey(h.track)))
+    try {
+      const fresh = await generateRecommendations(webRecommender, {
+        current,
+        sessionRecent: this.sessionRecent,
+        profile: lib.profile,
+        liked: lib.liked,
+        disliked: new Set(lib.disliked.map((t) => t.id)),
+        queued: [...state.queue.slice(state.index + 1), ...state.autoQueue],
+        heardTrackKeys: heardKeys,
+      }, {
+        target: DISCOVERY_TARGET,
+        max: DISCOVERY_MAX,
+        batch: Math.min(8, room),
+        maxPerArtist: 3,
+        maxAnchorFetches: 2,
+      })
+      if (gen !== this.discoveryGen) return // superseded mid-flight
+      if (fresh.length > 0) {
+        const merged = mergeIntoBuffer(playerState().autoQueue, fresh, DISCOVERY_MAX)
+        setPlayerState({ autoQueue: merged, radioSource: playerState().radioSource || 'web-radio-mix' })
+        this.discoveryWarned = false
+      }
+      // A completed generation is final for its anchor (same-anchor invariant).
+      this.discoveryAnchorsDone.add(anchorId)
+      this.discoveryAnchorRetries.delete(anchorId)
+    } catch {
+      if (gen !== this.discoveryGen) return
+      this.discoveryAnchorRetries.set(anchorId, (this.discoveryAnchorRetries.get(anchorId) ?? 0) + 1)
+      if (!this.discoveryWarned) {
+        this.discoveryWarned = true
+        ui.toast('Couldn\u2019t load more suggestions \u2014 will retry', 'error')
+      }
+    }
+  }
+
+  /**
    * How many genuinely new usable candidates a pool still holds (not blocked,
    * not disliked, not just played, music-shaped). Drives the broadening
    * decision as the queue is consumed.
@@ -1475,6 +1621,14 @@ export class PlaybackController {
   }
 
   /** Called when the autoplay setting changes. */
+  /**
+   * Selects the discovery strategy. Called once by the web bootstrap; the
+   * desktop default is never changed by anything else (tests included).
+   */
+  setDiscoveryMode(mode: 'desktop' | 'web'): void {
+    this.discoveryMode = mode
+  }
+
   setAutoplay(enabled: boolean): void {
     if (enabled) {
       // Explicit user action: re-open the fetch budget for the current

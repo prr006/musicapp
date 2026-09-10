@@ -5,6 +5,7 @@ import { QueuePanel } from './components/QueuePanel'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
 import { ErrorState } from './components/States'
+import { YTPlayerDock } from './components/YTPlayerSurface'
 import { useKeyboardShortcuts } from './lib/shortcuts'
 import { useLibraryStore } from './state/libraryStore'
 import { ui, useUIStore } from './state/uiStore'
@@ -142,6 +143,11 @@ export function App() {
         {nowPlayingOpen && <NowPlaying />}
       </main>
       <MiniPlayer />
+      {/* Always-mounted home of the playback surface: the YouTube host must
+          stay attached to the document from before the first load (the IFrame
+          API never readies a detached player), and the surface MOVES between
+          this dock and the expanded Now Playing instead of ever hiding. */}
+      <YTPlayerDock />
       <Toasts />
     </div>
   )

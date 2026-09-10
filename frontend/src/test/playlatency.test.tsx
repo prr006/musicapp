@@ -117,7 +117,7 @@ describe('click-to-play path', () => {
   it('hands the resolved source to the audio element exactly once', async () => {
     render(<App />)
     await searchAndClickFirst()
-    const el = playback.engine.el
+    const el = playback.engine.el!
     expect(el.getAttribute('src')).toBe('http://127.0.0.1:52134/stream/token/abc123')
     expect(usePlayerStore.getState().current?.id).toBe('yt:abc123')
     // The resolved source's duration fed the scrubber before the element's own
@@ -230,11 +230,11 @@ describe('next-track prefetch path', () => {
 
     // Natural end of a: b must start from the prefetched source.
     act(() => {
-      playback.engine.el.dispatchEvent(new Event('ended'))
+      playback.engine.el!.dispatchEvent(new Event('ended'))
     })
     await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe('yt:def456'))
     await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
-    expect(playback.engine.el.getAttribute('src')).toBe('http://127.0.0.1:52134/stream/token/def456')
+    expect(playback.engine.el!.getAttribute('src')).toBe('http://127.0.0.1:52134/stream/token/def456')
 
     // THE regression assertion: a + one prefetch = two resolver invocations
     // total. A third call would mean the cached N+1 transition went back to
@@ -267,7 +267,7 @@ describe('next-track prefetch path', () => {
     // Re-entering the playing state (pause/resume, progress ticks, any state
     // re-emission re-arms the debounce) must not issue a second resolve for b.
     act(() => {
-      playback.engine.el.dispatchEvent(new Event('playing'))
+      playback.engine.el!.dispatchEvent(new Event('playing'))
     })
     await new Promise((r) => setTimeout(r, 2200))
     expect(callsFor(be, 'def456')).toBe(1)
@@ -305,11 +305,11 @@ describe('next-track prefetch path', () => {
 
     // …so the natural transition resolves b for real and plays it.
     act(() => {
-      playback.engine.el.dispatchEvent(new Event('ended'))
+      playback.engine.el!.dispatchEvent(new Event('ended'))
     })
     await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe('yt:def456'))
     await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
-    expect(playback.engine.el.getAttribute('src')).toBe('http://127.0.0.1:52134/stream/token/def456')
+    expect(playback.engine.el!.getAttribute('src')).toBe('http://127.0.0.1:52134/stream/token/def456')
     expect(usePlayerStore.getState().error).toBeNull() // the failure was invisible
     expect(be.getPlayable).toHaveBeenCalledTimes(3) // a, failed prefetch, real resolve
   }, 15000)
@@ -340,7 +340,7 @@ describe('next-track prefetch path', () => {
     await playback.next()
     await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe('yt:def456'))
     await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
-    expect(playback.engine.el.getAttribute('src')).toBe('http://127.0.0.1:52134/stream/token/def456')
+    expect(playback.engine.el!.getAttribute('src')).toBe('http://127.0.0.1:52134/stream/token/def456')
     expect(callsFor(be, 'def456')).toBe(2) // the hanging prefetch + its own resolve
   }, 15000)
 })
@@ -389,7 +389,7 @@ describe('loading stages', () => {
     const stages: Array<string | null> = []
     const unsubscribe = usePlayerStore.subscribe((state) => stages.push(state.loadStage))
     act(() => {
-      playback.engine.el.dispatchEvent(new Event('ended'))
+      playback.engine.el!.dispatchEvent(new Event('ended'))
     })
     await waitFor(() => expect(usePlayerStore.getState().status).toBe('playing'))
     unsubscribe()
@@ -409,13 +409,13 @@ describe('loading stages', () => {
     // The element stalls mid-track (network hiccup): the engine re-enters
     // loading — that is the element's wait, never a resolver round trip.
     act(() => {
-      playback.engine.el.dispatchEvent(new Event('waiting'))
+      playback.engine.el!.dispatchEvent(new Event('waiting'))
     })
     expect(usePlayerStore.getState().status).toBe('loading')
     expect(usePlayerStore.getState().loadStage).toBe('buffering')
 
     act(() => {
-      playback.engine.el.dispatchEvent(new Event('playing'))
+      playback.engine.el!.dispatchEvent(new Event('playing'))
     })
     expect(usePlayerStore.getState().status).toBe('playing')
     expect(usePlayerStore.getState().loadStage).toBeNull()

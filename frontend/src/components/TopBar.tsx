@@ -58,6 +58,9 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
     const q = query.trim()
     if (!q) return
     close()
+    // Kill any pending typeahead request: submitting fires the real search,
+    // so the debounced suggestion fetch would be a redundant provider call.
+    suggest.clear()
     ui.navigate({ name: 'search' })
     void search.run(q)
   }

@@ -3,6 +3,7 @@ import { backend } from '../bridge/backend'
 import type { AppState, PlayEvent, PlayStats, Playlist, Settings, Taste, Track } from '../bridge/types'
 import { canonicalSongKey } from '../lib/radio'
 import { defaultSettings } from '../lib/defaults'
+import { emptyProfile, type ListeningProfile } from '../lib/profile'
 
 export interface LibraryState {
   ready: boolean
@@ -16,6 +17,12 @@ export interface LibraryState {
   /** Bounded per-track listening statistics (play/complete/skip counts). */
   stats: Record<string, PlayStats>
   searchHistory: string[]
+  /**
+   * The learned listening profile (artist/genre affinity with decay). The web
+   * backend persists it inside its state document; the desktop rebuilds an
+   * equivalent profile from the Go store's taste payload on hydration.
+   */
+  profile: ListeningProfile
 }
 
 export const useLibraryStore = create<LibraryState>(() => ({
@@ -28,6 +35,7 @@ export const useLibraryStore = create<LibraryState>(() => ({
   history: [],
   stats: {},
   searchHistory: [],
+  profile: emptyProfile(),
 }))
 
 const set = useLibraryStore.setState
@@ -44,7 +52,7 @@ function applyTaste(taste: Taste | null | undefined): void {
 }
 
 export const library = {
-  hydrate(state: AppState): void {
+  hydrate(state: AppState & { profile?: ListeningProfile }): void {
     set({
       ready: true,
       loadError: null,
@@ -55,6 +63,7 @@ export const library = {
       history: state.history ?? [],
       stats: state.stats ?? {},
       searchHistory: state.searchHistory ?? [],
+      profile: state.profile ?? emptyProfile(),
     })
   },
 
@@ -145,6 +154,11 @@ export const library = {
     try {
       const taste = await backend().recordPlayEvent(track, event)
       applyTaste(taste)
+      // The web backend folds the event into the profile server-side (in its
+      // state document); mirror the same learning locally for both backends
+      // so ranking always has fresh weights without waiting for a reload.
+      const { applyListeningEvent } = await import('../lib/profile')
+      set((s) => ({ profile: applyListeningEvent(s.profile, track, event) }))
     } catch {
       /* history is best-effort; the error surfaces through the store */
     }

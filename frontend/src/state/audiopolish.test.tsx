@@ -444,7 +444,7 @@ describe('Player controls UI (speed + sleep timer)', () => {
     const speed = screen.getByLabelText('Playback speed')
     fireEvent.change(speed, { target: { value: '1.5' } })
     expect(state().speed).toBe(1.5)
-    expect(playback.engine.el.playbackRate).toBe(1.5)
+    expect(playback.engine.el!.playbackRate).toBe(1.5)
 
     const sleep = screen.getByLabelText('Sleep timer') as HTMLSelectElement
     expect(sleep.value).toBe('off')

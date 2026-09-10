@@ -128,7 +128,7 @@ describe('MELO application', () => {
 
     // Natural end of file advances exactly once, into autoplay.
     act(() => {
-      playback.engine.el.dispatchEvent(new Event('ended'))
+      playback.engine.el!.dispatchEvent(new Event('ended'))
     })
     await waitFor(() => expect(usePlayerStore.getState().current?.id).toBe(b.id))
     expect(usePlayerStore.getState().playingFrom).toBe('autoplay')

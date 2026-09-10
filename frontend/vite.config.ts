@@ -19,6 +19,9 @@ function keepDistTracked() {
 
 export default defineConfig({
   plugins: [react(), keepDistTracked()],
+  // Relative base path so the built HTML works from any origin and any
+  // sub-path (Vercel preview URLs, GitHub Pages subpath, etc.).
+  base: './',
   server: {
     host: '0.0.0.0',
     port: 5173,

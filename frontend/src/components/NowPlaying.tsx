@@ -10,6 +10,7 @@ import { ChevronDown, HeartIcon, LyricsIcon, MoonIcon, MoreIcon, QueueIcon, Spee
 import { LyricsPane } from './LyricsPane'
 import { ProgressRow, TransportButtons, VolumeControl } from './MiniPlayer'
 import { TrackMenu } from './TrackMenu'
+import { YTPlayerSurface } from './YTPlayerSurface'
 
 const SLEEP_PRESETS = [15, 30, 45, 60]
 
@@ -106,6 +107,10 @@ export function NowPlaying() {
                 alt={current.title}
                 className={`np-art ${status === 'loading' ? 'skeleton' : ''}`}
               />
+              {/* The provider's playback surface, kept compact and secondary:
+                  a small visible video card under the artwork. Melo's own
+                  controls remain the primary interface. */}
+              <YTPlayerSurface videoId={current.sourceId} />
             </div>
 
             <div className="np-info-col">

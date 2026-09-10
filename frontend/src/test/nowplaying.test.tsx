@@ -121,8 +121,8 @@ function npSection() {
 
 function tickMedia(seconds: number) {
   act(() => {
-    playback.engine.el.currentTime = seconds
-    playback.engine.el.dispatchEvent(new Event('timeupdate'))
+    playback.engine.el!.currentTime = seconds
+    playback.engine.el!.dispatchEvent(new Event('timeupdate'))
   })
 }
 
@@ -219,7 +219,7 @@ describe('NOW PLAYING', () => {
     // Previous follows existing player semantics: deep into the song it restarts.
     tickMedia(70)
     fireEvent.click(within(np).getByRole('button', { name: 'Previous' }))
-    await waitFor(() => expect(playback.engine.el.currentTime).toBe(0))
+    await waitFor(() => expect(playback.engine.el!.currentTime).toBe(0))
   })
 
   it('6. next respects the User Queue before Autoplay', async () => {
@@ -276,7 +276,7 @@ describe('NOW PLAYING', () => {
     const scrubber = within(np).getByRole('slider', { name: 'Seek' })
     scrubber.focus()
     fireEvent.keyDown(scrubber, { key: 'ArrowRight' })
-    await waitFor(() => expect(playback.engine.el.currentTime).toBe(5))
+    await waitFor(() => expect(playback.engine.el!.currentTime).toBe(5))
     await waitFor(() => expect(within(np).getByText('0:05')).toBeInTheDocument())
     expect(scrubber).toHaveAttribute('aria-valuenow', '5')
   })
@@ -436,7 +436,7 @@ describe('LYRICS', () => {
     const indexBefore = playerState().index
 
     fireEvent.click(screen.getByText('third line'))
-    await waitFor(() => expect(playback.engine.el.currentTime).toBe(60))
+    await waitFor(() => expect(playback.engine.el!.currentTime).toBe(60))
     expect(mocks.relatedTracks.mock.calls.length).toBe(callsBefore)
     expect(playerState().queue.map((t) => t.id)).toEqual(queueBefore)
     expect(playerState().index).toBe(indexBefore)

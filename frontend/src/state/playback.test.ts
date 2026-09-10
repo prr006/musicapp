@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PlaybackEngine } from '../audio/engine'
+import type { EngineEvent, EngineStatus, PlaybackEngineLike } from '../audio/engineTypes'
 import { setBackend, type Backend } from '../bridge/backend'
 import type { PlayableSource, Track } from '../bridge/types'
 import { defaultSettings } from '../lib/defaults'
@@ -1600,5 +1601,210 @@ describe('list radio', () => {
       'No ids',
     )
     expect(state().current).toBeNull()
+  })
+})
+
+/**
+ * The WEB transport contract: an engine with needsResolvedSource=false plays
+ * the provider's own media (YouTube IFrame), so the controller must never
+ * consult a resolver — no getPlayable, no prefetch — and hand load() the
+ * track's canonical provider url.
+ */
+describe('web transport (no resolver)', () => {
+  class WebEngine implements PlaybackEngineLike {
+    readonly el: HTMLAudioElement | null = null
+    readonly needsResolvedSource = false
+    debugHook: ((stage: string, info?: string) => void) | null = null
+    private listeners = new Set<(e: EngineEvent) => void>()
+    private generation = 0
+    private trackId: string | null = null
+    private status: EngineStatus = 'idle'
+    loadedUrls: string[] = []
+    endedForId: string | null = null
+
+    subscribe(l: (e: EngineEvent) => void): () => void {
+      this.listeners.add(l)
+      return () => this.listeners.delete(l)
+    }
+
+    snapshot() {
+      return {
+        status: this.status,
+        trackId: this.trackId,
+        duration: 0,
+        buffered: 0,
+        error: null,
+        volume: 1,
+        muted: false,
+        rate: 1,
+      }
+    }
+
+    get position(): number {
+      return 0
+    }
+
+    get currentGeneration(): number {
+      return this.generation
+    }
+
+    beginLoad(trackId: string): number {
+      this.generation += 1
+      this.trackId = trackId
+      this.status = 'loading'
+      return this.generation
+    }
+
+    async load(token: number, url: string, _startAt = 0, autoplay = true): Promise<boolean> {
+      if (token !== this.generation) return false
+      this.loadedUrls.push(url)
+      if (autoplay) {
+        this.status = 'playing'
+        this.emit({ type: 'state', snapshot: this.snapshot() })
+      }
+      return true
+    }
+
+    /** Simulates the provider finishing the video (like the IFrame's ENDED). */
+    endCurrent(): void {
+      this.status = 'paused'
+      this.emit({ type: 'state', snapshot: this.snapshot() })
+      if (this.trackId) this.emit({ type: 'ended', trackId: this.trackId })
+    }
+
+    private emit(e: EngineEvent): void {
+      for (const l of [...this.listeners]) l(e)
+    }
+
+    fail(token: number, message: string): void {
+      if (token !== this.generation) return
+      this.status = 'error'
+      this.emit({ type: 'error', trackId: this.trackId, message })
+    }
+
+    isCurrent(token: number): boolean {
+      return token === this.generation
+    }
+
+    async play(): Promise<void> {
+      this.status = 'playing'
+      this.emit({ type: 'state', snapshot: this.snapshot() })
+    }
+
+    pause(): void {
+      this.status = 'paused'
+      this.emit({ type: 'state', snapshot: this.snapshot() })
+    }
+
+    stop(): void {
+      this.generation += 1
+      this.trackId = null
+      this.status = 'idle'
+      this.emit({ type: 'state', snapshot: this.snapshot() })
+    }
+
+    seek(): void {}
+    restart(): void {}
+    setVolume(): void {}
+    setMuted(): void {}
+    setRate(): void {}
+    dispose(): void {}
+  }
+
+  /**
+   * A dedicated backend so the getPlayable spy is untouched by other tests' 
+   * dangling desktop prefetch timers (they resolve against the LATEST 
+   * setBackend() — cross-test noise must not pollute these assertions).
+   */
+  async function webHarness(): Promise<{ engine: WebEngine; getPlayable: ReturnType<typeof vi.fn>; controller: PlaybackController }> {
+    useLibraryStore.setState({
+      ...useLibraryStore.getState(),
+      settings: { ...defaultSettings(), autoplay: false },
+    })
+    const getPlayable = vi.fn(async (t: Track): Promise<PlayableSource> => ({
+      trackId: t.id, url: `http://local/${t.sourceId}`, mimeType: 'audio/mp4', duration: 100, bitrate: 128, expiresAt: 0,
+    }))
+    const be = {
+      isNative: false,
+      getState: vi.fn(),
+      getDiagnostics: vi.fn(),
+      search: vi.fn(),
+      getPlayable,
+      getLyrics: vi.fn(async () => ({
+        trackId: '', source: 'test', synced: false, lines: [], plain: '', instrumental: false, offset: 0,
+        matchedTitle: '', matchedArtist: '',
+      })),
+      saveSettings: vi.fn(async (s) => s),
+      setLiked: vi.fn(),
+      recordPlay: vi.fn(),
+      recordPlayEvent: vi.fn(),
+      getTaste: vi.fn(),
+      setDisliked: vi.fn(),
+      relatedTracks: vi.fn(),
+      clearHistory: vi.fn(),
+      addSearchTerm: vi.fn(),
+      removeSearchTerm: vi.fn(),
+      clearSearchHistory: vi.fn(),
+      libraryTracks: vi.fn(),
+      saveSession: vi.fn(),
+      clearSession: vi.fn(),
+      createPlaylist: vi.fn(),
+      renamePlaylist: vi.fn(),
+      deletePlaylist: vi.fn(),
+      addTracksToPlaylist: vi.fn(),
+      removeTrackFromPlaylist: vi.fn(),
+      reorderPlaylist: vi.fn(),
+      duplicatePlaylist: vi.fn(),
+      installResolver: vi.fn(),
+      setNowPlaying: vi.fn(),
+      on: vi.fn(() => () => {}),
+    } as unknown as Backend
+    setBackend(be)
+    // Flush the prefetch timers earlier desktop tests left pending: they
+    // read the SHARED player store, so a stale one could resolve MY next
+    // track against this spy. After >1.5s no old timer can still be armed
+    // (none get re-armed while nothing plays), so the assertions below are
+    // hermetic.
+    await new Promise((r) => setTimeout(r, 1600))
+    const engine = new WebEngine()
+    return { engine, getPlayable, controller: new PlaybackController(engine) }
+  }
+
+  it('plays the provider url without ever resolving a stream', async () => {
+    const { engine, getPlayable, controller } = await webHarness()
+    const song = track('webplay-a-001')
+    await controller.play(song)
+    // Other tests' dangling desktop prefetch timers may hit the shared mock;
+    // the assertion that matters is that THIS track was never resolved.
+    expect(getPlayable).not.toHaveBeenCalledWith(expect.objectContaining({ id: song.id }))
+    expect(engine.loadedUrls).toEqual(['https://youtube.com/watch?v=webplay-a-001'])
+    expect(state().current?.id).toBe('yt:webplay-a-001')
+    expect(state().status).toBe('playing')
+  })
+
+  it('natural end advances the explicit queue without a resolver round trip', async () => {
+    const { engine, getPlayable, controller } = await webHarness()
+    const a = track('webend-a-0001')
+    const b = track('webend-b-0001')
+    await controller.play(a, { tracks: [a, b], index: 0 })
+    engine.endCurrent()
+    await vi.waitFor(() => expect(state().current?.id).toBe(b.id))
+    expect(getPlayable).not.toHaveBeenCalledWith(expect.objectContaining({ id: a.id }))
+    expect(getPlayable).not.toHaveBeenCalledWith(expect.objectContaining({ id: b.id }))
+    expect(engine.loadedUrls).toEqual([
+      'https://youtube.com/watch?v=webend-a-0001',
+      'https://youtube.com/watch?v=webend-b-0001',
+    ])
+    expect(state().playingFrom).toBe('queue')
+  })
+
+  it('never issues the desktop stream-url prefetch for the next track', async () => {
+    const { getPlayable, controller } = await webHarness()
+    const a = track('webpre-a-000001')
+    const b = track('webpre-b-000001')
+    await controller.play(a, { tracks: [a, b], index: 0 })
+    await new Promise((r) => setTimeout(r, 2200)) // past the 1.5s prefetch debounce
+    expect(getPlayable).not.toHaveBeenCalledWith(expect.objectContaining({ id: b.id }))
+    expect(getPlayable).not.toHaveBeenCalledWith(expect.objectContaining({ id: a.id }))
   })
 })
