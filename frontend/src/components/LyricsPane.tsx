@@ -77,29 +77,32 @@ export function LyricsPane() {
   /**
    * Scroll the active lyric line into view, centered in the container.
    *
-   * Uses `scrollIntoView({ block: 'center' })` on the active element — this is
-   * the most reliable approach because:
-   *   1. It handles all CSS overflow/scroll contexts automatically.
-   *   2. It does not depend on `offsetTop` (which can be stale if the layout
-   *      hasn't settled after a React render).
-   *   3. It works even if the container's scroll position was reset by something
-   *      else (e.g. a competing layout effect).
+   * IMPORTANT: We MUST NOT use scrollIntoView() because it scrolls ALL
+   * scrollable ancestors — including overflow:hidden parents like .np-body,
+   * .now-playing, .main, and body. This causes the entire NowPlaying layout
+   * (and potentially the page) to shift when lyrics follow playback.
    *
-   * For jsdom (tests) where scrollIntoView may not exist, falls back to
-   * scrollTop calculation.
+   * Instead, we compute the target scrollTop for the lyrics container alone
+   * using getBoundingClientRect geometry. This ensures ONLY the lyrics pane
+   * scrolls — artwork, title, controls, and the page remain perfectly still.
    */
   const centerActive = useCallback(() => {
     const el = activeElRef.current
     const container = containerRef.current
     if (!el || !container) return
 
-    if (typeof el.scrollIntoView === 'function') {
-      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    const containerRect = container.getBoundingClientRect()
+    const activeRect = el.getBoundingClientRect()
+    const targetTop =
+      container.scrollTop +
+      (activeRect.top - containerRect.top) -
+      container.clientHeight / 2 +
+      activeRect.height / 2
+
+    if (typeof container.scrollTo === 'function') {
+      container.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' })
     } else {
-      // jsdom fallback
-      const top = Math.max(0, el.offsetTop - container.clientHeight / 2 + el.clientHeight / 2)
-      if (typeof container.scrollTo === 'function') container.scrollTo({ top, behavior: 'smooth' })
-      else container.scrollTop = top
+      container.scrollTop = Math.max(0, targetTop)
     }
   }, [])
 
