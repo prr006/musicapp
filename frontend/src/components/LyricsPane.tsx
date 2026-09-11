@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { activeLineIndex, sanitizeTimedLines, useLyricsStore } from '../state/lyricsStore'
 import { playback, usePlayer } from '../state/playback'
 import { usePosition } from '../state/positionChannel'
@@ -15,15 +15,6 @@ const FOLLOW_RESUME_MS = 6000
 const MIN_TIMED_LINES = 2
 
 /**
- * How often (ms) to re-check the active line's scroll position even when the
- * active line index hasn't changed. This catches edge cases where:
- *   - the refs were briefly null during a rapid re-render
- *   - the browser layout shifted (e.g. font load, resize)
- *   - the initial scroll missed because the DOM wasn't painted yet
- */
-const RECHECK_INTERVAL_MS = 3000
-
-/**
  * Lyrics follow the player's real position: this component subscribes to the
  * position channel only, computes the active line and scrolls it into view.
  * There is no independent lyric timer, so pause freezes it, seek jumps it and
@@ -32,9 +23,6 @@ const RECHECK_INTERVAL_MS = 3000
  * Auto-scroll yields to the user: wheel/scrollbar/touch interaction suspends
  * following (so the pane never fights a reader), a pill offers an explicit
  * return to the current line, and following quietly resumes after a pause.
- *
- * A periodic re-check ensures the active line stays visible even if an
- * earlier scroll silently failed (e.g. refs were null mid-render).
  */
 export function LyricsPane() {
   const status = useLyricsStore((s) => s.status)
@@ -44,9 +32,10 @@ export function LyricsPane() {
   const currentId = usePlayer((s) => s.current?.id ?? null)
   const position = usePosition()
   const containerRef = useRef<HTMLDivElement>(null)
-  const activeRef = useRef<HTMLDivElement>(null)
+  const activeElRef = useRef<HTMLDivElement | null>(null)
   const resumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const recheckTimer = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Track the previous active index to detect actual line transitions.
+  const prevActiveRef = useRef<number>(-1)
 
   const [following, setFollowing] = useState(true)
 
@@ -61,6 +50,7 @@ export function LyricsPane() {
   // song must never scroll the next one.
   useEffect(() => {
     setFollowing(true)
+    prevActiveRef.current = -1
     if (resumeTimer.current) {
       clearTimeout(resumeTimer.current)
       resumeTimer.current = null
@@ -70,43 +60,60 @@ export function LyricsPane() {
   useEffect(
     () => () => {
       if (resumeTimer.current) clearTimeout(resumeTimer.current)
-      if (recheckTimer.current) clearInterval(recheckTimer.current)
     },
     [],
   )
 
-  /** jsdom has no Element.scrollTo — fall back to scrollTop so tests pass. */
-  const centerActive = () => {
-    const el = activeRef.current
+  /**
+   * Callback ref: fires when the active line's DOM element mounts/unmounts.
+   * This is more reliable than a conditional `ref={i === active ? activeRef : undefined}`
+   * because it guarantees the ref is set at the exact right moment in the
+   * React lifecycle — before effects run.
+   */
+  const setActiveEl = useCallback((el: HTMLDivElement | null) => {
+    activeElRef.current = el
+  }, [])
+
+  /**
+   * Scroll the active lyric line into view, centered in the container.
+   *
+   * Uses `scrollIntoView({ block: 'center' })` on the active element — this is
+   * the most reliable approach because:
+   *   1. It handles all CSS overflow/scroll contexts automatically.
+   *   2. It does not depend on `offsetTop` (which can be stale if the layout
+   *      hasn't settled after a React render).
+   *   3. It works even if the container's scroll position was reset by something
+   *      else (e.g. a competing layout effect).
+   *
+   * For jsdom (tests) where scrollIntoView may not exist, falls back to
+   * scrollTop calculation.
+   */
+  const centerActive = useCallback(() => {
+    const el = activeElRef.current
     const container = containerRef.current
-    if (!el || !container) return false
-    const top = Math.max(0, el.offsetTop - container.clientHeight / 2 + el.clientHeight / 2)
-    if (typeof container.scrollTo === 'function') container.scrollTo({ top, behavior: 'smooth' })
-    else container.scrollTop = top
-    return true
-  }
+    if (!el || !container) return
+
+    if (typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    } else {
+      // jsdom fallback
+      const top = Math.max(0, el.offsetTop - container.clientHeight / 2 + el.clientHeight / 2)
+      if (typeof container.scrollTo === 'function') container.scrollTo({ top, behavior: 'smooth' })
+      else container.scrollTop = top
+    }
+  }, [])
 
   // Auto-scroll only while following, and only when the active line changes —
   // position ticks alone never touch the scroller.
+  // Using requestAnimationFrame ensures the DOM has painted the new ref before
+  // we attempt to scroll to it.
   useEffect(() => {
     if (!following || active < 0) return
-    centerActive()
+    if (active === prevActiveRef.current) return
+    prevActiveRef.current = active
+    requestAnimationFrame(() => centerActive())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, following])
-
-  // Periodic re-check: if following and the active line is visible but might
-  // have missed its initial scroll (refs were null, layout shift, etc.),
-  // re-center. This prevents the lyrics from silently getting stuck.
-  useEffect(() => {
-    if (recheckTimer.current) clearInterval(recheckTimer.current)
-    if (!following || active < 0) return
-    recheckTimer.current = setInterval(() => {
-      if (following && active >= 0) centerActive()
-    }, RECHECK_INTERVAL_MS)
-    return () => {
-      if (recheckTimer.current) clearInterval(recheckTimer.current)
-    }
-  }, [following, active, currentId])
 
   /** User took over the scroller: stop following, resume quietly later. */
   const suspendFollow = () => {
@@ -124,8 +131,9 @@ export function LyricsPane() {
       resumeTimer.current = null
     }
     setFollowing(true)
-    // The effect above only re-centers when `active` changes; when the user
-    // returns mid-line the index is unchanged, so center explicitly.
+    // When the user returns mid-line, `active` hasn't changed so the effect
+    // above won't fire. Force a re-center.
+    prevActiveRef.current = -1
     requestAnimationFrame(() => centerActive())
   }
 
@@ -180,7 +188,6 @@ export function LyricsPane() {
         onWheel={suspendFollow}
         onTouchMove={suspendFollow}
         onKeyDown={(e) => {
-          // Keyboard scrolling through the pane is also the user taking over.
           if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(e.key)) {
             suspendFollow()
           }
@@ -189,7 +196,7 @@ export function LyricsPane() {
         {timed.map((line, i) => (
           <div
             key={`${line.time}-${i}`}
-            ref={i === active ? activeRef : undefined}
+            ref={i === active ? setActiveEl : undefined}
             className={`lyric-line ${i === active ? 'active' : ''} ${i < active ? 'passed' : ''}`}
             aria-current={i === active ? 'true' : undefined}
             onClick={() => seekToLine(line.time)}

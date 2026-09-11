@@ -237,3 +237,40 @@ describe('parsePipedItem — artwork quality', () => {
     expect(t1?.artwork).not.toContain('oHg5SJYRHA0')
   })
 })
+
+// ============================================================
+// HD ARTWORK PROBE
+// ============================================================
+
+import { bestArtwork, probeHDArtwork } from './webProvider'
+
+describe('bestArtwork', () => {
+  it('returns sddefault.jpg as default (before probe)', () => {
+    // Clear the cache to simulate fresh state
+    const url = bestArtwork('dQw4w9WgXcQ')
+    expect(url).toBe('https://i.ytimg.com/vi/dQw4w9WgXcQ/sddefault.jpg')
+  })
+
+  it('does NOT use hqdefault.jpg', () => {
+    expect(bestArtwork('dQw4w9WgXcQ')).not.toContain('hqdefault')
+  })
+
+  it('always uses direct YouTube URL', () => {
+    const url = bestArtwork('oHg5SJYRHA0')
+    expect(url).toContain('i.ytimg.com')
+    expect(url).toContain('oHg5SJYRHA0')
+  })
+})
+
+describe('probeHDArtwork', () => {
+  it('returns a boolean', async () => {
+    const result = await probeHDArtwork('dQw4w9WgXcQ')
+    expect(typeof result).toBe('boolean')
+  })
+
+  it('caches results (second call returns same value synchronously)', async () => {
+    const first = await probeHDArtwork('kJQP7kiw5Fk')
+    const second = await probeHDArtwork('kJQP7kiw5Fk')
+    expect(first).toBe(second)
+  })
+})

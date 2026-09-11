@@ -221,7 +221,7 @@ export function parsePipedItem(item: PipedStreamItem, _youtubeMusic?: boolean): 
     artist: displayArtist,
     uploader: item.uploaderName || '',
     album: '',
-    artwork: bestArtwork(sourceId, item.thumbnail),
+    artwork: bestArtwork(sourceId),
     duration: item.duration && item.duration > 0 ? item.duration : 0,
     explicit: false,
   }
@@ -300,20 +300,54 @@ function thumbFor(url: string | undefined): string {
 }
 
 /**
- * Always return the highest-quality reliable YouTube thumbnail for a video.
- *
  * YouTube thumbnail tiers (by resolution):
- *   maxresdefault.jpg  1280×720  — only exists for some videos (risky)
+ *   maxresdefault.jpg  1280×720  — only exists for some videos
  *   sddefault.jpg       640×480  — exists for virtually all videos
  *   hqdefault.jpg       480×360  — lower quality
- *   mqdefault.jpg       320×180  — low quality (what Piped proxies often serve)
  *
- * Strategy: always construct a direct YouTube URL at sddefault quality.
+ * Strategy: always construct a direct YouTube URL.
  * Piped mirror proxy URLs are often lower resolution (mqdefault/hqdefault),
  * so we bypass them entirely for consistency and quality.
  */
-function bestArtwork(sourceId: string, _pipedThumb?: string): string {
+
+/** Safe fallback — always exists. */
+function fallbackArtwork(sourceId: string): string {
   return `https://i.ytimg.com/vi/${sourceId}/sddefault.jpg`
+}
+
+/** Best-case source — 1280×720, may 404. */
+function hdArtwork(sourceId: string): string {
+  return `https://i.ytimg.com/vi/${sourceId}/maxresdefault.jpg`
+}
+
+/**
+ * Cache of maxresdefault availability per video ID.
+ * true = HD exists, false = use fallback, null = not yet probed.
+ */
+const hdCache = new Map<string, boolean>()
+
+/**
+ * Probe whether maxresdefault.jpg exists for a video ID.
+ * Returns true if HD is available, false otherwise.
+ * Results are cached for the session.
+ */
+export async function probeHDArtwork(sourceId: string): Promise<boolean> {
+  const cached = hdCache.get(sourceId)
+  if (cached !== undefined) return cached
+  try {
+    const res = await fetch(hdArtwork(sourceId), { method: 'HEAD' })
+    const ok = res.ok
+    hdCache.set(sourceId, ok)
+    return ok
+  } catch {
+    hdCache.set(sourceId, false)
+    return false
+  }
+}
+
+/** Get the best available artwork URL for a source ID. */
+export function bestArtwork(sourceId: string): string {
+  return hdCache.get(sourceId) ? hdArtwork(sourceId) : fallbackArtwork(sourceId)
 }
 
 /** True pagination for Piped search (their nextpage blob). */
