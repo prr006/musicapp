@@ -47,6 +47,7 @@
  */
 import type { PlayStats, Track } from '../bridge/types'
 import { normalizeTitle } from './discovery'
+import { isSongCandidate } from './songCandidateFilter'
 
 // ---------- seeds ----------
 
@@ -498,6 +499,8 @@ export function buildRadioBatch(
       if (track.duration > MAX_RADIO_DURATION || (track.duration > 0 && track.duration < MIN_RADIO_DURATION)) {
         continue
       }
+      // Multi-signal non-song filter: reject teasers, trailers, promos, etc.
+      if (!isSongCandidate(track)) continue
       // Text-search results must prove they belong to the seed's context.
       if (opts.verifiedOnly && !verifiedSeedContext(track, ctx.seed)) continue
       const key = canonicalSongKey(track)

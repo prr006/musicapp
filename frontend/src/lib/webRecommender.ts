@@ -21,6 +21,7 @@ import { canonicalSongKey, identityKeyOf, splitArtists, MIN_RADIO_DURATION, MAX_
 import {
   canonicalArtistOf, canonicalTrackKey, genreTokensOf, scoreCandidatePersonal, type ListeningProfile,
 } from './profile'
+import { isSongCandidate } from './songCandidateFilter'
 
 /** The candidate sources the engine may consult. */
 export interface RecommendationFetcher {
@@ -76,6 +77,9 @@ function isCandidate(track: Track, ctx: RecommendationContext, queuedKeys: Set<s
   if (track.duration > 0) {
     if (track.duration < MIN_RADIO_DURATION || track.duration > MAX_RADIO_DURATION) return false
   }
+  // Multi-signal non-song filter: rejects teasers, trailers, promos,
+  // interviews, compilations, etc. while preserving legitimate songs.
+  if (!isSongCandidate(track)) return false
   return true
 }
 

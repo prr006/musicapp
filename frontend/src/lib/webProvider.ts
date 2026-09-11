@@ -10,6 +10,7 @@
  * /stream, no getPlayable and no yt-dlp anywhere in the web build.
  */
 import type { Album, Artist, SearchResponse, Track } from '../bridge/types'
+import { isSongCandidate } from './songCandidateFilter'
 
 /** Mirrors are tried in order; a dead mirror fails over to the next. */
 const PIPED_MIRRORS = [
@@ -169,7 +170,15 @@ function baseId(url: string | undefined): string | null {
   return m ? m[1] : null
 }
 
-const NON_MUSIC = /(mix\s*[-–]|full\s*album|nightcore|slowed\s*\+?\s*reverb|8d\s*audio|sped\s*up|karaoke|instrumental\s*version|backing\s*tracks?|cover\s*by|reaction|tutorial|lesson|album\s*completo)/i
+/**
+ * Broad non-music content filter for search results. Conservative: only
+ * rejects titles that are clearly non-song content. Does NOT reject
+ * legitimate songs containing words like "live", "remix", "acoustic".
+ *
+ * The multi-signal isSongCandidate() filter in songCandidateFilter.ts
+ * provides additional validation for radio/autoplay candidates.
+ */
+const NON_MUSIC = /mix\s*[-–\s]|full\s*album|nightcore|slowed\s*\+?\s*reverb|8d\s*audio|sped\s*up|karaoke|instrumental\s*version|backing\s*tracks?|cover\s*by|reaction|tutorial|lesson|album\s*completo|trailer|teaser|behind\s+the\s+scenes?|making\s+of|press\s+(meet|conference)|interview|podcast|vlog|documentary|dialogue\s+promo|scene\s+from|episode\s+promo|serial\s+promo|first\s+look|sneak\s*peek|glimpse|announcement|fan\s+(made|edit|video)|hours?\s+(of|mix)|megamix|nonstop|non-stop|full\s+(album|movie|show|concert)|web\s*series|promo(tional)?/i
 
 /** Music-shaped duration: 0:31 – 15:00. */
 function isMusicShaped(duration: number | undefined): boolean {
@@ -325,6 +334,8 @@ export async function pipedRadioMix(sourceId: string): Promise<Track[]> {
     // Radio rows are "Artist - Song"-shaped; without an artist there is no
     // recommendation identity to rank on — drop rather than guess.
     if (!track.artist) continue
+    // Multi-signal non-song filter: reject teasers, trailers, promos, etc.
+    if (!isSongCandidate(track)) continue
     if (seen.has(track.sourceId)) continue
     seen.add(track.sourceId)
     out.push(track)
@@ -349,6 +360,7 @@ export async function pipedArtistTopSongs(artist: string, limit = 12): Promise<T
     if (!isMusicShaped(item.duration)) continue
     const track = parsePipedItem(item, true)
     if (!track) continue
+    if (!isSongCandidate(track)) continue
     out.push(track)
     if (out.length >= limit) break
   }
