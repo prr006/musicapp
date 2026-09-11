@@ -126,16 +126,17 @@ describe('cleanYouTubeTitle', () => {
   })
 })
 
-describe('parsePipedItem — title preservation', () => {
-  function makeItem(overrides: Partial<PipedStreamItem> = {}): PipedStreamItem {
-    return {
-      url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-      title: 'Test Song',
-      type: 'stream',
-      duration: 200,
-      ...overrides,
-    }
+function makeItem(overrides: Partial<PipedStreamItem> = {}): PipedStreamItem {
+  return {
+    url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    title: 'Test Song',
+    type: 'stream',
+    duration: 200,
+    ...overrides,
   }
+}
+
+describe('parsePipedItem — title preservation', () => {
 
   it('preserves (From "Raaka") in title', () => {
     const track = parsePipedItem(makeItem({ title: 'Make Way For The King (From "Raaka")' }), false)
@@ -190,5 +191,49 @@ describe('parsePipedItem — title preservation', () => {
   it('handles malformed/duplicate punctuation', () => {
     const track = parsePipedItem(makeItem({ title: 'Song Title ((Official Video))' }), false)
     expect(track?.title).toBe('Song Title')
+  })
+})
+
+// ============================================================
+// ARTWORK QUALITY
+// ============================================================
+
+describe('parsePipedItem — artwork quality', () => {
+  it('uses sddefault.jpg (640×480) as the primary artwork source', () => {
+    const track = parsePipedItem(makeItem({ url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }), false)
+    expect(track?.artwork).toBe('https://i.ytimg.com/vi/dQw4w9WgXcQ/sddefault.jpg')
+  })
+
+  it('does NOT use hqdefault.jpg (low-res 480×360)', () => {
+    const track = parsePipedItem(makeItem({ url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }), false)
+    expect(track?.artwork).not.toContain('hqdefault')
+  })
+
+  it('always uses direct YouTube URL regardless of Piped thumbnail', () => {
+    const track = parsePipedItem(makeItem({
+      url: 'https://www.youtube.com/watch?v=oHg5SJYRHA0',
+      thumbnail: 'https://pipedproxy.example.com/thumb/oHg5SJYRHA0.jpg',
+    }), false)
+    expect(track?.artwork).toBe('https://i.ytimg.com/vi/oHg5SJYRHA0/sddefault.jpg')
+    expect(track?.artwork).not.toContain('pipedproxy')
+  })
+
+  it('uses direct YouTube URL when Piped thumbnail is missing', () => {
+    const track = parsePipedItem(makeItem({ url: 'https://www.youtube.com/watch?v=kXYiU_JCYtU' }), false)
+    expect(track?.artwork).toBe('https://i.ytimg.com/vi/kXYiU_JCYtU/sddefault.jpg')
+  })
+
+  it('preserves correct video identity in artwork URL', () => {
+    const track = parsePipedItem(makeItem({ url: 'https://www.youtube.com/watch?v=kJQP7kiw5Fk' }), false)
+    expect(track?.artwork).toContain('kJQP7kiw5Fk')
+    expect(track?.id).toBe('yt:kJQP7kiw5Fk')
+  })
+
+  it('no stale artwork after track switch', () => {
+    const t1 = parsePipedItem(makeItem({ url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }), false)
+    const t2 = parsePipedItem(makeItem({ url: 'https://www.youtube.com/watch?v=oHg5SJYRHA0' }), false)
+    expect(t1?.artwork).toContain('dQw4w9WgXcQ')
+    expect(t2?.artwork).toContain('oHg5SJYRHA0')
+    expect(t1?.artwork).not.toContain('oHg5SJYRHA0')
   })
 })

@@ -221,7 +221,7 @@ export function parsePipedItem(item: PipedStreamItem, _youtubeMusic?: boolean): 
     artist: displayArtist,
     uploader: item.uploaderName || '',
     album: '',
-    artwork: thumbFor(item.thumbnail) || `https://i.ytimg.com/vi/${sourceId}/hqdefault.jpg`,
+    artwork: bestArtwork(sourceId, item.thumbnail),
     duration: item.duration && item.duration > 0 ? item.duration : 0,
     explicit: false,
   }
@@ -297,6 +297,23 @@ export async function pipedSearch(query: string, filter: string): Promise<Search
 
 function thumbFor(url: string | undefined): string {
   return url && url.startsWith('http') ? url : ''
+}
+
+/**
+ * Always return the highest-quality reliable YouTube thumbnail for a video.
+ *
+ * YouTube thumbnail tiers (by resolution):
+ *   maxresdefault.jpg  1280×720  — only exists for some videos (risky)
+ *   sddefault.jpg       640×480  — exists for virtually all videos
+ *   hqdefault.jpg       480×360  — lower quality
+ *   mqdefault.jpg       320×180  — low quality (what Piped proxies often serve)
+ *
+ * Strategy: always construct a direct YouTube URL at sddefault quality.
+ * Piped mirror proxy URLs are often lower resolution (mqdefault/hqdefault),
+ * so we bypass them entirely for consistency and quality.
+ */
+function bestArtwork(sourceId: string, _pipedThumb?: string): string {
+  return `https://i.ytimg.com/vi/${sourceId}/sddefault.jpg`
 }
 
 /** True pagination for Piped search (their nextpage blob). */

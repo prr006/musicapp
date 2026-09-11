@@ -15,6 +15,15 @@ const FOLLOW_RESUME_MS = 6000
 const MIN_TIMED_LINES = 2
 
 /**
+ * How often (ms) to re-check the active line's scroll position even when the
+ * active line index hasn't changed. This catches edge cases where:
+ *   - the refs were briefly null during a rapid re-render
+ *   - the browser layout shifted (e.g. font load, resize)
+ *   - the initial scroll missed because the DOM wasn't painted yet
+ */
+const RECHECK_INTERVAL_MS = 3000
+
+/**
  * Lyrics follow the player's real position: this component subscribes to the
  * position channel only, computes the active line and scrolls it into view.
  * There is no independent lyric timer, so pause freezes it, seek jumps it and
@@ -23,6 +32,9 @@ const MIN_TIMED_LINES = 2
  * Auto-scroll yields to the user: wheel/scrollbar/touch interaction suspends
  * following (so the pane never fights a reader), a pill offers an explicit
  * return to the current line, and following quietly resumes after a pause.
+ *
+ * A periodic re-check ensures the active line stays visible even if an
+ * earlier scroll silently failed (e.g. refs were null mid-render).
  */
 export function LyricsPane() {
   const status = useLyricsStore((s) => s.status)
@@ -34,6 +46,7 @@ export function LyricsPane() {
   const containerRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef<HTMLDivElement>(null)
   const resumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const recheckTimer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const [following, setFollowing] = useState(true)
 
@@ -57,6 +70,7 @@ export function LyricsPane() {
   useEffect(
     () => () => {
       if (resumeTimer.current) clearTimeout(resumeTimer.current)
+      if (recheckTimer.current) clearInterval(recheckTimer.current)
     },
     [],
   )
@@ -65,10 +79,11 @@ export function LyricsPane() {
   const centerActive = () => {
     const el = activeRef.current
     const container = containerRef.current
-    if (!el || !container) return
+    if (!el || !container) return false
     const top = Math.max(0, el.offsetTop - container.clientHeight / 2 + el.clientHeight / 2)
     if (typeof container.scrollTo === 'function') container.scrollTo({ top, behavior: 'smooth' })
     else container.scrollTop = top
+    return true
   }
 
   // Auto-scroll only while following, and only when the active line changes —
@@ -78,6 +93,20 @@ export function LyricsPane() {
     centerActive()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, following])
+
+  // Periodic re-check: if following and the active line is visible but might
+  // have missed its initial scroll (refs were null, layout shift, etc.),
+  // re-center. This prevents the lyrics from silently getting stuck.
+  useEffect(() => {
+    if (recheckTimer.current) clearInterval(recheckTimer.current)
+    if (!following || active < 0) return
+    recheckTimer.current = setInterval(() => {
+      if (following && active >= 0) centerActive()
+    }, RECHECK_INTERVAL_MS)
+    return () => {
+      if (recheckTimer.current) clearInterval(recheckTimer.current)
+    }
+  }, [following, active, currentId])
 
   /** User took over the scroller: stop following, resume quietly later. */
   const suspendFollow = () => {
@@ -150,7 +179,6 @@ export function LyricsPane() {
         aria-label="Synced lyrics"
         onWheel={suspendFollow}
         onTouchMove={suspendFollow}
-        onPointerDown={suspendFollow}
         onKeyDown={(e) => {
           // Keyboard scrolling through the pane is also the user taking over.
           if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(e.key)) {
