@@ -12,6 +12,7 @@ const FILTERS = [
   { id: '', label: 'All' },
   { id: 'songs', label: 'Songs' },
   { id: 'videos', label: 'Videos' },
+  { id: 'artists', label: 'Artists' },
   { id: 'albums', label: 'Albums' },
 ]
 
@@ -23,20 +24,21 @@ export function SearchView() {
   const submitted = useSearchStore((s) => s.submitted)
   const history = useLibraryStore((s) => s.searchHistory)
 
-  // The Go backend marshals empty slices as JSON `null` (the yt-dlp fallback and
-  // video-only InnerTube responses have no album/artist lists at all). Never
-  // trust the response shape: normalise every section to an array here so a
-  // `null` section can't crash the render (which would blank the whole app).
   const songs = results?.songs ?? []
   const videos = results?.videos ?? []
   const artists = results?.artists ?? []
   const albums = results?.albums ?? []
   const all = [...songs, ...videos]
 
+  const showSongs = filter === '' || filter === 'songs'
+  const showVideos = filter === '' || filter === 'videos'
+  const showArtists = filter === '' || filter === 'artists'
+  const showAlbums = filter === '' || filter === 'albums'
+
   return (
     <div className="page">
       <div className="page-header">
-        <h1>{submitted ? `Results for “${submitted}”` : 'Search'}</h1>
+        <h1>{submitted ? `Results for "${submitted}"` : 'Search'}</h1>
       </div>
 
       {submitted && (
@@ -103,7 +105,7 @@ export function SearchView() {
 
       {status === 'error' && (
         <ErrorState
-          title="Couldn’t reach YouTube"
+          title="Couldn't reach YouTube"
           message={error ?? 'The search provider is unavailable right now.'}
           onRetry={() => search.retry()}
           retryLabel="Retry search"
@@ -114,13 +116,13 @@ export function SearchView() {
         <EmptyState
           icon={<SearchIcon size={20} />}
           title="No results"
-          message={`Nothing matched “${submitted}”. Try a different spelling or a shorter query.`}
+          message={`Nothing matched "${submitted}". Try a different spelling or a shorter query.`}
         />
       )}
 
       {status === 'results' && results && (
         <>
-          {songs.length > 0 && (
+          {showSongs && songs.length > 0 && (
             <section className="section">
               <div className="section-head">
                 <h2>Songs</h2>
@@ -141,7 +143,7 @@ export function SearchView() {
             </section>
           )}
 
-          {videos.length > 0 && (
+          {showVideos && videos.length > 0 && (
             <section className="section">
               <div className="section-head">
                 <h2>Videos</h2>
@@ -159,7 +161,7 @@ export function SearchView() {
             </section>
           )}
 
-          {artists.length > 0 && (
+          {showArtists && artists.length > 0 && (
             <section className="section">
               <div className="section-head">
                 <h2>Artists</h2>
@@ -179,7 +181,7 @@ export function SearchView() {
             </section>
           )}
 
-          {albums.length > 0 && (
+          {showAlbums && albums.length > 0 && (
             <section className="section">
               <div className="section-head">
                 <h2>Albums</h2>
@@ -191,10 +193,6 @@ export function SearchView() {
                     title={album.title}
                     subtitle={[album.artist, album.year].filter(Boolean).join(' · ')}
                     artwork={album.artwork}
-                    // Navigate with the SAME key the library-derived album
-                    // pages use, so a provider album card opens the real
-                    // album page when the library knows it (and the honest
-                    // empty state when it does not) — never a dead id.
                     onOpen={() =>
                       ui.navigate({
                         name: 'album',

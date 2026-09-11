@@ -94,8 +94,8 @@ export function HomeView() {
               See all
             </button>
           </div>
-          <div className="card-grid">
-            {quickPicks.slice(0, 6).map((entry) => (
+          <div className="scroll-row cards">
+            {quickPicks.slice(0, 8).map((entry) => (
               <MediaCard
                 key={entry.track.id}
                 title={entry.track.title}
@@ -127,8 +127,8 @@ export function HomeView() {
               See all
             </button>
           </div>
-          <div className="card-grid">
-            {recent.slice(0, 6).map((record) => (
+          <div className="scroll-row cards">
+            {recent.slice(0, 8).map((record) => (
               <MediaCard
                 key={record.track.id}
                 title={record.track.title}
@@ -159,7 +159,7 @@ export function HomeView() {
                 </span>
                 <span className="mix-text">
                   <span className="mix-title">Liked Songs Radio</span>
-                  <span className="mix-sub">Endless mix from the {liked.length} songs you’ve liked</span>
+                  <span className="mix-sub">Endless mix from the {liked.length} songs you've liked</span>
                 </span>
               </button>
             )}
@@ -238,8 +238,8 @@ export function HomeView() {
               See all
             </button>
           </div>
-          <div className="card-grid">
-            {playlists.slice(0, 6).map((pl) => (
+          <div className="scroll-row cards">
+            {playlists.slice(0, 8).map((pl) => (
               <MediaCard
                 key={pl.id}
                 title={pl.name}

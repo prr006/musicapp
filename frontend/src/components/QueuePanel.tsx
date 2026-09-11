@@ -11,24 +11,11 @@ import { EmptyState } from './States'
 /** How many autoplay suggestions are listed; the rest stay queued. */
 const AUTOPLAY_VISIBLE = 15
 
-const RADIO_SOURCE_LABELS: Record<string, string> = {
-  'ytmusic-next': 'Based on this song',
-  'yt-dlp-mix': 'Based on this song',
-  'web-radio-mix': 'Based on this song',
-  'session-mix': 'Based on your session',
-  // The artist text fallback is a last resort: a song/album radio reports it
-  // as song context; only Artist Radio calls itself "More from this artist".
-  'seed-song': 'Based on this song',
-  'seed-artist': 'More from this artist',
-  'fixture-radio': 'Fixture radio',
-}
-
 export function QueuePanel() {
   const queue = usePlayer((s) => s.queue)
   const index = usePlayer((s) => s.index)
   const autoQueue = usePlayer((s) => s.autoQueue)
   const contextLabel = usePlayer((s) => s.contextLabel)
-  const radioSource = usePlayer((s) => s.radioSource)
   const status = usePlayer((s) => s.status)
   const loadStage = usePlayer((s) => s.loadStage)
   const current = usePlayer((s) => s.current)
@@ -36,8 +23,6 @@ export function QueuePanel() {
   const [name, setName] = useState('')
 
   const upcoming = queue.slice(index + 1)
-  // The queue, in the exact order the panel shows it: now playing, the user's
-  // explicit choices, then MELO's autoplay suggestions.
   const visibleOrder = [...(current ? [current] : []), ...upcoming, ...autoQueue]
 
   const saveQueueAsPlaylist = () => {
@@ -67,8 +52,8 @@ export function QueuePanel() {
       <div className="panel-body">
         {current && (
           <>
-            <div className="queue-group-title">Now playing</div>
-            <div className="track-row compact" data-current="true">
+            <div className="queue-group-title queue-group-now">Now playing</div>
+            <div className="track-row compact queue-now" data-current="true">
               <Artwork src={current.artwork} alt={current.title} style={{ width: 44, height: 44 }} />
               <div className="track-main">
                 <div className="track-title">{current.title}</div>
@@ -81,18 +66,16 @@ export function QueuePanel() {
         )}
 
         <div className="queue-group-title">
-          <span>
-            Up next · Added by you {upcoming.length > 0 && `· ${formatCount(upcoming.length, 'song')}`}
-          </span>
+          <span>Next in queue</span>
           {upcoming.length > 0 && (
-            <button className="link" onClick={() => playback.clearUpcoming()} type="button" style={{ color: 'var(--text-3)' }}>
+            <button className="link" onClick={() => playback.clearUpcoming()} type="button">
               Clear
             </button>
           )}
         </div>
 
         {upcoming.length === 0 && autoQueue.length === 0 && (
-          <EmptyState title="Nothing queued" message="Add songs with “Play next” or “Add to queue”. MELO radio keeps playing after them." />
+          <EmptyState title="Nothing queued" message={'Add songs with "Play next" or "Add to queue". MELO radio keeps playing after them.'} />
         )}
 
         {upcoming.map((track, i) => {
@@ -154,26 +137,22 @@ export function QueuePanel() {
 
         {autoQueue.length > 0 && (
           <>
-            <div className="queue-group-title">
+            <div className="queue-group-title queue-group-radio">
               <span className="row" style={{ gap: 6 }}>
                 <RadioIcon size={13} className="radio-glyph" /> MELO radio
-                <span className="muted" style={{ fontSize: 11 }}>
-                  {radioSource ? RADIO_SOURCE_LABELS[radioSource] ?? radioSource : 'Keeps the music going'}
-                </span>
               </span>
-              <button className="link" onClick={() => playback.clearAutoplay()} type="button" style={{ color: 'var(--text-3)' }}>
+              <button className="link" onClick={() => playback.clearAutoplay()} type="button">
                 Clear
               </button>
             </div>
             {autoQueue.slice(0, AUTOPLAY_VISIBLE).map((track, i) => (
               <div
-                className="track-row compact"
+                className="track-row compact queue-radio"
                 key={`auto-${track.id}`}
                 role="button"
                 tabIndex={0}
                 onClick={() => void playback.playDiscovered(track)}
                 onKeyDown={(e) => e.key === 'Enter' && void playback.playDiscovered(track)}
-                style={{ opacity: 0.72 }}
               >
                 <Artwork src={track.artwork} alt={track.title} style={{ width: 44, height: 44 }} />
                 <div className="track-main">

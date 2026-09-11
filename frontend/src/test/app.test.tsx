@@ -222,7 +222,7 @@ describe('MELO application', () => {
     await userEvent.click(within(player).getByRole('button', { name: 'Queue' }))
     const panel = await screen.findByRole('complementary', { name: /Play queue/i })
     expect(within(panel).getByText('Now playing')).toBeInTheDocument()
-    expect(within(panel).getByText(/^Up next/)).toBeInTheDocument()
+    expect(within(panel).getByText(/^Next in queue/)).toBeInTheDocument()
     await waitFor(() => expect(within(panel).getByText(/^MELO radio$/)).toBeInTheDocument())
   })
 

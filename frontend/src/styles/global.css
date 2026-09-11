@@ -868,7 +868,7 @@ p {
 .card .play-fab {
   position: absolute;
   right: 20px;
-  top: calc(100% - 100% + 46%);
+  top: 46%;
   width: 44px;
   height: 44px;
   border-radius: var(--radius-full);
@@ -951,6 +951,44 @@ p {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── Horizontal scroll rows (Spotify-style music rows) ──────────────── */
+.scroll-row {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  padding-bottom: 4px;
+}
+.scroll-row::-webkit-scrollbar { display: none; }
+.scroll-row > * { scroll-snap-align: start; flex-shrink: 0; }
+
+/* Card variant: fixed-width cards in a horizontal scroll */
+.scroll-row.cards {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.scroll-row.cards > .card {
+  width: clamp(160px, 14vw, 208px);
+  padding: 0;
+}
+.scroll-row.cards > .card .artwork {
+  margin-bottom: 10px;
+}
+.scroll-row.cards > .card .card-body {
+  padding: 0 12px 12px;
+}
+
+/* Track variant: full-width rows in a vertical list (no scroll, just consistent spacing) */
+.scroll-row.tracks {
+  flex-direction: column;
+  gap: 2px;
+}
+.scroll-row.tracks > .track-row {
+  width: 100%;
 }
 
 /* ---------------- track rows ---------------- */
@@ -1380,6 +1418,31 @@ p {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.queue-group-now {
+  padding-top: 8px;
+  color: var(--accent);
+}
+
+.queue-group-radio {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+/* Now-playing row in queue: subtle accent highlight */
+.queue-now {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-left: 2px solid var(--accent);
+}
+
+/* Radio rows in queue: slightly muted to distinguish from user-added songs */
+.queue-radio {
+  opacity: 0.72;
+}
+.queue-radio:hover {
+  opacity: 1;
 }
 
 /* ---------------- now playing ---------------- */

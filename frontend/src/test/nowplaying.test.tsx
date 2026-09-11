@@ -247,7 +247,7 @@ describe('NOW PLAYING', () => {
     expect(panels).toHaveLength(1)
     const panel = within(panels[0])
     expect(panel.getByText(/now playing/i)).toBeInTheDocument()
-    expect(panel.getByText(/up next/i)).toBeInTheDocument()
+    expect(panel.getByText(/next in queue/i)).toBeInTheDocument()
     expect(panel.getByText(/MELO radio/i)).toBeInTheDocument()
     // Now Playing itself never embeds a second copy of the queue contents.
     expect(npSection().querySelectorAll('.track-row').length).toBe(0)
