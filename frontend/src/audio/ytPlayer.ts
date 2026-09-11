@@ -549,12 +549,9 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
     } else {
       this.player.cueVideoById({ videoId, startSeconds: startAt })
     }
-    // Emit YouTube's authoritative video metadata so the controller can
-    // reconcile the track title/artist with what YouTube actually has.
-    const vd = this.getVideoData()
-    if (vd && vd.title) {
-      this.emit({ type: 'videoData', title: vd.title, author: vd.author, videoId: vd.videoId })
-    }
+    // NOTE: getVideoData() returns the PREVIOUS video's data immediately
+    // after loadVideoById. The videoData event is now emitted from
+    // onPlayerState(PLAYING) once the new video has actually loaded.
     // The state events drive status from here; but if the player reports
     // nothing (rare), the caller can still see a stable paused state.
     return true

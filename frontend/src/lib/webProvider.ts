@@ -194,23 +194,25 @@ function playable(item: PipedStreamItem): boolean {
  *   - Remix, Acoustic, Live — performance variants
  * Legitimate song titles can contain hyphens, parentheses, and quotes.
  */
-export function parsePipedItem(item: PipedStreamItem, youtubeMusic: boolean): Track | null {
+export function parsePipedItem(item: PipedStreamItem, _youtubeMusic?: boolean): Track | null {
   const sourceId = baseId(item.url)
   if (!sourceId || !item.title) return null
   const cleanedTitle = cleanYouTubeTitle(item.title)
-  const { artist, song } = splitTitle(youtubeMusic ? item.title : item.title)
-  const displayArtist = (youtubeMusic ? item.uploaderName || artist : artist || item.uploaderName || '').trim()
-  const title = (youtubeMusic ? song : cleanedTitle) || item.title
+  // Artist: prefer uploaderName (always correct for YouTube Music),
+  // then fall back to splitTitle inference for non-music results.
+  const { artist: inferredArtist } = splitTitle(item.title)
+  const displayArtist = (item.uploaderName || inferredArtist || '').trim()
+  // Title is ALWAYS the cleaned full title — never the "song" half of a split.
   return {
     id: `yt:${sourceId}`,
     sourceId,
     source: 'youtube',
     url: `https://www.youtube.com/watch?v=${sourceId}`,
-    title: title || item.title,
+    title: cleanedTitle || item.title,
     artist: displayArtist,
     uploader: item.uploaderName || '',
     album: '',
-    artwork: `https://i.ytimg.com/vi/${sourceId}/hqdefault.jpg`,
+    artwork: thumbFor(item.thumbnail) || `https://i.ytimg.com/vi/${sourceId}/hqdefault.jpg`,
     duration: item.duration && item.duration > 0 ? item.duration : 0,
     explicit: false,
   }

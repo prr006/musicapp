@@ -1388,13 +1388,12 @@ p {
   pointer-events: none;
 }
 
-/* The docked playback surface — the iframe's permanent, always-visible home
-   in the app shell. A small rounded card floating above the mini player: it
-   appears the moment something is playing and is the legitimate, unobtrusive
-   presence of the provider's player — never display:none, never off-screen,
-   never detached. The iframe's DOM parent never changes; when the expanded
-   Now Playing opens, CSS transitions reposition the host over the surface
-   placeholder via CSS custom properties (--yt-x, --yt-y, --yt-w, --yt-h). */
+/* The docked playback surface — the iframe's permanent, always-attached home
+   in the app shell. The iframe is NEVER visually exposed: it exists solely
+   to produce audio via the YouTube IFrame Player API. Artwork, metadata and
+   Melo's own controls carry the entire visual design. The element keeps a
+   reasonable internal size so the browser renders the iframe (audio needs
+   a rendered context), but opacity:0 makes it completely invisible. */
 .yt-dock {
   position: fixed;
   right: 18px;
@@ -1402,39 +1401,22 @@ p {
   z-index: 55;
   width: clamp(112px, 11vw, 168px);
   aspect-ratio: 16 / 9;
-  border-radius: var(--radius-sm);
   overflow: hidden;
-  background: #000;
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow-2);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(10px) scale(0.97);
-  transition: opacity 220ms var(--ease), transform 220ms var(--ease),
-    right 280ms var(--ease), bottom 280ms var(--ease),
-    width 280ms var(--ease), aspect-ratio 0ms;
 }
 
 .yt-dock[data-active='true'] {
-  opacity: 1;
-  pointer-events: auto;
-  transform: none;
+  opacity: 0;
+  pointer-events: none;
 }
 
-/* When the host is in expanded mode (Now Playing open), the dock floats as
-   a small card in the bottom-right of the viewport. The NowPlaying view
-   shows artwork + metadata + controls — the video is a secondary element
-   that the user can glance at but doesn't dominate the interface. */
 .yt-dock[data-view='expanded'] {
-  right: 18px;
-  bottom: 92px;
-  width: clamp(112px, 11vw, 168px);
-  aspect-ratio: 16 / 9;
-  transform: none;
-  opacity: 1;
-  pointer-events: auto;
-  z-index: 60;
-  border-radius: var(--radius-sm);
+  opacity: 0;
+  pointer-events: none;
 }
 
 .yt-dock iframe {

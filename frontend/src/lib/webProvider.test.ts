@@ -168,7 +168,7 @@ describe('parsePipedItem — title preservation', () => {
       uploaderName: 'Artist Name',
     }), true)
     expect(track?.artist).toBe('Artist Name')
-    expect(track?.title).toBe('Song Title')
+    expect(track?.title).toBe('Artist Name - Song Title')
   })
 
   it('preserves full title when no clean split possible', () => {
