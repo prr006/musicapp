@@ -9,7 +9,7 @@ import { RepeatButton, ShuffleButton } from './MiniPlayer'
 import { EmptyState } from './States'
 
 /** How many autoplay suggestions are listed; the rest stay queued. */
-const AUTOPLAY_VISIBLE = 10
+const AUTOPLAY_VISIBLE = 15
 
 const RADIO_SOURCE_LABELS: Record<string, string> = {
   'ytmusic-next': 'Based on this song',

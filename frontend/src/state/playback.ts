@@ -74,11 +74,13 @@ function playLatency(stage: string, info = ''): void {
 const PREVIOUS_RESTART_THRESHOLD = 3
 
 /** Discovery (autoplay) keeps at least this many upcoming tracks ready. */
-const DISCOVERY_TARGET = 8
+const DISCOVERY_TARGET = 20
 /** Hard bound on the autoplay list: radio stays lightweight and fresh. */
-const DISCOVERY_MAX = 20
+const DISCOVERY_MAX = 40
 /** Upper bound for how many candidates one discovery fetch may add. */
 const DISCOVERY_BATCH = 20
+/** Buffer floor: re-generation is allowed when autoplay drops below this. */
+const DISCOVERY_FLOOR = 10
 /** A listen counts as "significant" after this many seconds (or half the song). */
 const SIGNIFICANT_LISTEN_SECONDS = 30
 /**
@@ -162,6 +164,8 @@ export class PlaybackController {
   private discoveryAnchorId: string | null = null
   /** Anchor ids whose discovery generation COMPLETED (any yield, incl. empty). */
   private discoveryAnchorsDone = new Set<string>()
+  /** Anchor ids whose generation returned 0 candidates — re-generation is pointless. */
+  private discoveryEmptyAnchors = new Set<string>()
   /** Failed attempts per anchor id — a failed generation may retry, bounded. */
   private discoveryAnchorRetries = new Map<string, number>()
   /** An explicit artist/album seed from Start Radio; holds until playback moves on. */
@@ -1099,26 +1103,46 @@ export class PlaybackController {
         setPlayerState({ autoQueue: state.autoQueue.slice(0, DISCOVERY_KEEP_ON_TRANSITION) })
       }
     } else {
-      // INVARIANT: the same current track never gets a second generation
-      // merely because the autoplay list is empty or low. A COMPLETED
-      // generation (even one that yielded nothing) is final for its anchor;
-      // only a FAILED generation may retry, at most MAX_ANCHOR_RETRIES times.
+      // QUANTITY SHORTFALL PATH
+      //
+      // The original invariant prevented re-generation for the same anchor.
+      // For an endless queue we relax this: when the buffer drops below
+      // DISCOVERY_FLOOR we allow a fresh generation so the queue never
+      // visually runs out. The personalization scoring penalises recently
+      // played tracks, so re-generated batches differ from the first.
       if (this.discoveryAnchorsDone.has(anchorId)) {
+        if (state.autoQueue.length >= DISCOVERY_FLOOR) {
+          // Buffer is healthy — no need to regenerate.
+          this.radioDebug(
+            `ON REFILL current=${anchorId} lastAnchor=${anchorId} why=quantity(low queue ${state.autoQueue.length}) -> SKIPPED (buffer healthy >= ${DISCOVERY_FLOOR})`,
+          )
+          return Promise.resolve()
+        }
+        // Buffer depleted below floor — allow re-generation,
+        // but only if the previous generation was non-empty.
+        // Empty generations are final: the provider has nothing for this seed.
+        if (this.discoveryEmptyAnchors.has(anchorId)) {
+          this.radioDebug(
+            `ON REFILL current=${anchorId} lastAnchor=${anchorId} why=buffer depleted (${state.autoQueue.length} < ${DISCOVERY_FLOOR}) -> SKIPPED (empty generation)`,
+          )
+          return Promise.resolve()
+        }
+        this.discoveryAnchorsDone.delete(anchorId)
         this.radioDebug(
-          `ON REFILL current=${anchorId} lastAnchor=${anchorId} why=quantity(low queue ${state.autoQueue.length}) -> SKIPPED (anchor already generated)`,
+          `ON REFILL current=${anchorId} lastAnchor=${anchorId} why=buffer depleted (${state.autoQueue.length} < ${DISCOVERY_FLOOR}) -> re-generating`,
         )
-        return Promise.resolve()
-      }
-      const retries = this.discoveryAnchorRetries.get(anchorId) ?? 0
-      if (retries >= MAX_ANCHOR_RETRIES) {
+      } else {
+        const retries = this.discoveryAnchorRetries.get(anchorId) ?? 0
+        if (retries >= MAX_ANCHOR_RETRIES) {
+          this.radioDebug(
+            `ON REFILL current=${anchorId} lastAnchor=${anchorId} why=retry -> SKIPPED (retry budget exhausted: ${retries})`,
+          )
+          return Promise.resolve()
+        }
         this.radioDebug(
-          `ON REFILL current=${anchorId} lastAnchor=${anchorId} why=retry -> SKIPPED (retry budget exhausted: ${retries})`,
+          `ON REFILL current=${anchorId} lastAnchor=${anchorId} why=legitimate retry after failure (attempt ${retries + 1}) autoQueue=${state.autoQueue.length}`,
         )
-        return Promise.resolve()
       }
-      this.radioDebug(
-        `ON REFILL current=${anchorId} lastAnchor=${anchorId} why=legitimate retry after failure (attempt ${retries + 1}) autoQueue=${state.autoQueue.length}`,
-      )
     }
     if (this.discoveryPromise) return this.discoveryPromise
     let promise: Promise<void>
@@ -1489,6 +1513,11 @@ export class PlaybackController {
       } else {
         this.discoveryAnchorsDone.add(anchorId)
         this.discoveryAnchorRetries.delete(anchorId)
+        if (fresh.length > 0) {
+          this.discoveryEmptyAnchors.delete(anchorId)
+        } else {
+          this.discoveryEmptyAnchors.add(anchorId)
+        }
       }
       const after = playerState()
       this.radioDebug(
@@ -1537,6 +1566,9 @@ export class PlaybackController {
         const merged = mergeIntoBuffer(playerState().autoQueue, fresh, DISCOVERY_MAX)
         setPlayerState({ autoQueue: merged, radioSource: playerState().radioSource || 'web-radio-mix' })
         this.discoveryWarned = false
+        this.discoveryEmptyAnchors.delete(anchorId)
+      } else {
+        this.discoveryEmptyAnchors.add(anchorId)
       }
       // A completed generation is final for its anchor (same-anchor invariant).
       this.discoveryAnchorsDone.add(anchorId)
@@ -1624,6 +1656,7 @@ export class PlaybackController {
     this.discoveryPromise = null
     this.discoveryAnchorId = null
     this.discoveryAnchorsDone = new Set()
+    this.discoveryEmptyAnchors = new Set()
     this.discoveryAnchorRetries = new Map()
     setPlayerState({ autoQueue: [], radioSource: '' })
   }
@@ -1642,6 +1675,7 @@ export class PlaybackController {
       // Explicit user action: re-open the fetch budget for the current
       // anchor (bounded by the user's own toggles, never by queue level).
       this.discoveryAnchorsDone = new Set()
+      this.discoveryEmptyAnchors = new Set()
       this.discoveryAnchorRetries = new Map()
       void this.refillDiscovery()
     } else {
