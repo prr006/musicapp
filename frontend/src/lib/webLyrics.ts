@@ -24,6 +24,7 @@
  * played-track identity. This is deliberately per-track, never global.
  */
 import type { LyricsQuery, LyricsResult } from '../bridge/types'
+import { fetchYtmTimedLyrics } from './ytmusic'
 
 const LRCLIB_BASE = 'https://lrclib.net/api'
 
@@ -194,9 +195,12 @@ function scoreHit(hit: LrcLibHit, ctx: HitContext): number {
   // Prefer a recording whose length matches the played upload.
   if (ctx.duration > 0 && hit.duration && hit.duration > 0) {
     const d = Math.abs(hit.duration - ctx.duration)
-    if (d <= 1) score += 3
-    else if (d <= 4) score += 2
+    if (d <= 2) score += 4
+    else if (d <= 5) score += 2
     else if (d < 8) score += 1
+  } else if (ctx.duration > 0 && (!hit.duration || hit.duration <= 0)) {
+    // Penalize candidates with no duration info when the track has a known duration.
+    score -= 1
   }
 
   // Title closeness (against both the cleaned and the raw played title).
@@ -224,13 +228,17 @@ function scoreHit(hit: LrcLibHit, ctx: HitContext): number {
   // Primary artist containment (played upload's artist vs the recording's).
   const qArtist = normalizeTrack(ctx.artist)
   if (qArtist && qArtist.length > 1) {
-    if (hArtist.includes(qArtist) || qArtist.includes(hArtist)) score += 2
+    if (hArtist.includes(qArtist) || qArtist.includes(hArtist)) score += 3
   }
 
   // Album agreement is weak evidence but helps de-duplicate same-title hits.
+  // When both sides have an album name that doesn't agree, penalize.
   const qAlbum = normalizeTrack(ctx.album)
   const hAlbum = normalizeTrack(hit.albumName ?? '')
-  if (qAlbum && hAlbum && (hAlbum.includes(qAlbum) || qAlbum.includes(hAlbum))) score += 1
+  if (qAlbum && hAlbum) {
+    if (hAlbum.includes(qAlbum) || qAlbum.includes(hAlbum)) score += 1
+    else score -= 2
+  }
 
   if (hit.instrumental) score -= 4
 
@@ -349,6 +357,37 @@ export async function fetchWebLyrics(query: LyricsQuery): Promise<LyricsResult> 
 
   const synced = hit.syncedLyrics ? parseLrc(hit.syncedLyrics) : []
   if (!hit.plainLyrics && synced.length === 0) throw new LyricsNotFoundError()
+
+  // 4) YTM fallback: when LRCLIB has no synced lyrics, or the synced lyrics
+  //    are structurally suspect (large duration mismatch), try YouTube Music.
+  const hasGoodSynced = synced.length >= 2
+  const isStructurallySuspect =
+    hasGoodSynced &&
+    query.duration > 0 &&
+    hit.duration != null &&
+    hit.duration > 0 &&
+    Math.abs(hit.duration - query.duration) > 5
+
+  if (!hasGoodSynced || isStructurallySuspect) {
+    try {
+      const ytm = await fetchYtmTimedLyrics(title, artist, query.duration)
+      if (ytm && ytm.synced.length >= 2) {
+        return {
+          trackId: query.trackId,
+          source: 'ytmusic',
+          synced: true,
+          lines: ytm.synced,
+          plain: ytm.plain,
+          instrumental: false,
+          offset: 0,
+          matchedTitle: hit.trackName,
+          matchedArtist: hit.artistName,
+        }
+      }
+    } catch {
+      // YTM fallback failed — fall through to LRCLIB result
+    }
+  }
 
   return {
     trackId: query.trackId,

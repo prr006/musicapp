@@ -126,7 +126,7 @@ const state = () => usePlayerStore.getState()
 beforeEach(() => {
   usePlayerStore.setState({
     queue: [], autoQueue: [], index: -1, current: null, status: 'idle', error: null,
-    shuffle: false, repeat: 'off', volume: 0.9, muted: false, speed: 1,
+    shuffle: false, repeat: 'off', volume: 1.0, muted: false, speed: 1,
     playingFrom: 'queue', contextLabel: '', radioSource: '',
   })
   useLibraryStore.setState({ ...useLibraryStore.getState(), settings: defaultSettings(), liked: [], disliked: [], stats: {}, history: [] })
@@ -280,6 +280,20 @@ describe('queue advancement', () => {
     await vi.waitFor(() => expect(h.media.playCount).toBeGreaterThan(1))
     expect(state().current?.id).toBe(a.id)
     expect(h.media.loadCount).toBe(loadsBefore) // same source, just replayed
+  })
+
+  it('repeat one resets position to 0 and stays on same track after ENDED', async () => {
+    const h = harness()
+    const [a, b] = [track('a', { duration: 200 }), track('b', { duration: 200 })]
+    await h.controller.play(a, { tracks: [a, b], index: 0 })
+    h.controller.setRepeat('one')
+    h.media.setDuration(200)
+    h.media.tick(150)
+    expect(state().status).toBe('playing')
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().status).toBe('playing'))
+    expect(state().current?.id).toBe(a.id)
+    expect(state().index).toBe(0)
   })
 
   it('repeat all wraps A → B → C → A', async () => {
@@ -1422,6 +1436,12 @@ describe('transport controls', () => {
     h.controller.setSpeed(1.5)
     expect(h.media.playbackRate).toBe(1.5)
     expect(h.backend.saveSettings).toHaveBeenCalled()
+  })
+
+  it('default volume is 1.0 (full)', async () => {
+    const h = harness()
+    expect(state().volume).toBeCloseTo(1.0)
+    expect(h.media.volume).toBeCloseTo(1.0)
   })
 
   it('speed changes do not disturb the reported position', async () => {

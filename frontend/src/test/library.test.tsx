@@ -86,7 +86,7 @@ beforeEach(() => {
   })
   usePlayerStore.setState({
     queue: [], autoQueue: [], index: -1, current: null, status: 'idle', error: null,
-    shuffle: false, repeat: 'off', volume: 0.9, muted: false, speed: 1,
+    shuffle: false, repeat: 'off', volume: 1.0, muted: false, speed: 1,
     playingFrom: 'queue', contextLabel: '', radioSource: '',
   })
   useUIStore.setState({ route: { name: 'library', tab: 'liked' }, history: [], future: [], queueOpen: false, nowPlayingOpen: false, lyricsOpen: false, toasts: [], resolverError: null, resolverProgress: null })

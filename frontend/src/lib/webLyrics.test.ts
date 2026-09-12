@@ -131,6 +131,33 @@ describe('bestMatch — recording awareness', () => {
     const hit = bestMatch(hits, ctx({ duration: 210 }))
     expect(hit?.id).toBe(2)
   })
+
+  it('penalizes candidates with no duration when the track has a known duration', () => {
+    const hits: Hit[] = [
+      { id: 1, trackName: 'Some Song', artistName: 'The Artist', syncedLyrics: '[00:01] x', plainLyrics: 'x' },
+      { id: 2, trackName: 'Some Song', artistName: 'The Artist', duration: 210, syncedLyrics: '[00:01] x', plainLyrics: 'x' },
+    ]
+    const hit = bestMatch(hits, ctx({ duration: 210 }))
+    expect(hit?.id).toBe(2)
+  })
+
+  it('penalizes album disagreement between query and hit', () => {
+    const hits: Hit[] = [
+      { id: 1, trackName: 'Some Song', artistName: 'The Artist', duration: 210, albumName: 'Album A', syncedLyrics: '[00:01] x', plainLyrics: 'x' },
+      { id: 2, trackName: 'Some Song', artistName: 'The Artist', duration: 210, albumName: 'Album B', syncedLyrics: '[00:01] x', plainLyrics: 'x' },
+    ]
+    const hit = bestMatch(hits, ctx({ duration: 210, album: 'Album A' }))
+    expect(hit?.id).toBe(1)
+  })
+
+  it('boosts artist containment with substring match', () => {
+    const hits: Hit[] = [
+      { id: 1, trackName: 'Some Song', artistName: 'Artist X', duration: 210, syncedLyrics: '[00:01] x', plainLyrics: 'x' },
+      { id: 2, trackName: 'Some Song', artistName: 'The Artist, Feat. Guest', duration: 210, syncedLyrics: '[00:01] x', plainLyrics: 'x' },
+    ]
+    const hit = bestMatch(hits, ctx({ duration: 210 }))
+    expect(hit?.id).toBe(2)
+  })
 })
 
 describe('resolveTrackDrift — per-track only', () => {
@@ -220,5 +247,86 @@ describe('fetchWebLyrics — end to end', () => {
       duration: 189,
     })
     expect(result.offset).toBe(0)
+  })
+})
+
+describe('fetchWebLyrics — YTM timed-lyrics fallback', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const plainOnly = [
+    { id: 1, trackName: 'Some Song', artistName: 'The Artist', duration: 210, plainLyrics: 'plain text only' },
+  ]
+
+  const ytmSynced = [
+    { time: 0.5, text: 'YTM Line 1' },
+    { time: 5.0, text: 'YTM Line 2' },
+  ]
+
+  function stubLrc(hits: unknown[]) {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      return new Response(JSON.stringify(hits), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+  }
+
+  it('uses LRCLIB when it returns synced lyrics', async () => {
+    const ytmSpy = vi.spyOn(await import('./ytmusic'), 'fetchYtmTimedLyrics')
+
+    stubLrc([{ id: 1, trackName: 'Some Song', artistName: 'The Artist', duration: 210, syncedLyrics: '[00:01] A\n[00:05] B\n', plainLyrics: 'A\nB' }])
+    const result = await fetchWebLyrics({ trackId: 't1', title: 'Some Song', artist: 'The Artist', album: '', duration: 210 })
+    expect(result.source).toBe('lrclib')
+    expect(result.synced).toBe(true)
+    expect(ytmSpy).not.toHaveBeenCalled()
+    ytmSpy.mockRestore()
+  })
+
+  it('falls back to YTM when LRCLIB returns plain-only', async () => {
+    const ytmSpy = vi.spyOn(await import('./ytmusic'), 'fetchYtmTimedLyrics').mockResolvedValue({
+      synced: ytmSynced,
+      plain: 'YTM Line 1\nYTM Line 2',
+    })
+
+    stubLrc(plainOnly)
+    const result = await fetchWebLyrics({ trackId: 't1', title: 'Some Song', artist: 'The Artist', album: '', duration: 210 })
+    expect(result.source).toBe('ytmusic')
+    expect(result.synced).toBe(true)
+    expect(result.lines).toHaveLength(2)
+    ytmSpy.mockRestore()
+  })
+
+  it('falls back to YTM when LRCLIB synced is structurally suspect (duration mismatch >5s)', async () => {
+    const ytmSpy = vi.spyOn(await import('./ytmusic'), 'fetchYtmTimedLyrics').mockResolvedValue({
+      synced: ytmSynced,
+      plain: 'YTM Line 1\nYTM Line 2',
+    })
+
+    stubLrc([{ id: 1, trackName: 'Some Song', artistName: 'The Artist', duration: 220, syncedLyrics: '[00:01] A\n[00:05] B\n', plainLyrics: 'A\nB' }])
+    const result = await fetchWebLyrics({ trackId: 't1', title: 'Some Song', artist: 'The Artist', album: '', duration: 210 })
+    expect(result.source).toBe('ytmusic')
+    expect(result.synced).toBe(true)
+    ytmSpy.mockRestore()
+  })
+
+  it('does NOT fall back to YTM when LRCLIB synced is good (duration within 5s)', async () => {
+    const ytmSpy = vi.spyOn(await import('./ytmusic'), 'fetchYtmTimedLyrics').mockResolvedValue({
+      synced: ytmSynced,
+      plain: 'YTM Line 1\nYTM Line 2',
+    })
+
+    stubLrc([{ id: 1, trackName: 'Some Song', artistName: 'The Artist', duration: 212, syncedLyrics: '[00:01] A\n[00:05] B\n', plainLyrics: 'A\nB' }])
+    const result = await fetchWebLyrics({ trackId: 't1', title: 'Some Song', artist: 'The Artist', album: '', duration: 210 })
+    expect(result.source).toBe('lrclib')
+    expect(result.synced).toBe(true)
+    expect(ytmSpy).not.toHaveBeenCalled()
+    ytmSpy.mockRestore()
+  })
+
+  it('falls through to LRCLIB when YTM returns null', async () => {
+    const ytmSpy = vi.spyOn(await import('./ytmusic'), 'fetchYtmTimedLyrics').mockResolvedValue(null)
+
+    stubLrc(plainOnly)
+    const result = await fetchWebLyrics({ trackId: 't1', title: 'Some Song', artist: 'The Artist', album: '', duration: 210 })
+    expect(result.source).toBe('lrclib')
+    expect(result.synced).toBe(false)
+    ytmSpy.mockRestore()
   })
 })

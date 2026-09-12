@@ -276,7 +276,7 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
   private endedForGeneration = -1
   /** The chosen playback rate, reapplied on every load. */
   private rate = 1
-  private volume = 0.9
+  private volume = 1.0
   private muted = false
   /**
    * Pending-play bookkeeping: true when the current generation should be
@@ -613,11 +613,24 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
     }
   }
 
-  /** Restarts the current video from zero (Repeat One). */
+  /**
+   * Restarts the current video from zero (Repeat One).
+   *
+   * Uses loadVideoById() with the same video ID to force a fresh load from
+   * startSeconds=0.  seekTo(0) + playVideo() does not reliably restart an
+   * ENDED video in the YouTube IFrame API — the seek may be silently ignored
+   * and playVideo() replays from the end, leaving the track "stuck".
+   */
   restart(): void {
     if (!this.player) return
-    this.player.seekTo(0, true)
-    void this.play()
+    const videoId = this.player.getVideoData()?.video_id
+    if (videoId) {
+      this.player.loadVideoById({ videoId, startSeconds: 0 })
+    } else {
+      // Fallback: cue + play (should never happen with a loaded player).
+      this.player.seekTo(0, true)
+      this.player.playVideo()
+    }
   }
 
   setVolume(volume: number): void {

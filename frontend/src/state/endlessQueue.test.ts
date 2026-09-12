@@ -87,7 +87,7 @@ const state = () => usePlayerStore.getState()
 beforeEach(() => {
   usePlayerStore.setState({
     queue: [], autoQueue: [], index: -1, current: null, status: 'idle', error: null,
-    shuffle: false, repeat: 'off', volume: 0.9, muted: false, speed: 1,
+    shuffle: false, repeat: 'off', volume: 1.0, muted: false, speed: 1,
     playingFrom: 'queue', contextLabel: '', radioSource: '',
   })
   useLibraryStore.setState({ ...useLibraryStore.getState(), settings: defaultSettings(), liked: [], disliked: [], stats: {}, history: [] })

@@ -13,7 +13,7 @@ export function defaultSettings(): Settings {
     minimizeToTray: true,
     notifications: true,
     showLyrics: true,
-    volume: 0.9,
+    volume: 1.0,
     muted: false,
     shortcuts: {
       playPause: 'Space',
