@@ -349,28 +349,56 @@ export async function fetchWebLyrics(query: LyricsQuery): Promise<LyricsResult> 
     duration: query.duration,
   }
 
+  console.log(`[LYRICS-DIAG] fetchWebLyrics: rawTitle="${query.title}" rawArtist="${query.artist}" album="${query.album}" duration=${query.duration}`)
+  console.log(`[LYRICS-DIAG] cleaned: title="${title}" artist="${artist}"`)
+
   // 1) precise query (title + artist) — best metadata match
   let hits = await lrcFetch(
     `/search?track_name=${encodeURIComponent(title)}&artist_name=${encodeURIComponent(artist)}`,
   )
   let hit = bestMatch(hits ?? [], ctx)
+  console.log(`[LYRICS-DIAG] query1 (precise): ${hits?.length ?? 0} hits, bestMatch=${hit?.trackName ?? 'null'} (score=${hit ? scoreHit(hit, ctx) : 'n/a'})`)
 
   // 2) relaxed query: title only
   if (!hit) {
     hits = await lrcFetch(`/search?track_name=${encodeURIComponent(title)}`)
     hit = bestMatch(hits ?? [], ctx)
+    console.log(`[LYRICS-DIAG] query2 (title-only): ${hits?.length ?? 0} hits, bestMatch=${hit?.trackName ?? 'null'} (score=${hit ? scoreHit(hit, ctx) : 'n/a'})`)
   }
 
   // 3) free-text query with everything we know
   if (!hit) {
     hits = await lrcFetch(`/search?q=${encodeURIComponent(`${title} ${artist}`.trim())}`)
     hit = bestMatch(hits ?? [], ctx)
+    console.log(`[LYRICS-DIAG] query3 (free-text): ${hits?.length ?? 0} hits, bestMatch=${hit?.trackName ?? 'null'} (score=${hit ? scoreHit(hit, ctx) : 'n/a'})`)
+  }
+
+  // Log ALL candidates for the winning query
+  if (hits && hits.length > 0) {
+    const allScored = hits.map((h) => ({
+      trackName: h.trackName,
+      artistName: h.artistName,
+      albumName: h.albumName,
+      duration: h.duration,
+      synced: !!h.syncedLyrics,
+      plain: !!h.plainLyrics,
+      score: scoreHit(h, ctx),
+    }))
+    allScored.sort((a, b) => b.score - a.score)
+    console.log(`[LYRICS-DIAG] ALL CANDIDATES (${allScored.length}):`)
+    allScored.forEach((c, i) => console.log(`[LYRICS-DIAG]   #${i+1} score=${c.score} title="${c.trackName}" artist="${c.artistName}" album="${c.albumName}" dur=${c.duration}s synced=${c.synced} plain=${c.plain}`))
+  }
+
+  if (!hit) {
+    console.log(`[LYRICS-DIAG] NO LRCLIB MATCH → will try YTM fallback`)
   }
 
   if (!hit) throw new LyricsNotFoundError()
 
   const synced = hit.syncedLyrics ? parseLrc(hit.syncedLyrics) : []
   if (!hit.plainLyrics && synced.length === 0) throw new LyricsNotFoundError()
+
+  console.log(`[LYRICS-DIAG] selected: title="${hit.trackName}" artist="${hit.artistName}" album="${hit.albumName}" dur=${hit.duration}s synced=${synced.length} lines plain="${hit.plainLyrics?.slice(0,60)}..."`)
 
   // 4) YTM fallback: when LRCLIB has no synced lyrics, or the synced lyrics
   //    are structurally suspect (large duration mismatch), try YouTube Music.
@@ -382,10 +410,15 @@ export async function fetchWebLyrics(query: LyricsQuery): Promise<LyricsResult> 
     hit.duration > 0 &&
     Math.abs(hit.duration - query.duration) > 5
 
+  console.log(`[LYRICS-DIAG] YTM gate: hasGoodSynced=${hasGoodSynced} isStructurallySuspect=${isStructurallySuspect} lrclibDur=${hit.duration} queryDur=${query.duration}`)
+
   if (!hasGoodSynced || isStructurallySuspect) {
+    console.log(`[LYRICS-DIAG] trying YTM fallback...`)
     try {
       const ytm = await fetchYtmTimedLyrics(title, artist, query.duration)
+      console.log(`[LYRICS-DIAG] YTM result: ${ytm ? `${ytm.synced.length} lines` : 'null'}`)
       if (ytm && ytm.synced.length >= 2) {
+        console.log(`[LYRICS-DIAG] YTM fallback accepted: using YTM synced lyrics`)
         return {
           trackId: query.trackId,
           source: 'ytmusic',
@@ -398,7 +431,8 @@ export async function fetchWebLyrics(query: LyricsQuery): Promise<LyricsResult> 
           matchedArtist: hit.artistName,
         }
       }
-    } catch {
+    } catch (e) {
+      console.log(`[LYRICS-DIAG] YTM fallback failed: ${e}`)
       // YTM fallback failed — fall through to LRCLIB result
     }
   }

@@ -447,10 +447,14 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
       case YT.PlayerState.ENDED: {
         this.loading = false
         // Duplicate ENDED coalescing: one per generation.
-        if (this.endedForGeneration === gen) return
+        if (this.endedForGeneration === gen) {
+          console.log(`[REPEAT-DIAG] ENDED BLOCKED by dedup guard: gen=${gen} endedForGeneration=${this.endedForGeneration} trackId=${this.trackId}`)
+          return
+        }
         this.endedForGeneration = gen
         this.setStatus('paused')
         const id = this.trackId
+        console.log(`[REPEAT-DIAG] ENDED EMITTED: gen=${gen} endedForGeneration=${this.endedForGeneration} trackId=${id} status=${this.status}`)
         if (id) this.emit({ type: 'ended', trackId: id })
         break
       }
@@ -512,7 +516,9 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
    * token that must be presented to load().
    */
   beginLoad(trackId: string): number {
+    const genBefore = this.generation
     this.generation += 1
+    console.log(`[REPEAT-DIAG] beginLoad: trackId=${trackId} genBefore=${genBefore} genAfter=${this.generation} endedForGen=${this.endedForGeneration}`)
     // Do NOT reset endedForGeneration. Leaving it at its previous value
     // ensures that a late ENDED event from the OLD video is caught by the
     // dedup guard: the old video's ENDED fires with the new generation
@@ -636,16 +642,20 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
    */
   restart(): void {
     if (!this.player) return
+    const genBefore = this.generation
     // Increment generation so the NEXT ENDED is not caught by the dedup
     // guard. Reset endedForGeneration to the new generation so that any
     // late ENDED from the PREVIOUS cycle (old generation) is blocked.
     this.generation += 1
     this.endedForGeneration = this.generation
     const videoId = this.player.getVideoData()?.video_id
+    console.log(`[REPEAT-DIAG] restart() called: genBefore=${genBefore} genAfter=${this.generation} endedForGen=${this.endedForGeneration} videoId=${videoId}`)
     if (videoId) {
       this.player.loadVideoById({ videoId, startSeconds: 0 })
+      console.log(`[REPEAT-DIAG] loadVideoById sent: videoId=${videoId} startSeconds=0`)
     } else {
       // Fallback: cue + play (should never happen with a loaded player).
+      console.log(`[REPEAT-DIAG] no videoId, using seekTo+playVideo fallback`)
       this.player.seekTo(0, true)
       this.player.playVideo()
     }

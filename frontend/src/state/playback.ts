@@ -242,6 +242,9 @@ export class PlaybackController {
     switch (event.type) {
       case 'state': {
         const { status, duration, buffered, error, volume, muted, rate } = event.snapshot
+        if (status === 'playing' || status === 'error') {
+          console.log(`[REPEAT-DIAG] engine state: status=${status} duration=${duration.toFixed(1)}s error=${error ?? 'none'}`)
+        }
         positionChannel.setDuration(duration)
         positionChannel.setBuffered(buffered)
         setPlayerState({
@@ -348,12 +351,17 @@ export class PlaybackController {
   /** Natural end of file: advance exactly once, honouring the repeat mode. */
   private handleEnded(trackId: string): void {
     const state = playerState()
-    if (!state.current || state.current.id !== trackId) return
+    console.log(`[REPEAT-DIAG] handleEnded called: trackId=${trackId} currentId=${state.current?.id} repeat=${state.repeat} index=${state.index} queueLen=${state.queue.length}`)
+    if (!state.current || state.current.id !== trackId) {
+      console.log(`[REPEAT-DIAG] handleEnded BLOCKED: current.id !== trackId`)
+      return
+    }
     this.recordConclusion('completed')
     // Sleep timer "end of track": the natural completion IS the deadline. The
     // completed event above is the real, ladder-earned history entry — no
     // fabricated one — and playback simply does not advance.
     if (state.sleepTimer?.mode === 'endOfTrack') {
+      console.log(`[REPEAT-DIAG] handleEnded: sleep timer endOfTrack, pausing`)
       this.clearSleepTimer()
       positionChannel.setPosition(0)
       this.seek(0)
@@ -362,10 +370,12 @@ export class PlaybackController {
       return
     }
     if (state.repeat === 'one') {
+      console.log(`[REPEAT-DIAG] handleEnded: repeat=one → calling engine.restart()`)
       positionChannel.setPosition(0)
       this.engine.restart()
       return
     }
+    console.log(`[REPEAT-DIAG] handleEnded: no repeat → advancing`)
     void this.advance(1, { auto: true })
   }
 
@@ -584,6 +594,7 @@ export class PlaybackController {
 
   /** Starts a specific track: clears old state first, then resolves. */
   private async start(track: Track, startAt = 0): Promise<void> {
+    console.log(`[PREV-DIAG] start() called: trackId=${track.id} title="${track.title}" startAt=${startAt}`)
     playLatency('PLAY_REQUEST', `track=${track.id} startAt=${startAt}`)
     const token = this.engine.beginLoad(track.id)
     this.recordedForToken.clear()
@@ -689,23 +700,31 @@ export class PlaybackController {
 
   async previous(): Promise<void> {
     const state = playerState()
-    if (!state.current) return
+    console.log(`[PREV-DIAG] previous() called: currentId=${state.current?.id} index=${state.index} queueLen=${state.queue.length} position=${positionChannel.getPosition().toFixed(1)}s repeat=${state.repeat}`)
+    if (!state.current) {
+      console.log(`[PREV-DIAG] previous() ABORT: no current track`)
+      return
+    }
     if (positionChannel.getPosition() > PREVIOUS_RESTART_THRESHOLD) {
+      console.log(`[PREV-DIAG] previous() → RESTART (position ${positionChannel.getPosition().toFixed(1)}s > ${PREVIOUS_RESTART_THRESHOLD}s threshold)`)
       this.seek(0)
       return
     }
     if (state.index > 0) {
       const track = state.queue[state.index - 1]
+      console.log(`[PREV-DIAG] previous() → GO BACK: index ${state.index} → ${state.index - 1} trackId=${track.id}`)
       setPlayerState({ index: state.index - 1 })
       await this.start(track)
       return
     }
     if (state.repeat === 'all' && state.queue.length > 0) {
       const index = state.queue.length - 1
+      console.log(`[PREV-DIAG] previous() → WRAP (repeat all): index → ${index} trackId=${state.queue[index].id}`)
       setPlayerState({ index })
       await this.start(state.queue[index])
       return
     }
+    console.log(`[PREV-DIAG] previous() → RESTART (start of queue, no wrap)`)
     this.seek(0)
   }
 
