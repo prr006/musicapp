@@ -195,11 +195,12 @@ function scoreHit(hit: LrcLibHit, ctx: HitContext): number {
   // Prefer a recording whose length matches the played upload.
   if (ctx.duration > 0 && hit.duration && hit.duration > 0) {
     const d = Math.abs(hit.duration - ctx.duration)
+    // Hard rejection: >30s mismatch is almost certainly a different song.
+    if (d > 30) return -100
     if (d <= 2) score += 4
     else if (d <= 5) score += 2
     else if (d < 8) score += 1
   } else if (ctx.duration > 0 && (!hit.duration || hit.duration <= 0)) {
-    // Penalize candidates with no duration info when the track has a known duration.
     score -= 1
   }
 
@@ -246,6 +247,13 @@ function scoreHit(hit: LrcLibHit, ctx: HitContext): number {
 }
 
 /**
+ * Minimum score for a synced candidate to be accepted. Below this, we return
+ * no synced lyrics rather than risk showing lyrics from the wrong song.
+ * A wrong lyric match is worse than no synced lyrics.
+ */
+const MIN_SYNCED_CONFIDENCE = 4
+
+/**
  * Selects the candidate recording closest to the played track. Synced lyrics
  * win outright; among synced candidates the recording's title, artist, album
  * and duration decide, with version-marker mismatches treated as the decisive
@@ -255,7 +263,13 @@ function bestMatch(hits: LrcLibHit[], ctx: HitContext): LrcLibHit | null {
   if (hits.length === 0) return null
   const scored = hits.map((hit) => ({ hit, score: scoreHit(hit, ctx) }))
   scored.sort((a, b) => b.score - a.score)
-  return scored[0].hit
+  const best = scored[0]
+  // Reject hard-rejected candidates (score <= -100 from duration mismatch).
+  if (best.score <= -100) return null
+  // For synced candidates, enforce a confidence floor. A wrong synced lyric
+  // is worse than no synced lyrics.
+  if (best.hit.syncedLyrics && best.score < MIN_SYNCED_CONFIDENCE) return null
+  return best.hit
 }
 export { bestMatch }
 

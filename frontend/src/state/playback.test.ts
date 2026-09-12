@@ -296,6 +296,44 @@ describe('queue advancement', () => {
     expect(state().index).toBe(0)
   })
 
+  it('repeat one replays the same track on 3 consecutive EOFs', async () => {
+    const h = harness()
+    const [a, b] = [track('a'), track('b')]
+    await h.controller.play(a, { tracks: [a, b], index: 0 })
+    h.controller.setRepeat('one')
+    const playCounts: number[] = []
+    // Cycle 1
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(h.media.playCount).toBeGreaterThan(1))
+    playCounts.push(h.media.playCount)
+    expect(state().current?.id).toBe(a.id)
+    // Cycle 2
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(h.media.playCount).toBeGreaterThan(playCounts[0]))
+    playCounts.push(h.media.playCount)
+    expect(state().current?.id).toBe(a.id)
+    // Cycle 3
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(h.media.playCount).toBeGreaterThan(playCounts[1]))
+    expect(state().current?.id).toBe(a.id)
+    expect(state().index).toBe(0)
+  })
+
+  it('repeat one: disabling after a replay reverts to normal queue advance', async () => {
+    const h = harness()
+    const [a, b] = [track('a'), track('b')]
+    await h.controller.play(a, { tracks: [a, b], index: 0 })
+    h.controller.setRepeat('one')
+    // First replay
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(h.media.playCount).toBeGreaterThan(1))
+    expect(state().current?.id).toBe(a.id)
+    // Disable repeat one → next END should advance to B
+    h.controller.setRepeat('off')
+    h.media.endNaturally()
+    await vi.waitFor(() => expect(state().current?.id).toBe(b.id))
+  })
+
   it('repeat all wraps A → B → C → A', async () => {
     const h = harness()
     const [a, b, c] = [track('a'), track('b'), track('c')]

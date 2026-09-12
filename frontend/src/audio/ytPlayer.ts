@@ -513,7 +513,15 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
    */
   beginLoad(trackId: string): number {
     this.generation += 1
-    this.endedForGeneration = -1
+    // Do NOT reset endedForGeneration. Leaving it at its previous value
+    // ensures that a late ENDED event from the OLD video is caught by the
+    // dedup guard: the old video's ENDED fires with the new generation
+    // (since trackId was overwritten), but endedForGeneration still holds
+    // the old generation → guard catches it.
+    //
+    // Resetting to -1 allowed the old video's ENDED to bypass the guard
+    // (since -1 !== newGeneration), emit with the new track's ID, and
+    // cause handleEnded() to auto-advance past a previous-track switch.
     this.trackId = trackId
     this.error = null
     this.wantsPlay = false
@@ -620,9 +628,19 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
    * startSeconds=0.  seekTo(0) + playVideo() does not reliably restart an
    * ENDED video in the YouTube IFrame API — the seek may be silently ignored
    * and playVideo() replays from the end, leaving the track "stuck".
+   *
+   * IMPORTANT: Each replay must be a new generation so the ENDED dedup guard
+   * (endedForGeneration === gen) does not block the next natural ENDED.
+   * Without incrementing, the second ENDED would see endedForGeneration === gen
+   * (both set by the first ENDED) and be silently dropped.
    */
   restart(): void {
     if (!this.player) return
+    // Increment generation so the NEXT ENDED is not caught by the dedup
+    // guard. Reset endedForGeneration to the new generation so that any
+    // late ENDED from the PREVIOUS cycle (old generation) is blocked.
+    this.generation += 1
+    this.endedForGeneration = this.generation
     const videoId = this.player.getVideoData()?.video_id
     if (videoId) {
       this.player.loadVideoById({ videoId, startSeconds: 0 })

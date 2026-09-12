@@ -158,6 +158,24 @@ describe('bestMatch — recording awareness', () => {
     const hit = bestMatch(hits, ctx({ duration: 210 }))
     expect(hit?.id).toBe(2)
   })
+
+  it('rejects candidates with >30s duration mismatch (Aagadu regression)', () => {
+    const hits: Hit[] = [
+      { id: 1, trackName: 'Theme Of Aagadu', artistName: 'Thaman S', duration: 104, syncedLyrics: '[00:01] x', plainLyrics: 'x' },
+      { id: 2, trackName: 'Aagadu', artistName: 'Thaman S', duration: 240, syncedLyrics: '[00:01] y', plainLyrics: 'y' },
+    ]
+    const hit = bestMatch(hits, ctx({ title: 'Aagadu', artist: 'Thaman S', duration: 247 }))
+    // 247-104=143s mismatch → hard rejected; 247-240=7s → accepted
+    expect(hit?.id).toBe(2)
+  })
+
+  it('returns null when no synced candidate meets confidence floor', () => {
+    const hits: Hit[] = [
+      { id: 1, trackName: 'Unrelated Song', artistName: 'Other Artist', duration: 180, syncedLyrics: '[00:01] x', plainLyrics: 'x' },
+    ]
+    const hit = bestMatch(hits, ctx({ title: 'Aagadu', artist: 'Thaman S', duration: 247 }))
+    expect(hit).toBeNull()
+  })
 })
 
 describe('resolveTrackDrift — per-track only', () => {
