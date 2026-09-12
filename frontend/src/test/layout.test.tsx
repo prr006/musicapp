@@ -190,6 +190,11 @@ describe('layout: expanded Now Playing', () => {
     expect(lyrics).toContain('"info lyrics"')
     expect(lyrics).toContain('minmax(340px, 27fr)') // substantial region, not a strip
     expect(rule('.np-lyrics-col')).toContain('grid-area: lyrics')
+    // The lyrics column must STRETCH to its grid area even though the grid
+    // container uses `align-items: start`. Without it the pane becomes
+    // content-sized, over-long lyrics clip under .np-body's overflow:hidden,
+    // and the final lyric is unreachable while auto-follow appears stuck.
+    expect(rule('.np-lyrics-col')).toContain('align-self: stretch')
   })
 
   it('the queue is a docked layout column — pages reflow, nothing is obscured', () => {

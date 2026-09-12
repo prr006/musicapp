@@ -209,7 +209,10 @@ export function LyricsPane() {
             {line.text || '♪'}
           </div>
         ))}
-        <div style={{ height: '40%' }} />
+        {/* Trailing space so the LAST lyric can be vertically centered, not
+            just scrolled to. Must be ≥ half the pane height minus half a line
+            height; 50% guarantees exact centering of the final line. */}
+        <div style={{ height: '50%' }} />
       </div>
       {!following && active >= 0 && (
         <button
