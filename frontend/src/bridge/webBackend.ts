@@ -27,6 +27,7 @@ import type {
 import {
   pipedSearch, pipedRadioMix, ProviderError,
 } from '../lib/webProvider'
+import { fetchExactVideoLyrics } from '../lib/lyricsBackend'
 import { fetchWebLyrics, LyricsNotFoundError } from '../lib/webLyrics'
 import {
   loadWebState, scheduleWebStateSave, flushWebStateSave, applyPlayEvent, setLikedInState,
@@ -109,6 +110,28 @@ export function createWebBackend(): Backend {
       Promise.reject(new Error('getPlayable is not used by the web build (YouTube IFrame playback).')),
 
     getLyrics: async (query: LyricsQuery): Promise<LyricsResult> => {
+      // 1) Exact-video YTM timed lyrics via the MELO lyrics backend
+      // (GET /api/lyrics). Server-side because browsers cannot call
+      // InnerTube directly. Any failure falls through to LRCLIB.
+      if (query.videoId) {
+        try {
+          const exact = await fetchExactVideoLyrics(query.videoId)
+          return {
+            trackId: query.trackId,
+            source: 'ytmusic',
+            synced: true,
+            lines: exact.lines,
+            plain: exact.plain,
+            instrumental: false,
+            offset: 0,
+            matchedTitle: query.title,
+            matchedArtist: query.artist,
+          }
+        } catch {
+          // Fall through to LRCLIB below.
+        }
+      }
+      // 2) LRCLIB metadata matching (recording-aware + per-track drift).
       try {
         return await fetchWebLyrics(query)
       } catch (err) {

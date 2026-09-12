@@ -150,6 +150,12 @@ export interface LyricsQuery {
   artist: string
   album: string
   duration: number
+  /**
+   * Exact YouTube videoId when the track is a YouTube video. Lets the
+   * resolver try exact-video timed lyrics first; absence only means the
+   * LRCLIB metadata path is used.
+   */
+  videoId?: string
 }
 
 export interface LyricLine {

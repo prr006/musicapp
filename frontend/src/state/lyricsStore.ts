@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { extractVideoId } from '../audio/ytPlayer'
 import { backend } from '../bridge/backend'
 import type { LyricLine, LyricsResult, Track } from '../bridge/types'
 
@@ -27,6 +28,10 @@ export const lyrics = {
    */
   loadFor(track: Track, isCurrent: () => boolean): void {
     set({ trackId: track.id, status: 'loading', result: null, error: null })
+    // Exact-video hint for the resolver (YouTube tracks only). Invalid or
+    // missing ids simply mean the LRCLIB metadata path is used.
+    const rawId = extractVideoId(track.url) ?? (track.source === 'youtube' ? track.sourceId : null)
+    const videoId = rawId && /^[A-Za-z0-9_-]{11}$/.test(rawId) ? rawId : undefined
     void backend()
       .getLyrics({
         trackId: track.id,
@@ -34,6 +39,7 @@ export const lyrics = {
         artist: track.artist,
         album: track.album,
         duration: track.duration,
+        videoId,
       })
       .then((result) => {
         if (!isCurrent()) return
