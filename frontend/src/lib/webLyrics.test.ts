@@ -347,4 +347,41 @@ describe('fetchWebLyrics — YTM timed-lyrics fallback', () => {
     expect(result.synced).toBe(false)
     ytmSpy.mockRestore()
   })
+
+  it('Aagadu: rejects the unrelated short theme instead of showing wrong lyrics', async () => {
+    // LRCLIB catalog gap: the only "Aagadu" entry is the 104s theme, not
+    // the ~4min title song. A wrong synced lyric is worse than none, so
+    // the full-song query must resolve to no lyrics (even with YTM
+    // unavailable), never to the theme's lines.
+    const ytmSpy = vi.spyOn(await import('./ytmusic'), 'fetchYtmTimedLyrics').mockResolvedValue(null)
+    stubLrc([
+      { id: 29152076, trackName: 'Theme Of Aagadu', artistName: 'Mahesh Babu; Sreenu Vaitla; Thaman S', albumName: 'Aagadu', duration: 104, syncedLyrics: '[00:11] x\n[00:16] y\n', plainLyrics: 'x\ny' },
+    ])
+    await expect(fetchWebLyrics({ trackId: 't-aagadu', title: 'Aagadu', artist: 'Thaman S', album: 'Aagadu', duration: 241 })).rejects.toMatchObject({ name: 'LyricsNotFoundError' })
+    expect(ytmSpy).toHaveBeenCalled()
+    ytmSpy.mockRestore()
+  })
+
+  it('tries YTM when LRCLIB has no usable candidate at all', async () => {
+    const ytmSpy = vi.spyOn(await import('./ytmusic'), 'fetchYtmTimedLyrics').mockResolvedValue({
+      synced: ytmSynced,
+      plain: 'YTM Line 1\nYTM Line 2',
+    })
+
+    stubLrc([])
+    const result = await fetchWebLyrics({ trackId: 't1', title: 'Some Song', artist: 'The Artist', album: '', duration: 210 })
+    expect(ytmSpy).toHaveBeenCalled()
+    expect(result.source).toBe('ytmusic')
+    expect(result.synced).toBe(true)
+    ytmSpy.mockRestore()
+  })
+
+  it('reports no lyrics when neither LRCLIB nor YTM has anything', async () => {
+    const ytmSpy = vi.spyOn(await import('./ytmusic'), 'fetchYtmTimedLyrics').mockResolvedValue(null)
+
+    stubLrc([])
+    await expect(fetchWebLyrics({ trackId: 't1', title: 'Some Song', artist: 'The Artist', album: '', duration: 210 })).rejects.toMatchObject({ name: 'LyricsNotFoundError' })
+    expect(ytmSpy).toHaveBeenCalled()
+    ytmSpy.mockRestore()
+  })
 })

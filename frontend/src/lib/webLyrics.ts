@@ -389,11 +389,33 @@ export async function fetchWebLyrics(query: LyricsQuery): Promise<LyricsResult> 
     allScored.forEach((c, i) => console.log(`[LYRICS-DIAG]   #${i+1} score=${c.score} title="${c.trackName}" artist="${c.artistName}" album="${c.albumName}" dur=${c.duration}s synced=${c.synced} plain=${c.plain}`))
   }
 
+  // No usable LRCLIB candidate (catalog gap or every candidate rejected).
+  // Try YouTube Music before giving up — it carries timed lyrics for
+  // tracks LRCLIB never catalogued.
   if (!hit) {
-    console.log(`[LYRICS-DIAG] NO LRCLIB MATCH → will try YTM fallback`)
+    console.log(`[LYRICS-DIAG] NO LRCLIB MATCH → trying YTM fallback`)
+    try {
+      const ytm = await fetchYtmTimedLyrics(title, artist, query.duration)
+      console.log(`[LYRICS-DIAG] YTM result (no LRCLIB match): ${ytm ? `${ytm.synced.length} lines` : 'null'}`)
+      if (ytm && ytm.synced.length >= 2) {
+        console.log(`[LYRICS-DIAG] YTM fallback accepted (no LRCLIB match): using YTM synced lyrics`)
+        return {
+          trackId: query.trackId,
+          source: 'ytmusic',
+          synced: true,
+          lines: ytm.synced,
+          plain: ytm.plain,
+          instrumental: false,
+          offset: 0,
+          matchedTitle: title,
+          matchedArtist: artist,
+        }
+      }
+    } catch (e) {
+      console.log(`[LYRICS-DIAG] YTM fallback failed: ${e}`)
+    }
+    throw new LyricsNotFoundError()
   }
-
-  if (!hit) throw new LyricsNotFoundError()
 
   const synced = hit.syncedLyrics ? parseLrc(hit.syncedLyrics) : []
   if (!hit.plainLyrics && synced.length === 0) throw new LyricsNotFoundError()

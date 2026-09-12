@@ -465,8 +465,9 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
         // Use playingTrackId (confirmed PLAYING) instead of this.trackId.
         // this.trackId may have been overwritten by a subsequent beginLoad(),
         // which would incorrectly attribute a late ENDED from the old video
-        // to the new track and trigger an unwanted auto-advance.
-        const id = this.playingTrackId
+        // to the new track and trigger an unwanted auto-advance. Fall back
+        // to trackId only when nothing has reached PLAYING yet (fresh load).
+        const id = this.playingTrackId ?? this.trackId
         console.log(`[REPEAT-DIAG] ENDED EMITTED: gen=${gen} endedForGeneration=${this.endedForGeneration} trackId=${id} thisTrackId=${this.trackId} status=${this.status}`)
         if (id) this.emit({ type: 'ended', trackId: id })
         break
@@ -616,6 +617,7 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
     this.loading = false
     this.wantsPlay = false
     this.trackId = null
+    this.playingTrackId = null
     this.error = null
     try {
       this.player?.stopVideo()

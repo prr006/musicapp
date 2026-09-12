@@ -29,6 +29,7 @@ interface FakePlayer {
   mute: ReturnType<typeof vi.fn>
   unMute: ReturnType<typeof vi.fn>
   setPlaybackRate: ReturnType<typeof vi.fn>
+  getVideoData: ReturnType<typeof vi.fn>
   destroy: ReturnType<typeof vi.fn>
   onReady?: () => void
   onStateChange?: (e: { data: number }) => void
@@ -59,6 +60,7 @@ function installFakeYT(): void {
         mute: vi.fn(),
         unMute: vi.fn(),
         setPlaybackRate: vi.fn(),
+        getVideoData: vi.fn(() => ({ video_id: 'aaaaaaaaaaa' })),
         destroy: vi.fn(),
       }
       player.onReady = config?.events?.onReady
@@ -144,6 +146,47 @@ describe('YTPlaybackAdapter', () => {
     stateEmitter?.(0) // duplicate ENDED
     const ended = events.filter((e) => e.type === 'ended')
     expect(ended).toHaveLength(1)
+  })
+
+  it('repeat one: restart() permits unlimited consecutive ENDEDs (4 cycles)', async () => {
+    const { adapter, events } = freshAdapter()
+    await loadTrack(adapter, 'aaaaaaaaaaa')
+    // Repeat One replays the same video via restart(): each natural ENDED
+    // must be accepted and lead to another replay, indefinitely.
+    for (let cycle = 1; cycle <= 4; cycle++) {
+      stateEmitter?.(1) // replay reaches PLAYING
+      stateEmitter?.(0) // natural ENDED
+      expect(events.filter((e) => e.type === 'ended')).toHaveLength(cycle)
+      adapter.restart()
+    }
+    // 1 initial load + 4 restart() replays, all from second 0.
+    expect(lastPlayer!.loadVideoById).toHaveBeenCalledTimes(5)
+    for (const call of lastPlayer!.loadVideoById.mock.calls) {
+      expect(call[0]).toEqual({ videoId: 'aaaaaaaaaaa', startSeconds: 0 })
+    }
+  })
+
+  it('attributes a late ENDED to the track that was PLAYING, not the pending one', async () => {
+    const { adapter, events } = freshAdapter()
+    await loadTrack(adapter, 'aaaaaaaaaaa')
+    stateEmitter?.(1) // A PLAYING
+    // Switch to B before A reports anything else.
+    const tokenB = adapter.beginLoad('yt:bbbbbbbbbbb')
+    await adapter.load(tokenB, 'bbbbbbbbbbb', 0, true)
+    stateEmitter?.(0) // late ENDED from A
+    const ended = events.filter((e) => e.type === 'ended')
+    expect(ended).toHaveLength(1)
+    expect((ended[0] as { trackId: string }).trackId).toBe('yt:aaaaaaaaaaa')
+  })
+
+  it('stop() clears the playing track so a late ENDED emits nothing', async () => {
+    const { adapter, events } = freshAdapter()
+    await loadTrack(adapter, 'aaaaaaaaaaa')
+    stateEmitter?.(1) // PLAYING
+    adapter.stop()
+    stateEmitter?.(0) // late ENDED after stop
+    await new Promise((r) => setTimeout(r, 10))
+    expect(events.find((e) => e.type === 'ended')).toBeUndefined()
   })
 
   it('maps provider rejections to fatal errors that carry the skip intent', async () => {

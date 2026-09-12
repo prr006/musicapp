@@ -261,6 +261,24 @@ describe('queue advancement', () => {
     expect(h.media.currentTime).toBe(0)
   })
 
+  it('previous steps back from an autoplay track to the explicit queue', async () => {
+    // Reproduces the deployed A → Next (discovery B) → Previous → A flow:
+    // discovery never mutates queue/index, so without the autoplay
+    // back-step Previous degrades to a restart and B is never left.
+    const h = harness()
+    const [a, b] = [track('a'), track('b')]
+    await h.controller.play(a, { tracks: [a], index: 0 })
+    // Simulate discovery having taken over with B (as startNextDiscovery
+    // does: current moves on, queue/index stay on the explicit track).
+    usePlayerStore.setState({ current: b, playingFrom: 'autoplay' })
+    h.media.setDuration(100)
+    h.media.tick(1)
+    await h.controller.previous()
+    expect(state().current?.id).toBe(a.id)
+    expect(state().playingFrom).toBe('queue')
+    expect(state().index).toBe(0)
+  })
+
   it('stops at the end of the queue when repeat is off', async () => {
     const h = harness()
     const a = track('a')

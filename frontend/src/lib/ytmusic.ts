@@ -189,7 +189,21 @@ export async function fetchYtmTimedLyrics(
   const match = extractVideoIdFromSearch(searchRes)
   if (!match) return null
 
-  // Accept if title matches well (>= 60% overlap) and duration is close (within 15s or 15%)
+  // Title check: the top YTM match must overlap the query title.
+  // Duration alone cannot identify a song — two songs from the same movie
+  // routinely share a length, and accepting on duration would return one
+  // song's timed lyrics for another song's query.
+  const norm = (s: string) =>
+    (s || '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const qTitle = norm(title)
+  const mTitle = norm(match.title)
+  if (qTitle && mTitle && !mTitle.includes(qTitle) && !qTitle.includes(mTitle)) return null
+
+  // Accept if title matches well and duration is close (within 15s or 15%)
   if (duration > 0 && match.duration > 0) {
     const durDelta = Math.abs(match.duration - duration)
     const durTolerance = Math.max(15, duration * 0.15)

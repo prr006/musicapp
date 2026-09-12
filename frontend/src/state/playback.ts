@@ -712,6 +712,21 @@ export class PlaybackController {
       this.seek(0)
       return
     }
+    // Autoplay back-step: a current track from discovery/autoQueue never
+    // mutates the explicit queue/index (startNextDiscovery only shifts
+    // autoQueue), so index can be 0 while the current track is NOT
+    // queue[0]. Without this, Previous from such a track falls through to
+    // the start-of-queue RESTART and can never return to the explicit
+    // track it came from. Step back to queue[index] when it differs.
+    if (state.playingFrom === 'autoplay') {
+      const base = state.queue[state.index]
+      if (base && base.id !== state.current.id) {
+        console.log(`[PREV-DIAG] previous() → AUTO-BACK (autoplay): current=${state.current.id} → queue[${state.index}]=${base.id}`)
+        setPlayerState({ playingFrom: 'queue' })
+        await this.start(base)
+        return
+      }
+    }
     if (state.index > 0) {
       const track = state.queue[state.index - 1]
       console.log(`[PREV-DIAG] previous() → GO BACK: index ${state.index} → ${state.index - 1} trackId=${track.id}`)
