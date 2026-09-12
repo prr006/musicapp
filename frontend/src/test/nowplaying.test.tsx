@@ -481,6 +481,28 @@ describe('LYRICS', () => {
     await waitFor(() => expect(scrollTo.mock.calls.length).toBeGreaterThan(calls))
   })
 
+  it('18a. lyrics pane has symmetric leading and trailing focus space', async () => {
+    const pane = await openWithLyrics()
+    const children = [...pane.children] as HTMLElement[]
+    const lines = children.filter((el) => el.classList.contains('lyric-line'))
+    expect(lines.length).toBeGreaterThanOrEqual(2)
+    // First and last direct children are the 50% leading/trailing spacers,
+    // so line one and the last line occupy the same focus region as the rest.
+    const first = children[0]
+    const last = children[children.length - 1]
+    expect(first.style.height).toBe('50%')
+    expect(last.style.height).toBe('50%')
+    expect(pane.children[1]).toBe(lines[0])
+    expect(pane.children[pane.children.length - 2]).toBe(lines[lines.length - 1])
+    // The leading spacer makes the first lyric centerable: becoming active
+    // triggers an auto-scroll instead of being clamped at the top.
+    const scrollTo = vi.fn()
+    pane.scrollTo = scrollTo as unknown as typeof pane.scrollTo
+    act(() => positionChannel.setPosition(1))
+    await waitFor(() => expect(scrollTo.mock.calls.length).toBeGreaterThanOrEqual(1))
+    expect(screen.getByText('first line').className).toContain('active')
+  })
+
   it('19. plain lyrics display safely without pretending to be synced', async () => {
     lyricsImpl = (q) =>
       Promise.resolve({ ...syncedResult(q), synced: false, lines: [], plain: 'la la la\nsecond row of plain text' })

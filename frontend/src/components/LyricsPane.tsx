@@ -196,6 +196,10 @@ export function LyricsPane() {
           }
         }}
       >
+        {/* Leading space so the FIRST lyric can be vertically centered, not
+            just scrolled to — mirrors the trailing spacer below. 50% puts the
+            first and last lines into the same focus region as the middle. */}
+        <div style={{ height: '50%' }} />
         {timed.map((line, i) => (
           <div
             key={`${line.time}-${i}`}
