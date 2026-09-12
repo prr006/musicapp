@@ -268,6 +268,14 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
   private listeners = new Set<EngineListener>()
   private generation = 0
   private trackId: string | null = null
+  /**
+   * The trackId that was last confirmed PLAYING. Used by the ENDED handler
+   * to emit the correct trackId even when `this.trackId` has been
+   * overwritten by a subsequent beginLoad() call. This prevents a late
+   * ENDED from an old video from being attributed to the new track and
+   * triggering an unwanted auto-advance (the Previous-button bug).
+   */
+  private playingTrackId: string | null = null
   private status: EngineStatus = 'idle'
   private error: string | null = null
   private timer: ReturnType<typeof setInterval> | null = null
@@ -432,6 +440,7 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
       case YT.PlayerState.PLAYING:
         this.loading = false
         this.wantsPlay = true
+        this.playingTrackId = this.trackId
         this.setStatus('playing')
         this.emitPosition(true)
         break
@@ -448,13 +457,17 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
         this.loading = false
         // Duplicate ENDED coalescing: one per generation.
         if (this.endedForGeneration === gen) {
-          console.log(`[REPEAT-DIAG] ENDED BLOCKED by dedup guard: gen=${gen} endedForGeneration=${this.endedForGeneration} trackId=${this.trackId}`)
+          console.log(`[REPEAT-DIAG] ENDED BLOCKED by dedup guard: gen=${gen} endedForGeneration=${this.endedForGeneration} trackId=${this.playingTrackId}`)
           return
         }
         this.endedForGeneration = gen
         this.setStatus('paused')
-        const id = this.trackId
-        console.log(`[REPEAT-DIAG] ENDED EMITTED: gen=${gen} endedForGeneration=${this.endedForGeneration} trackId=${id} status=${this.status}`)
+        // Use playingTrackId (confirmed PLAYING) instead of this.trackId.
+        // this.trackId may have been overwritten by a subsequent beginLoad(),
+        // which would incorrectly attribute a late ENDED from the old video
+        // to the new track and trigger an unwanted auto-advance.
+        const id = this.playingTrackId
+        console.log(`[REPEAT-DIAG] ENDED EMITTED: gen=${gen} endedForGeneration=${this.endedForGeneration} trackId=${id} thisTrackId=${this.trackId} status=${this.status}`)
         if (id) this.emit({ type: 'ended', trackId: id })
         break
       }
@@ -519,15 +532,13 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
     const genBefore = this.generation
     this.generation += 1
     console.log(`[REPEAT-DIAG] beginLoad: trackId=${trackId} genBefore=${genBefore} genAfter=${this.generation} endedForGen=${this.endedForGeneration}`)
-    // Do NOT reset endedForGeneration. Leaving it at its previous value
-    // ensures that a late ENDED event from the OLD video is caught by the
-    // dedup guard: the old video's ENDED fires with the new generation
-    // (since trackId was overwritten), but endedForGeneration still holds
-    // the old generation → guard catches it.
-    //
-    // Resetting to -1 allowed the old video's ENDED to bypass the guard
-    // (since -1 !== newGeneration), emit with the new track's ID, and
-    // cause handleEnded() to auto-advance past a previous-track switch.
+    // Do NOT reset endedForGeneration here. Keeping it at its previous
+    // value means the dedup guard will still catch any ENDED with the
+    // same generation (preventing double-processing). Late ENDEDs from
+    // old videos are handled differently: the ENDED handler uses
+    // playingTrackId (set in PLAYING state) instead of this.trackId,
+    // so a late ENDED is attributed to the OLD track and correctly
+    // rejected by handleEnded()'s state.current.id !== trackId check.
     this.trackId = trackId
     this.error = null
     this.wantsPlay = false
@@ -644,10 +655,13 @@ export class YTPlaybackAdapter implements PlaybackEngineLike {
     if (!this.player) return
     const genBefore = this.generation
     // Increment generation so the NEXT ENDED is not caught by the dedup
-    // guard. Reset endedForGeneration to the new generation so that any
-    // late ENDED from the PREVIOUS cycle (old generation) is blocked.
+    // guard. Reset endedForGeneration to -1 so the next natural ENDED
+    // (from the replayed video, same generation) passes through.
+    //
+    // Previously this was set to this.generation, which blocked the next
+    // ENDED because endedForGeneration === gen (both = new generation).
     this.generation += 1
-    this.endedForGeneration = this.generation
+    this.endedForGeneration = -1
     const videoId = this.player.getVideoData()?.video_id
     console.log(`[REPEAT-DIAG] restart() called: genBefore=${genBefore} genAfter=${this.generation} endedForGen=${this.endedForGeneration} videoId=${videoId}`)
     if (videoId) {

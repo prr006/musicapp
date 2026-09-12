@@ -648,9 +648,11 @@ export class PlaybackController {
     } catch (err) {
       if (!this.engine.isCurrent(token)) return
       const message = err instanceof Error ? err.message : 'Couldn\u2019t load this song.'
+      console.log(`[PREV-DIAG] start() FAILED: trackId=${track.id} error="${message}"`)
       this.engine.fail(token, message)
       setPlayerState({ status: 'error', error: message, loadStage: null })
     }
+    console.log(`[PREV-DIAG] start() completed: trackId=${track.id} currentId=${playerState().current?.id}`)
   }
 
   async toggle(): Promise<void> {
